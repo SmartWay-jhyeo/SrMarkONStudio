@@ -321,6 +321,24 @@ static void print_records(void)
     mk_json_end(&j);
     printf("ain\t%s\n", b);
 
+    /* 🔴 실수 경계들. 여기가 비어 있으면 대조가 정상 범위만 보고 지나간다.
+     *    실제로 음수 0 처리에서 Python 쪽 기준이 틀린 것을 뒤늦게 잡았다. */
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_u32(&j, "schema_ver", 3u);
+    mk_json_u32(&j, "seq", 0u);
+    mk_json_i64(&j, "t", 0LL);
+    mk_json_str(&j, "type", "ain");
+    mk_json_f32(&j, "neg_to_zero", -0.0001f, 2);   /* 0 이 된다 — 부호를 버린다 */
+    mk_json_f32(&j, "neg_zero", -0.0f, 2);
+    mk_json_f32(&j, "half_up", -1.5f, 0);          /* 0 에서 먼 쪽 */
+    mk_json_f32(&j, "half_up_pos", 2.5f, 0);
+    mk_json_f32(&j, "pad", 12.5f, 4);
+    mk_json_f32(&j, "d0", 3.7f, 0);
+    mk_json_f32(&j, "d6", 1.0f, 6);
+    mk_json_f32(&j, "tiny", 0.0000004f, 6);
+    mk_json_end(&j);
+    printf("float_edges\t%s\n", b);
+
     /* 센서가 죽어 NaN 이 올라온 경우 — 나머지 필드는 살아야 한다 */
     mk_json_begin(&j, b, sizeof b);
     mk_json_u32(&j, "schema_ver", 3u);

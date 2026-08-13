@@ -72,10 +72,16 @@ def f32(value: float, digits: int) -> _Raw:
     quantum = Decimal(1).scaleb(-digits)
     rounded = exact.quantize(quantum, rounding=ROUND_HALF_UP)
 
-    neg = rounded < 0
-    mag = -rounded if neg else rounded
-    text = f"{mag:.{digits}f}"
-    return _Raw(("-" if (neg and mag != 0) else "") + text)
+    # 🔴 Decimal 은 반올림 뒤에도 음수 0 의 부호를 남긴다.
+    #    Decimal('-0.00') < 0 은 거짓인데 포매팅하면 "-0.00" 이 나온다.
+    #    부호를 비교로 판단하면 이 경우를 놓친다 — copy_abs() 로 부호를
+    #    떼어낸 값을 쓰고, 부호는 우리가 붙인다.
+    #
+    #    0 으로 반올림된 음수에 부호를 붙이지 않는 것은 C 와 같은 규칙이다.
+    #    "-0.00" 은 값이 없다는 뜻으로 읽히기 쉬운데 실제로는 그냥 0 이다.
+    mag = rounded.copy_abs()
+    neg = rounded.is_signed() and mag != 0
+    return _Raw(("-" if neg else "") + f"{mag:.{digits}f}")
 
 
 def dumps(obj: dict) -> str:
@@ -99,6 +105,13 @@ EXPECTED: dict[str, dict] = {
     "id_controls": {
         "schema_ver": 3, "seq": 0, "t": 0, "type": "id",
         "device_id": "a\b\t\n\f\r\x0bz", "fw": "0.1.0", "board_rev": "2.0",
+    },
+    "float_edges": {
+        "schema_ver": 3, "seq": 0, "t": 0, "type": "ain",
+        "neg_to_zero": f32(-0.0001, 2), "neg_zero": f32(-0.0, 2),
+        "half_up": f32(-1.5, 0), "half_up_pos": f32(2.5, 0),
+        "pad": f32(12.5, 4), "d0": f32(3.7, 0),
+        "d6": f32(1.0, 6), "tiny": f32(0.0000004, 6),
     },
     "ain": {
         "schema_ver": 3, "seq": 1234, "t": 1772200855875, "type": "ain",
