@@ -57,32 +57,32 @@ def test_roundtrip_preserves_args():
     assert cmd.args == original
 
 
-def test_checksum_is_computed_over_utf8_bytes_not_codepoints():
-    """🔴 펌웨어는 바이트를 XOR 한다. ord() 로 계산하면 값이 갈린다.
+def test_checksum_matches_firmware_byte_basis():
+    """펌웨어는 바이트를 XOR 한다. 정의를 바이트로 맞춰 둔다.
 
-    ain*.unit 은 사용자가 자유롭게 넣는 문자열이라 '℃' 같은 값이 실제로
-    들어온다. 코드포인트(0x2103)로 계산하면 한 바이트를 넘어 프레임
-    형식까지 깨진다.
+    전선 위 값은 ASCII 만 허용되므로(설정 계층이 강제한다) 실제로는
+    ord() 계산과 결과가 같다. 그래도 바이트로 정의하는 이유는, 언젠가
+    non-ASCII 가 새어 들어와도 체크섬이 3자리로 터지는 대신 조용한
+    불일치로 잡히게 하기 위해서다.
     """
-    payload = "CFG,SET,ain0.unit,℃"
+    payload = "CFG,SET,ain0.unit,degC"
     expected = 0
     for b in payload.encode("utf-8"):
         expected ^= b
     assert xor_checksum(payload) == expected
-    assert xor_checksum(payload) <= 0xFF
 
 
-def test_non_ascii_value_survives_roundtrip():
-    """한글·기호 단위가 왕복해도 그대로 나온다."""
-    cmd = parse_line(build_command("CFG", "SET", "ain0.unit", "℃"))
-    assert cmd.args == ("SET", "ain0.unit", "℃")
+def test_checksum_stays_one_byte_even_for_non_ascii():
+    """프레이밍은 전송 계층이다 — 무엇이 들어와도 형식을 깨뜨리지 않는다.
 
-
-def test_non_ascii_line_keeps_two_hex_digit_checksum():
-    """프레임 형식이 깨지지 않는다 — 체크섬은 항상 2자리다."""
-    line = build_command("CFG", "SET", "ain0.unit", "바")
-    star = line.rfind("*")
-    assert len(line[star + 1 :].strip()) == 2
+    ASCII 강제는 설정 계층(_coerce)의 책임이고 여기서 하지 않는다.
+    이 시험은 그 방어선이 뚫렸을 때도 프레임이 살아남는지만 본다.
+    """
+    for payload in ("CFG,SET,ain0.unit,℃", "CFG,SET,ain0.unit,바"):
+        assert xor_checksum(payload) <= 0xFF
+        line = build_line(payload)
+        star = line.rfind("*")
+        assert len(line[star + 1 :].strip()) == 2
 
 
 def test_lowercase_checksum_is_accepted():
