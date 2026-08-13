@@ -84,14 +84,32 @@ def test_catalog_collection_does_not_swallow_telemetry(rig):
 
     타입을 안 보고 전부 _catalog 로 보내면 수집에 구멍이 뚫리는데,
     parse_catalog 가 모르는 타입을 무시하므로 아무도 눈치채지 못한다.
+
+    ⚠️ **시계를 진행시켜야 실제로 끼어들기가 생긴다.** fetch_schema 안의
+    pump 가 tick 을 부를 때 방출 주기가 지나 있어야 카탈로그 줄과 텔레메트리가
+    같은 pump 에서 섞인다. 시계를 안 옮기면 끼어드는 텔레메트리가 애초에
+    없어서, 이 시험은 수정을 되돌려도 통과한다 — 아무것도 검증하지 않는다.
     """
     svc, _sim, clock = rig
     clock.advance(100)
     svc.pump()                                     # 텔레메트리가 먼저 쌓인다
     before = len(svc.records)
     assert before > 0
+
+    clock.advance(100)                             # 카탈로그와 겹치도록 주기를 넘긴다
     svc.fetch_schema()
-    assert len(svc.records) >= before              # 하나도 잃지 않았다
+    assert len(svc.records) > before               # 끼어든 텔레메트리를 잃지 않았다
+
+
+def test_catalog_is_still_complete_when_telemetry_interleaves(rig):
+    """끼어들기가 있어도 카탈로그 자체는 온전히 조립된다."""
+    svc, _sim, clock = rig
+    clock.advance(100)
+    svc.pump()
+    clock.advance(100)
+    schema = svc.fetch_schema()
+    assert "pwr.5v" in schema.items
+    assert len(schema.items) > 40
 
 
 def test_send_surfaces_error_reason(rig):

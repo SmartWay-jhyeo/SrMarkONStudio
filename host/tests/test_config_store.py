@@ -265,6 +265,53 @@ def test_load_restores_normal_values_untouched(tmp_path):
     assert store.rejected_keys == []
 
 
+def test_load_rejects_individually_valid_but_infeasible_combination(tmp_path):
+    """🔴 항목별로는 다 유효한데 조합이 불가능한 설정 파일.
+
+    7채널 10ms(요구 700 SPS) + drate 2 SPS(가용 1.6 SPS). 항목 검사만
+    하면 한 개도 안 걸리고 그대로 부팅한다. 큐가 영구히 넘치는데 아무
+    신호도 없다 — `load()` 의 전제("저장 매체는 신뢰 대상이 아니다")를
+    항목 단위로만 지킨 셈이다.
+
+    부팅을 막지는 않는다. 기본값으로 되돌리고 표시만 남긴다.
+    """
+    import json
+
+    cfg = {"adc.drate": 2}
+    for ch in range(7):
+        cfg[f"ain{ch}.enabled"] = True
+        cfg[f"ain{ch}.period_ms"] = 10
+
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    store = default_store(path)
+    store.load()
+
+    assert "<combination>" in store.rejected_keys
+    assert store.load_failed is True
+    assert store.get("adc.drate") == 60            # 기본값으로 복귀
+    assert store.get("ain1.enabled") is False
+
+
+def test_load_accepts_a_feasible_combination(tmp_path):
+    """조합 검사가 정상 설정을 막지 않는다."""
+    import json
+
+    path = tmp_path / "cfg.json"
+    path.write_text(
+        json.dumps({"adc.drate": 1000, "ain1.enabled": True,
+                    "ain1.period_ms": 200}),
+        encoding="utf-8",
+    )
+    store = default_store(path)
+    store.load()
+
+    assert store.rejected_keys == []
+    assert store.load_failed is False
+    assert store.get("ain1.enabled") is True
+    assert store.get("adc.drate") == 1000
+
+
 def test_load_ignores_unknown_keys(tmp_path):
     """스키마가 내려간 경우에도 아는 항목만 복원한다 (전방 호환)."""
     import json
