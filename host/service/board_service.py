@@ -10,7 +10,7 @@ from typing import Protocol
 from host.core.config_schema import ConfigSchema, parse_catalog
 from host.core.errors import ProtocolError
 from host.core.framing import Command, build_command, parse_line
-from host.core.records import SeqTracker, parse_record
+from host.core.records import SeqTracker, is_telemetry, parse_record
 
 
 class Transport(Protocol):
@@ -86,14 +86,34 @@ class BoardService:
 
     # ------------------------------------------------------------- 명령 송신
     def send(self, verb: str, *args: str) -> Command:
-        """명령을 보내고 대응하는 $SACK 를 반환한다."""
+        """명령을 보내고 **그 명령에 대응하는** $SACK 를 반환한다.
+
+        🔴 verb 를 대조하지 않고 `_acks[0]` 을 돌려주면 안 된다.
+
+        직렬 링크에서는 앞선 명령의 응답이 한 박자 늦게 도착하는 일이 흔하다.
+        그 지연 응답이 버퍼 앞자리에 있으면, 지금 보낸 `$CFG,SET` 이 보드에서
+        `RANGE` 로 거부됐는데도 남의 `$SACK,STAT,OK` 를 집어 **성공으로
+        보고한다.** 설정 쓰기에서 조용한 거짓 성공은 이 시스템의 최악의
+        실패 방식이고, GUI 가 이 계층 위에 올라간다.
+
+        Raises:
+            ProtocolError: 이 명령에 대응하는 응답이 오지 않은 경우.
+        """
         self.last_payload = None
         self._acks.clear()
         self.transport.write(build_command(verb, *args))
         self.pump()
-        if not self._acks:
-            raise ProtocolError(f"응답 없음: {verb} {args}")
-        return self._acks[0]
+
+        for ack in self._acks:
+            if ack.args and ack.args[0] == verb:
+                return ack
+
+        if self._acks:
+            others = [a.args[0] if a.args else "?" for a in self._acks]
+            raise ProtocolError(
+                f"{verb} 응답이 오지 않음. 받은 응답: {others}"
+            )
+        raise ProtocolError(f"응답 없음: {verb} {args}")
 
     def heartbeat(self) -> None:
         """$HB 를 보낸다. 응답은 없다."""
@@ -155,17 +175,25 @@ class BoardService:
             self.corrupt_total += 1
             return
 
-        if getattr(self, "_collect_catalog", False):
+        rtype = rec.get("type")
+
+        # 🔴 카탈로그 수집 중이라도 **카탈로그 줄만** 가로챈다.
+        #
+        # 타입을 안 보고 전부 _catalog 로 보내면, $CFG,LIST 응답이 오는 동안
+        # 흘러들어온 텔레메트리가 통째로 사라진다. parse_catalog 는 모르는
+        # 타입을 무시하므로 아무도 눈치채지 못한다. GUI 가 카탈로그를 새로
+        # 고칠 때마다 수집에 구멍이 뚫린다.
+        if self._collect_catalog and rtype in ("cfg_item", "cfg_field", "cfg_end"):
             self._catalog.append(line)
             return
 
-        rtype = rec.get("type")
-        if rtype in ("cfg_value", "id"):
+        # 🔴 명령 응답은 seq 시퀀스에 넣지 않는다 (규격 §7.1.1).
+        # 타입을 손으로 나열하지 않고 is_telemetry() 를 쓴다 — 손으로 적으면
+        # cfg_item/cfg_field/cfg_end 처럼 빠뜨리는 것이 생긴다.
+        if not is_telemetry(rec):
             self.last_payload = rec
-            return
-        if rtype == "stat":
-            self.last_payload = rec
-            self.mode = rec.get("mode", self.mode)
+            if rtype == "stat":
+                self.mode = rec.get("mode", self.mode)
             return
 
         self.seq_tracker.observe(rec["seq"])

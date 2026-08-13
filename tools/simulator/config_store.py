@@ -1,7 +1,7 @@
 """시뮬레이터 설정 저장소 — 펌웨어 config_store 모듈의 기준 구현.
 
 여기서 정한 항목·타입·범위·기본값이 그대로 펌웨어로 간다.
-검증 순서는 규격 §5 를 따른다: 키 존재 → 타입·범위 → 인터록 → 읽기 전용.
+검증 순서는 규격 §5 를 따른다: 키 존재 → 읽기 전용 → 타입·범위 → 인터록.
 
 인터록을 범위 검사 뒤에 두는 이유: 값 자체가 틀린 것과 안전 정책상 거부된
 것은 사용자에게 다른 메시지여야 한다.
@@ -122,24 +122,34 @@ class ConfigStore:
         previous = item.current
         item.current = value
         try:
-            self._check_combination(previous_load=_load_of(self, previous, item))
+            self._check_combination(previous_margin=_margin_of(self, previous, item))
         except ConfigError:
             item.current = previous
             raise
 
         self.dirty = True
 
-    def _check_combination(self, *, previous_load: float) -> None:
+    def _check_combination(self, *, previous_margin: float) -> None:
         """여러 항목이 얽힌 제약을 검사한다 (설계 §6.4).
 
-        🔴 부하를 늘리지 않는 변경은 검사하지 않는다. 이미 초과 상태에 빠진
-        저장소에서 채널을 끄거나 주기를 늘리는 것마저 막으면 사용자가 그
-        상태에서 빠져나올 방법이 없어진다.
-        """
-        from tools.simulator.capacity import check_capacity, required_sps
+        🔴 **실현 가능성 여유(margin)를 비교한다. 수요만 보면 안 된다.**
 
-        if required_sps(self) <= previous_load:
-            return                          # 부하가 늘지 않았다 — 통과
+        이미 초과 상태에 빠진 저장소에서 빠져나올 길은 열어둬야 한다 — 채널을
+        끄거나 주기를 늘리거나 **DRATE 를 올리는** 변경은 무조건 통과해야 한다.
+
+        그런데 `required_sps` 만 비교하면 `adc.drate` 를 **낮추는** 변경도
+        "수요가 안 늘었다"로 판정되어 검사를 건너뛴다. drate 는 수요가 아니라
+        **공급**이기 때문이다. 그러면 7채널 10ms(700 SPS) 상태에서 drate 를
+        2 SPS 로 내리는 것이 수락되고, 용량 검사가 막으려던 바로 그 상태가
+        된다. 사용자가 가장 흔히 만지는 노브로 기능 전체가 무력화된다.
+
+        여유 = 요구 − 가용 으로 보면 양쪽이 한 식에 들어온다. 여유가 나빠지지
+        않는 변경만 검사를 건너뛴다.
+        """
+        from tools.simulator.capacity import check_capacity, margin_sps
+
+        if margin_sps(self) <= previous_margin:
+            return                          # 실현 가능성이 나빠지지 않았다
 
         check_capacity(self)
 
@@ -200,6 +210,23 @@ class ConfigStore:
                 item.current = _coerce(item, _to_raw(value))
             except ConfigError:
                 self.rejected_keys.append(key)   # 기본값 유지
+
+        # 🔴 개별 항목이 전부 유효해도 **조합**이 불가능할 수 있다.
+        #
+        # 손편집하거나 손상된 파일이 7채널 10ms + drate 2 SPS 를 담고 있으면
+        # 위 루프는 한 항목도 거부하지 않는다. 그대로 부팅하면 큐가 영구히
+        # 넘치는데 아무 신호도 없다. `load()` 의 전제("저장 매체는 신뢰 대상이
+        # 아니다")를 항목 단위로만 지킨 셈이다.
+        #
+        # 부팅을 막지는 않는다 — 기본값으로 되돌리고 표시만 남긴다.
+        try:
+            from tools.simulator.capacity import check_capacity
+
+            check_capacity(self)
+        except ConfigError:
+            self.rejected_keys.append("<combination>")
+            self.load_failed = True
+            self.reset()
 
         self.dirty = False
 
@@ -337,15 +364,20 @@ def _default_field_mask() -> int:
     return mask
 
 
-def _load_of(store: "ConfigStore", previous_value: object,
-             item: SimConfigItem) -> float:
-    """변경 직전의 총 요구 샘플률을 계산한다."""
-    from tools.simulator.capacity import required_sps
+def _margin_of(store: "ConfigStore", previous_value: object,
+               item: SimConfigItem) -> float:
+    """변경 직전의 실현 가능성 여유(요구 − 가용)를 계산한다.
+
+    수요(`required_sps`)만이 아니라 공급(`available_sps`)까지 포함해야
+    `adc.drate` 를 낮추는 변경도 "나빠졌다"로 잡힌다. `_check_combination`
+    주석 참조.
+    """
+    from tools.simulator.capacity import margin_sps
 
     current = item.current
     item.current = previous_value
     try:
-        return required_sps(store)
+        return margin_sps(store)
     finally:
         item.current = current
 

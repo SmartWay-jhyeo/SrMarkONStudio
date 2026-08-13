@@ -196,10 +196,10 @@ def test_set_rejects_all_control_characters():
 
 
 def test_set_rejects_non_ascii_string_value():
-    """🔴 사용자가 넣는 값은 ASCII 만 통과한다.
+    """단위는 'degC'·'kPa' 처럼 쓴다.
 
-    단위는 'degC'·'kPa' 처럼 쓴다. '℃' 를 허용하면 펌웨어의 바이트 기준
-    고정폭 버퍼와 호스트의 문자 기준 길이가 어긋난다.
+    '℃' 를 허용하면 펌웨어의 바이트 기준 고정폭 버퍼와 호스트의 문자 기준
+    길이가 어긋난다.
     """
     store = default_store()
     for bad in ("℃", "바", "Ω", "µm"):

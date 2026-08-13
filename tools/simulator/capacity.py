@@ -40,6 +40,16 @@ def available_sps(drate: int) -> float:
     return 1000.0 / per_sample_ms
 
 
+def margin_sps(store) -> float:
+    """실현 가능성 여유 = 요구 − 가용(안전여유 반영). 양수면 초과다.
+
+    🔴 수요와 공급을 **한 식에** 담는 것이 요점이다. 수요만 비교하면
+    `adc.drate` 를 낮추는 변경(공급 감소)이 "부하가 안 늘었다"로 통과해
+    용량 검사가 통째로 무력화된다. `ConfigStore._check_combination` 주석 참조.
+    """
+    return required_sps(store) - available_sps(int(store.get("adc.drate"))) * SAFETY_MARGIN
+
+
 def check_capacity(store) -> None:
     """설정 조합이 달성 가능한지 검사한다.
 

@@ -1,6 +1,7 @@
 import pytest
 
 from host.core.errors import ProtocolError
+from host.core.framing import build_command
 from host.service.board_service import BoardService, LoopbackTransport
 from tools.simulator.config_store import default_store
 from tools.simulator.device_sim import HB_TIMEOUT_MS, DeviceSim, Mode
@@ -29,6 +30,68 @@ def test_send_returns_matching_sack(rig):
     svc, _sim, _clock = rig
     ack = svc.send("CFG", "GET", "tx.period_ms")
     assert ack.args == ("CFG", "OK")
+
+
+def test_send_ignores_a_stale_ack_for_another_command(rig):
+    """🔴 verb 를 대조하지 않으면 남의 응답을 내 성공으로 착각한다.
+
+    직렬 링크에서 앞선 명령의 응답이 한 박자 늦게 도착하는 것은 정상이다.
+    그게 버퍼 앞자리에 있으면 보드가 RANGE 로 거부한 설정 쓰기를
+    성공으로 보고한다. 설정 쓰기의 조용한 거짓 성공은 최악의 실패 방식이고
+    GUI 가 이 계층 위에 올라간다.
+    """
+    svc, sim, _clock = rig
+    svc.heartbeat()
+    svc.transport._pending.append(
+        build_command("SACK", "STAT", "OK").rstrip("\r\n")
+    )
+    ack = svc.send("CFG", "SET", "tx.period_ms", "999999")
+    assert ack.args == ("CFG", "ERR", "RANGE")     # 내 명령의 응답이다
+    assert sim.store.get("tx.period_ms") == 100    # 보드는 실제로 거부했다
+
+
+def test_send_raises_when_only_foreign_acks_arrive():
+    """대응하는 응답이 아예 없으면 남의 것을 돌려주지 않고 예외를 던진다.
+
+    시뮬레이터는 언제나 응답하므로 이 상황을 만들려면 스텁이 필요하다.
+    실기기에서는 명령이 유실되고 앞선 응답만 도착하면 그대로 재현된다.
+    """
+
+    class OnlyForeignAcks:
+        """무엇을 보내든 남의 $SACK 하나만 돌려주는 트랜스포트."""
+
+        def __init__(self):
+            self._sent = False
+
+        def write(self, data: str) -> None:
+            self._sent = True
+
+        def read_lines(self):
+            if self._sent:
+                self._sent = False
+                yield build_command("SACK", "STAT", "OK").rstrip("\r\n")
+
+        def close(self) -> None:
+            pass
+
+    svc = BoardService(OnlyForeignAcks(), clock=lambda: 0)
+    with pytest.raises(ProtocolError):
+        svc.send("CFG", "GET", "tx.period_ms")
+
+
+def test_catalog_collection_does_not_swallow_telemetry(rig):
+    """🔴 $CFG,LIST 를 받는 동안 흘러온 텔레메트리가 사라지면 안 된다.
+
+    타입을 안 보고 전부 _catalog 로 보내면 수집에 구멍이 뚫리는데,
+    parse_catalog 가 모르는 타입을 무시하므로 아무도 눈치채지 못한다.
+    """
+    svc, _sim, clock = rig
+    clock.advance(100)
+    svc.pump()                                     # 텔레메트리가 먼저 쌓인다
+    before = len(svc.records)
+    assert before > 0
+    svc.fetch_schema()
+    assert len(svc.records) >= before              # 하나도 잃지 않았다
 
 
 def test_send_surfaces_error_reason(rig):

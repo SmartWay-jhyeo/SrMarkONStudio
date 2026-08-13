@@ -95,6 +95,38 @@ def test_unparseable_line_is_dropped_silently():
     assert _sim().feed("garbage without dollar\r\n") == []
 
 
+def test_corrupt_line_with_control_char_does_not_kill_the_loop():
+    """🔴 깨진 줄에 제어문자가 있어도 feed() 가 예외를 밖으로 내지 않는다.
+
+    건져낸 verb 는 곧바로 build_line() 으로 들어가는데 거기서 제어문자가
+    거부된다. 잡음으로 낀 TAB 하나면 충분하고, strip() 은 양끝만 지운다.
+    serial_server 와 LoopbackTransport 가 feed() 를 맨몸으로 부르므로
+    시뮬레이터 프로세스가 통째로 죽는다.
+
+    규격 §3: "verb 를 읽을 수 없을 만큼 깨졌으면 조용히 버린다 (링크는 유지)".
+    """
+    sim = _sim()
+    for bad in ("$C\x00FG,X*00\r\n", "$A\tB*00\r\n", "$X\x1bY*00\r\n"):
+        assert sim.feed(bad) == [], bad
+    assert sim.mode == Mode.RUN          # 링크가 살아 있다
+
+
+def test_oversized_verb_is_not_echoed_back():
+    """🔴 공격자가 정한 길이의 문자열을 응답에 되싣지 않는다.
+
+    `"$" + "A"*4000 + "*00"` 은 4000개의 XOR 이 0x00 이라 **체크섬이 맞는
+    정상 줄**로 파싱된다. 깨진 줄 경로가 아니라 "모르는 명령" 경로로 들어오고,
+    방어가 없으면 UNKNOWN_KEY 응답에 4000자가 그대로 실린다.
+
+    파이썬에서는 그저 긴 문자열이지만 C 로 옮기면 고정 버퍼 오버플로다.
+    모르는 명령에 응답하는 것 자체는 맞으므로, verb 만 잘라서 돌려준다.
+    """
+    out = _sim().feed("$" + "A" * 4000 + "*00\r\n")
+    assert len(out) == 1
+    assert len(out[0]) < 40                      # 4000자가 되울리지 않는다
+    assert parse_line(out[0]).args == ("?", "ERR", "UNKNOWN_KEY")
+
+
 # ----------------------------------------------------------------- 조회
 def test_cfg_list_is_allowed_in_run_mode():
     sim = _sim()
@@ -136,6 +168,35 @@ def test_stat_reports_mode_and_rails():
     rec = parse_record(next(ln for ln in lines if ln.startswith("{")))
     assert rec["mode"] == Mode.RUN
     assert rec["rails"]["v5"] is True
+
+
+def test_stat_declares_the_time_base():
+    """🔴 `t` 의 기준점을 호스트가 알 수 있어야 한다 (규격 §7.1.2).
+
+    `t` 는 time_source 에 따라 UTC epoch 이거나 부팅 후 경과 ms 다.
+    명령 응답 레코드에는 time_source 를 실을 필드 마스크가 없으므로
+    $STAT 이 그 답을 주는 유일한 곳이다. 없으면 호스트가 t=0 을 보고
+    1970년인지 방금 부팅한 것인지 구분할 수 없다.
+    """
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert rec["time_source"] == "device_clock"
+    assert rec["time_quality"] == 0
+
+
+def test_command_response_t_is_uptime_not_epoch():
+    """부팅 직후 t=0 은 '1970년' 이 아니라 '부팅 후 0ms' 로 정확하다."""
+    sim = _sim()
+    rec0 = parse_record(
+        next(ln for ln in sim.feed(build_command("ID")) if ln.startswith("{"))
+    )
+    assert rec0["t"] == 0
+    sim.tick(500)
+    rec1 = parse_record(
+        next(ln for ln in sim.feed(build_command("ID")) if ln.startswith("{"))
+    )
+    assert rec1["t"] == 500
 
 
 # ----------------------------------------------------------------- 변경

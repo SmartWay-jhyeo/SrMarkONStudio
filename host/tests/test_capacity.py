@@ -132,6 +132,30 @@ def test_rejected_change_is_rolled_back():
     assert store.get("ain5.period_ms") == 100  # 이전 값 그대로
 
 
+def test_lowering_drate_cannot_bypass_the_capacity_check():
+    """🔴 drate 는 수요가 아니라 **공급**이다.
+
+    `required_sps` 만 비교하면 drate 를 낮추는 변경이 "부하가 안 늘었다"로
+    통과해 용량 검사가 통째로 무력화된다. 사용자가 가장 흔히 만지는 노브다.
+    """
+    store = default_store()
+    _force(store, "adc.drate", 2000)
+    _load_channels(store, count=7, period_ms=10)   # 700 SPS, 가용 533 → 이미 초과
+    with pytest.raises(ConfigError) as exc:
+        store.set("adc.drate", "30")               # 공급을 더 줄인다
+    assert exc.value.reason == Reason.CAPACITY
+    assert store.get("adc.drate") == 2000          # 롤백
+
+
+def test_raising_drate_is_always_allowed():
+    """공급을 늘리는 변경은 초과 상태에서도 통과해야 한다 — 빠져나갈 길."""
+    store = default_store()
+    _force(store, "adc.drate", 30)
+    _load_channels(store, count=7, period_ms=10)   # 크게 초과 상태
+    store.set("adc.drate", "7500")                 # 예외 없이 통과
+    assert store.get("adc.drate") == 7500
+
+
 def test_disabling_a_channel_is_never_capacity_rejected():
     """부하를 줄이는 변경은 막을 이유가 없다."""
     store = default_store()
