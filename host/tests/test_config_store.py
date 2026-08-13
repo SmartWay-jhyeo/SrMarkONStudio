@@ -145,6 +145,56 @@ def test_set_accepts_zero_padded_integer():
     assert store.get("tx.period_ms") == 250
 
 
+def test_set_rejects_command_injection_via_newline():
+    """🔴 값에 줄바꿈을 넣어 명령을 주입하는 공격을 막는다.
+
+    `dev.id = "x\\r\\n$HB*0A"` 를 허용하면 조립된 줄이
+    `$CFG,SET,dev.id,x\\r\\n$HB*0A*72\\r\\n` 가 된다. 가운데 `$HB*0A` 는
+    체크섬까지 유효한 완결된 명령이라, 보드가 이를 진짜 하트비트로 받아
+    CONFIG 모드를 유지한다. 설정값 하나로 명령을 심을 수 있다.
+    """
+    store = default_store()
+    for payload in ("x\r\n$HB*0A", "x\n$HB*0A", "x\ry"):
+        with pytest.raises(ConfigError) as exc:
+            store.set("dev.id", payload)
+        assert exc.value.reason == Reason.RANGE, payload
+    assert store.get("dev.id") == "1"
+
+
+def test_set_rejects_protocol_delimiters_in_value():
+    """🔴 구분자가 값에 들어가면 호스트와 펌웨어의 해석이 갈린다.
+
+    ',' 는 인자를 더 쪼개고, '*' 는 체크섬 구분자로, '$' 는 명령 시작으로
+    오인된다.
+    """
+    store = default_store()
+    for payload in ("a,b", "a*b", "a$b"):
+        with pytest.raises(ConfigError) as exc:
+            store.set("ain0.unit", payload)
+        assert exc.value.reason == Reason.RANGE, payload
+
+
+def test_set_rejects_nul_byte():
+    """🔴 NUL 은 C 펌웨어에서 문자열을 중간에 끊는다.
+
+    호스트는 'a\\0b' 를 3자로 보고 통과시키지만 펌웨어는 'a' 로 읽는다.
+    검증한 값과 저장된 값이 달라진다.
+    """
+    store = default_store()
+    with pytest.raises(ConfigError) as exc:
+        store.set("ain0.unit", "a\x00b")
+    assert exc.value.reason == Reason.RANGE
+
+
+def test_set_rejects_all_control_characters():
+    """isascii() 만으로는 부족하다 — 제어문자는 전부 ASCII 다."""
+    store = default_store()
+    for code in (0x00, 0x07, 0x09, 0x0A, 0x0D, 0x1B, 0x7F):
+        with pytest.raises(ConfigError) as exc:
+            store.set("ain0.unit", f"a{chr(code)}b")
+        assert exc.value.reason == Reason.RANGE, hex(code)
+
+
 def test_set_rejects_non_ascii_string_value():
     """🔴 사용자가 넣는 값은 ASCII 만 통과한다.
 

@@ -1,7 +1,7 @@
 """시뮬레이터 설정 저장소 — 펌웨어 config_store 모듈의 기준 구현.
 
 여기서 정한 항목·타입·범위·기본값이 그대로 펌웨어로 간다.
-검증 순서는 규격 §5 를 따른다: 키 존재 → 읽기 전용 → 타입·범위 → 인터록.
+검증 순서는 규격 §5 를 따른다: 키 존재 → 타입·범위 → 인터록 → 읽기 전용.
 
 인터록을 범위 검사 뒤에 두는 이유: 값 자체가 틀린 것과 안전 정책상 거부된
 것은 사용자에게 다른 메시지여야 한다.
@@ -36,6 +36,30 @@ DRATE_CHOICES = (2, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1000, 2000, 3750, 7500)
 _TRUE_WORDS = ("true", "1", "on", "yes")
 _FALSE_WORDS = ("false", "0", "off", "no")
 _INT_TYPES = ("u8", "u16", "u32")
+
+#: 프로토콜 구분자. 설정값에 들어가면 줄 구조가 깨진다.
+_PROTOCOL_DELIMITERS = frozenset("$,*")
+
+#: 🔴 설정 문자열에 허용되는 문자 — 인쇄 가능 ASCII 에서 구분자를 뺀 것.
+#:
+#: `isascii()` 만으로는 부족하다. 제어문자가 전부 ASCII 이기 때문이다:
+#: '\n'.isascii() 도 '\x00'.isascii() 도 True 다.
+#:
+#: 이 한 줄이 막는 것들:
+#:   '\r' '\n'  — 값 안에 줄바꿈을 넣어 `$CFG,SET,dev.id,x\r\n$HB*0A` 처럼
+#:                완결된 명령을 주입하는 공격. 주입된 $HB 는 체크섬까지
+#:                유효해서 보드가 진짜 하트비트로 받아 CONFIG 모드를 연다
+#:   '\x00'     — C 펌웨어에서 문자열이 중간에 끝난 것처럼 처리됨.
+#:                호스트가 검증한 값과 펌웨어가 해석한 값이 달라진다
+#:   ','        — 명령 인자를 추가로 쪼갬
+#:   '*'        — 체크섬 구분자로 오인
+#:   '$'        — 명령 시작으로 오인
+#:
+#: 단위는 'degC'·'kPa'·'LPM'·'%' 처럼 쓴다. 비 ASCII 를 막는 부수 효과로
+#: 문자 수 = 바이트 수가 되어 str<=7 이 펌웨어 고정폭 버퍼와 정확히 맞는다.
+_ALLOWED_STR_CHARS = frozenset(
+    chr(c) for c in range(0x20, 0x7F)
+) - _PROTOCOL_DELIMITERS
 
 
 @dataclass
@@ -234,13 +258,9 @@ def _coerce(item: SimConfigItem, raw: str) -> object:
         raise ConfigError(Reason.RANGE, f"불리언이 아님: {raw!r}")
 
     if item.vtype == "str":
-        # 🔴 사용자가 넣는 값은 ASCII 만 통과시킨다.
-        # 단위는 'degC'·'kPa'·'LPM' 처럼 쓴다. '℃' 같은 기호를 허용하면
-        # 펌웨어의 고정폭 버퍼(str<=7 은 바이트 기준이다)와 호스트의 문자
-        # 기준 길이가 어긋나고, 저장 파일 인코딩까지 따라 흔들린다.
-        if not raw.isascii():
-            bad = [c for c in raw if not c.isascii()]
-            raise ConfigError(Reason.RANGE, f"ASCII 만 허용: {bad!r}")
+        bad = [c for c in raw if c not in _ALLOWED_STR_CHARS]
+        if bad:
+            raise ConfigError(Reason.RANGE, f"허용되지 않는 문자: {bad!r}")
         if item.maximum is not None and len(raw) > int(item.maximum):
             raise ConfigError(
                 Reason.RANGE, f"최대 {int(item.maximum)}자, 받음 {len(raw)}자"
