@@ -71,6 +71,12 @@ class DeviceSim:
             verb = _verb_of_broken_line(line)
             if verb is None:
                 return []
+            # 🔴 $HB 는 예외다 (§3, §6.1). 체크섬이 틀려도 $SACK 를 보내지
+            #    않는다. 1 Hz 로 오므로 링크가 나빠지면 초당 하나씩 쌓여
+            #    이미 나쁜 링크를 더 나쁘게 만든다. 알릴 내용은 어차피
+            #    3000 ms 뒤 RUN 전환으로 전달된다.
+            if verb == "HB":
+                return []
             return [self._sack(verb, "ERR", Reason.CHECKSUM)]
 
         handler = {
@@ -81,7 +87,11 @@ class DeviceSim:
         }.get(cmd.verb)
 
         if handler is None:
-            return [self._sack(cmd.verb, "ERR", Reason.UNKNOWN_KEY)]
+            # 🔴 UNKNOWN_KEY 가 아니다. 그것은 "존재하지 않는 **설정 키**"라는
+            #    뜻이고(§5), 여기서 없는 것은 명령이다. 규격 §5 의
+            #    UNSUPPORTED 가 이 경우다 — 오타든 미구현이든 호스트가 할
+            #    일은 같다.
+            return [self._sack(cmd.verb, "ERR", Reason.UNSUPPORTED)]
         return handler(cmd.args)
 
     def _on_hb(self, _args: tuple[str, ...]) -> list[str]:

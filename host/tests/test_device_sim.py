@@ -116,7 +116,7 @@ def test_oversized_verb_is_not_echoed_back():
 
     `"$" + "A"*4000 + "*00"` 은 4000개의 XOR 이 0x00 이라 **체크섬이 맞는
     정상 줄**로 파싱된다. 깨진 줄 경로가 아니라 "모르는 명령" 경로로 들어오고,
-    방어가 없으면 UNKNOWN_KEY 응답에 4000자가 그대로 실린다.
+    방어가 없으면 거부 응답에 4000자가 그대로 실린다.
 
     파이썬에서는 그저 긴 문자열이지만 C 로 옮기면 고정 버퍼 오버플로다.
     모르는 명령에 응답하는 것 자체는 맞으므로, verb 만 잘라서 돌려준다.
@@ -124,7 +124,40 @@ def test_oversized_verb_is_not_echoed_back():
     out = _sim().feed("$" + "A" * 4000 + "*00\r\n")
     assert len(out) == 1
     assert len(out[0]) < 40                      # 4000자가 되울리지 않는다
-    assert parse_line(out[0]).args == ("?", "ERR", "UNKNOWN_KEY")
+    assert parse_line(out[0]).args == ("?", "ERR", "UNSUPPORTED")
+
+
+def test_unknown_verb_is_unsupported_not_unknown_key():
+    """모르는 **명령**에는 UNSUPPORTED 다.
+
+    🔴 UNKNOWN_KEY 는 "존재하지 않는 **설정 키**" 라는 뜻이다(규격 §5).
+       명령이 없는 것과 설정 키가 없는 것은 사용자가 할 일이 다르다 —
+       전자는 펌웨어를 올려야 하고 후자는 키 이름을 고쳐야 한다.
+    """
+    sim = _sim()
+    assert _sack(sim.feed(build_command("NOPE"))).args == (
+        "NOPE", "ERR", "UNSUPPORTED",
+    )
+
+
+def test_broken_heartbeat_gets_no_sack():
+    """🔴 $HB 는 체크섬이 틀려도 $SACK 를 보내지 않는다 (규격 §3, §6.1).
+
+    $HB 는 1 Hz 로 온다. 링크가 나빠져 계속 깨지면 초당 하나씩 $SACK 가
+    쌓여 이미 나쁜 링크를 더 나쁘게 만든다. Q2 에서 2% 유실이 실측된
+    링크다. 게다가 알릴 내용은 이미 전달된다 — $HB 가 계속 깨지면
+    3000 ms 뒤 RUN 으로 떨어지고, 그것이 $SACK 한 줄보다 확실한 신호다.
+
+    다른 명령은 그대로 $SACK 를 받는다. 그 구분이 이 시험의 요점이다.
+    """
+    sim = _sim()
+    assert sim.feed("$HB*FF\r\n") == []          # 체크섬 불일치
+    assert sim.feed("$HB*xx\r\n") == []          # 16진수도 아님
+    assert sim.mode == Mode.RUN                  # 시각도 밀리지 않았다
+
+    # $HB 가 아닌 명령은 여전히 알려 준다.
+    out = sim.feed("$ID*FF\r\n")
+    assert parse_line(out[0]).args == ("ID", "ERR", "CHECKSUM")
 
 
 # ----------------------------------------------------------------- 조회
