@@ -1,0 +1,19 @@
+[project]
+name = "markon-studio"
+version = "0.1.0"
+description = "STM32 v2.0 통합 제어·DAQ 시스템"
+requires-python = ">=3.11"
+dependencies = ["pyserial>=3.5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+# setuptools 자동탐색은 최상위 패키지를 하나만 골라 tools 를 누락한다.
+# Task 6~11 이 전부 tools.simulator.* 를 import 하므로 명시한다.
+[tool.setuptools.packages.find]
+include = ["host*", "tools*"]
+
+[tool.pytest.ini_options]
+testpaths = ["host/tests"]
+pythonpath = ["."]
+addopts = "-v"

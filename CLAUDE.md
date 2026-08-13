@@ -6,20 +6,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 0. 이 저장소의 현재 상태
 
-**아직 소스 코드가 없다.** git 저장소(`main`)는 초기화돼 있고, 현재 추적되는 것은 `CLAUDE.md`와 `.gitignore`뿐이다. 원격 저장소는 없다 — 로컬 전용.
+**계획 1(프로토콜·시뮬레이터·CLI) 완료, 계획 3(GUI) 기반 모듈 완료.** 원격 저장소는 없다 — 로컬 전용.
 
 ```
 MarkON_Studio/
-├─ CLAUDE.md          ← 추적됨
-├─ .gitignore         ← 추적됨
-└─ docs/              ← 🔴 git 추적 제외. 로컬에만 있다
-   ├─ STM32_V2_CONTROL_DAQ_DEVELOPMENT_PLAN.md   ← 만들 것 (개발 계획, 초안)
-   └─ datasheet/
-      ├─ STM32_v2.0_DATASHEET.md (v1.1)          ← 대상 하드웨어 (근거 문서)
-      ├─ STM32_v2.0_DATASHEET.pdf / _print_*.html
-      ├─ img/        커넥터 배치도·상하면 실크 SVG (생성물)
-      └─ _internal/  생성·검증 스크립트 + pinout_v2.0.json/md
+├─ CLAUDE.md  .gitignore  pyproject.toml
+├─ protocol/specification.md   ← 펌웨어·호스트 공통 계약 (v3)
+├─ host/
+│  ├─ core/      framing · records · config_schema · errors
+│  ├─ service/   board_service (연결·명령응답·유실집계)
+│  ├─ gui/       theme · command_queue · widgets/{status_chip, loop_gauge}
+│  └─ tests/     209개 시험 — 보드도 디스플레이도 불필요
+├─ tools/
+│  ├─ simulator/ config_store · telemetry · device_sim · capacity · serial_server
+│  └─ cli/       markon_cli
+└─ docs/         ← 🔴 git 추적 제외. 로컬에만 있다
+   ├─ STM32_V2_CONTROL_DAQ_DEVELOPMENT_PLAN.md   개발 계획
+   ├─ superpowers/specs/   설계 스펙
+   ├─ superpowers/plans/   구현 계획 (계획 1 = protocol-simulator-cli, 계획 3 = gui)
+   ├─ status/              Codex 감사 결과 (§6)
+   └─ datasheet/           대상 하드웨어 근거 문서
 ```
+
+**보드 없이 전체가 돈다:**
+```bash
+python -m pytest -q                                  # 209 passed
+python -m tools.cli.markon_cli list                  # 설정 카탈로그 45항목
+python -m tools.cli.markon_cli monitor --seconds 3   # 텔레메트리 + 유실 통계
+python -m tools.cli.markon_cli --port COM7 list      # 실물 보드 (펌웨어 완성 후)
+```
+
+`--port`만 바꾸면 시뮬레이터와 실물이 교체된다. 호스트 코드는 그대로다.
+
+### `host/gui/` 의 원칙 — Qt 를 import 하지 않는 층이 있다
+
+`theme`·`command_queue`·`widgets/*` 는 **PyQt6 를 import 하지 않는다.** 색 계산,
+기하 계산, 상태 판정, 동시성 계약만 들어 있다. 덕분에 시각 언어와 스레드
+규약이 위젯 코드보다 먼저 굳고, 시험이 디스플레이 없이 돈다.
+
+Qt 위젯은 이 함수들을 **호출만** 한다. 새 화면을 만들 때 이 경계를 지킨다.
+
+**남은 것**: 계획 2(H723 펌웨어) 미착수. 계획 3 의 Task 5~9(워커·화면들) 미착수.
 
 ### 🔴 `docs/`는 무시 대상이지 불필요한 파일이 아니다
 
