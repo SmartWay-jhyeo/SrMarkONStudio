@@ -15,8 +15,9 @@ Set-Location $PSScriptRoot
 
 # 시험 묶음: 실행 파일 이름 -> 소스들
 $suites = @(
-    @{ exe = "test_framing.exe"; src = "test_framing.c ..\app\mk_framing.c" },
-    @{ exe = "test_json.exe";    src = "test_json.c ..\app\mk_json.c" }
+    @{ exe = "test_framing.exe";  src = "test_framing.c ..\app\mk_framing.c" },
+    @{ exe = "test_json.exe";     src = "test_json.c ..\app\mk_json.c" },
+    @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c" }
 )
 
 # 빌드와 실행을 나눈다. 한 사슬로 묶으면 컴파일 실패와 시험 실패가 같은
