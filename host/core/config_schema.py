@@ -6,6 +6,7 @@
 규격: protocol/specification.md §7.3
 """
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
@@ -105,7 +106,11 @@ def _coerce(item: ConfigItem, raw: str) -> object:
 
     if item.vtype in _INT_TYPES:
         try:
-            value = int(raw, 0)
+            # 🔴 base 0 을 쓰면 안 된다. int("08", 0) 은 ValueError 다 —
+            # 파이썬이 앞의 0 을 8진수 접두사로 읽기 때문이다. 사용자가
+            # 고정폭 습관으로 "08" 을 넣는 건 지극히 자연스럽고, 그게
+            # "정수가 아님" 으로 거부되면 원인을 짐작할 수도 없다.
+            value = int(raw, 10)
         except ValueError:
             raise ConfigError(Reason.RANGE, f"정수가 아님: {raw!r}") from None
     elif item.vtype == "f32":
@@ -113,6 +118,11 @@ def _coerce(item: ConfigItem, raw: str) -> object:
             value = float(raw)
         except ValueError:
             raise ConfigError(Reason.RANGE, f"실수가 아님: {raw!r}") from None
+        # 🔴 보드 저장소(config_store)와 같은 규칙이어야 한다.
+        # NaN 은 아래 범위 검사를 그대로 뚫는다 — nan < min 도 nan > max 도
+        # False 다. 범위가 아예 없는 항목(ain*.zero/scale)은 inf 도 통과한다.
+        if not math.isfinite(value):
+            raise ConfigError(Reason.RANGE, f"유한한 실수가 아님: {raw!r}")
     else:
         raise ConfigError(Reason.RANGE, f"알 수 없는 타입: {item.vtype}")
 
@@ -167,8 +177,17 @@ def parse_catalog(lines: Iterable[str]) -> ConfigSchema:
         elif rtype == "cfg_end":
             declared = rec["count"]
 
+    # 🔴 종료 줄이 아예 안 온 경우도 절단이다.
+    #
+    # 오히려 이쪽이 더 흔한 형태다 — cfg_end 는 마지막에 보내므로, 전송이
+    # 중간에 끊기면 "개수가 틀린 cfg_end" 가 아니라 "cfg_end 자체가 없음" 이
+    # 된다. 이걸 통과시키면 GUI 가 설정 몇 개가 빠진 화면을 아무 경고 없이
+    # 정상인 것처럼 그린다.
+    if declared is None:
+        raise ConfigError(Reason.RANGE, "카탈로그에 cfg_end 가 없음 (전송 절단)")
+
     total = len(schema.items) + len(schema.fields)
-    if declared is not None and declared != total:
+    if declared != total:
         raise ConfigError(
             Reason.RANGE,
             f"카탈로그 개수 불일치: 선언 {declared}, 수신 {total}",
