@@ -23,7 +23,7 @@ class ConfigError(ProtocolError):
 
 
 class Reason:
-    """규격 §5 의 거부 사유. 이 7개가 전부다."""
+    """규격 §5 의 거부 사유. 이 8개가 전부다."""
 
     RANGE = "RANGE"
     UNKNOWN_KEY = "UNKNOWN_KEY"

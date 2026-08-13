@@ -55,3 +55,52 @@ def test_roundtrip_preserves_args():
     original = ("SET", "ain0.unit", "bar")
     cmd = parse_line(build_command("CFG", *original))
     assert cmd.args == original
+
+
+def test_checksum_is_computed_over_utf8_bytes_not_codepoints():
+    """🔴 펌웨어는 바이트를 XOR 한다. ord() 로 계산하면 값이 갈린다.
+
+    ain*.unit 은 사용자가 자유롭게 넣는 문자열이라 '℃' 같은 값이 실제로
+    들어온다. 코드포인트(0x2103)로 계산하면 한 바이트를 넘어 프레임
+    형식까지 깨진다.
+    """
+    payload = "CFG,SET,ain0.unit,℃"
+    expected = 0
+    for b in payload.encode("utf-8"):
+        expected ^= b
+    assert xor_checksum(payload) == expected
+    assert xor_checksum(payload) <= 0xFF
+
+
+def test_non_ascii_value_survives_roundtrip():
+    """한글·기호 단위가 왕복해도 그대로 나온다."""
+    cmd = parse_line(build_command("CFG", "SET", "ain0.unit", "℃"))
+    assert cmd.args == ("SET", "ain0.unit", "℃")
+
+
+def test_non_ascii_line_keeps_two_hex_digit_checksum():
+    """프레임 형식이 깨지지 않는다 — 체크섬은 항상 2자리다."""
+    line = build_command("CFG", "SET", "ain0.unit", "바")
+    star = line.rfind("*")
+    assert len(line[star + 1 :].strip()) == 2
+
+
+def test_lowercase_checksum_is_accepted():
+    """수신은 관대하게, 송신은 엄격하게.
+
+    규격은 대문자 2자리로 '만든다'고 정하지만, 수신측이 소문자를 거부할
+    이유는 없다. 이 관용을 시험으로 못 박아 나중에 바뀌지 않게 한다.
+    """
+    assert parse_line("$HB*0a\r\n") == Command(verb="HB", args=())
+
+
+def test_build_line_always_emits_uppercase():
+    """송신은 규격대로 대문자다."""
+    line = build_line("HB")
+    assert line == "$HB*0A\r\n"
+
+
+def test_parse_line_rejects_empty_payload():
+    """'$*00' 은 체크섬이 맞아도 verb 가 없어 의미가 없다."""
+    with pytest.raises(MalformedLineError):
+        parse_line("$*00\r\n")

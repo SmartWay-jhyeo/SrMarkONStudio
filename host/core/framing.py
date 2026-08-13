@@ -20,10 +20,18 @@ class Command:
 
 
 def xor_checksum(payload: str) -> int:
-    """payload 전체 문자의 XOR."""
+    """payload 를 UTF-8 로 인코딩한 **바이트**들의 XOR.
+
+    🔴 문자가 아니라 바이트다. `ord(ch)` 로 계산하면 코드포인트가 0xFF 를
+    넘는 문자에서 결과가 한 바이트를 벗어나 `$...*XX` 프레임이 깨지고,
+    바이트를 XOR 하는 펌웨어와 값이 갈린다.
+
+    `ain*.unit` 은 사용자가 자유롭게 넣는 문자열이라 `℃`·`바` 같은 값이
+    실제로 들어온다. 가정이 아니라 닿는 경로다.
+    """
     cs = 0
-    for ch in payload:
-        cs ^= ord(ch)
+    for b in payload.encode("utf-8"):
+        cs ^= b
     return cs
 
 
@@ -55,6 +63,8 @@ def parse_line(line: str) -> Command:
         raise MalformedLineError(f"'*' 없음: {line!r}")
 
     payload = body[:star]
+    if not payload:
+        raise MalformedLineError(f"빈 payload: {line!r}")
     given = body[star + 1 :]
     expected = f"{xor_checksum(payload):02X}"
     if given.upper() != expected:
