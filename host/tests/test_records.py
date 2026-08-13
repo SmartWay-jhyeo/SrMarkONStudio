@@ -107,6 +107,69 @@ def test_seq_tracker_reset_on_reconnect():
     assert t.missing_total == 0
 
 
+def test_delta_of_exactly_wrap_tolerance_is_not_counted_as_loss():
+    """🔴 delta 가 정확히 2^31 이면 전진 21억인지 후진 21억인지 알 수 없다.
+
+    현재 경계가 `> _WRAP_TOLERANCE` 라 정확히 2^31 은 "전진" 으로 분류되고
+    유실 2,147,483,647 개로 기록된다. 그 한 줄이 세션 전체 통계를 망친다.
+    """
+    from host.core.records import _WRAP_TOLERANCE
+
+    t = SeqTracker()
+    t.observe(0)
+    assert t.observe(_WRAP_TOLERANCE) == 0
+    assert t.missing_total == 0
+    assert t.discontinuity_count == 1
+
+
+def test_implausibly_large_gap_is_discontinuity_not_loss():
+    """유실이라기엔 물리적으로 불가능한 크기는 통계에서 뺀다."""
+    from host.core.records import MAX_PLAUSIBLE_GAP
+
+    t = SeqTracker()
+    t.observe(0)
+    assert t.observe(MAX_PLAUSIBLE_GAP + 100) == 0
+    assert t.missing_total == 0
+    assert t.discontinuity_count == 1
+    # 기준점은 옮겨졌으므로 이후 측정은 정상 동작한다
+    assert t.observe(MAX_PLAUSIBLE_GAP + 103) == 2
+
+
+def test_plausible_gap_is_still_counted():
+    """경계 바로 아래는 정상적으로 유실로 센다."""
+    t = SeqTracker()
+    t.observe(0)
+    assert t.observe(1000) == 999
+    assert t.missing_total == 999
+    assert t.discontinuity_count == 0
+
+
+def test_three_duplicates_are_not_mistaken_for_reboot():
+    """🔴 같은 값이 세 번 오는 것은 재전송이지 재시작이 아니다.
+
+    구분하지 않으면 중복 3회가 재부팅으로 오판되어 resync_count 와
+    유실률이 둘 다 신뢰할 수 없게 된다.
+    """
+    t = SeqTracker()
+    t.observe(10)
+    for _ in range(5):
+        assert t.observe(10) == 0
+    assert t.resync_count == 0
+    assert t.duplicate_count == 5
+    assert t.missing_total == 0
+    # 이어지는 전진은 정상 측정된다
+    assert t.observe(13) == 2
+
+
+def test_non_advancing_backward_values_do_not_resync():
+    """재시작은 값이 전진하는 형태다. 제자리 역방향은 잡음이다."""
+    t = SeqTracker()
+    t.observe(500)
+    for _ in range(5):
+        t.observe(400)          # 같은 자리로 계속 뒤로
+    assert t.resync_count == 0
+
+
 def test_seq_tracker_resyncs_after_unsignaled_board_reboot():
     """🔴 보드가 재부팅해 seq 가 0 부터 다시 시작해도 측정이 살아난다.
 
