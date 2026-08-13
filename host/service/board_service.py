@@ -4,8 +4,13 @@ GUI 와 분리돼 있다. GUI 가 없어도 이 계층만으로 수집·저장�
 나중에 Jetson 에서 GUI 없이 서비스만 돌리는 구성이 그대로 가능하다.
 """
 
+import time
 from collections.abc import Callable, Iterator
 from typing import Protocol
+
+#: 응답을 기다리는 동안 다시 읽기까지의 간격. 짧게 잡아 응답 지연을 줄이되
+#: CPU 를 태우지는 않는다.
+_POLL_INTERVAL_S = 0.005
 
 from host.core.config_schema import ConfigSchema, parse_catalog
 from host.core.errors import ProtocolError
@@ -70,9 +75,13 @@ class SerialTransport:
 
 
 class BoardService:
-    def __init__(self, transport: Transport, *, clock: Callable[[], int]):
+    def __init__(self, transport: Transport, *, clock: Callable[[], int],
+                 timeout_s: float = 2.0):
         self.transport = transport
         self.clock = clock
+        #: 명령 응답을 기다리는 최대 벽시계 시간. `$CFG,LIST` 는 7 KB 라
+        #: 115200 baud 에서 600 ms 넘게 걸린다 — 여유를 두고 잡는다.
+        self.timeout_s = timeout_s
 
         self.records: list[dict] = []
         self.seq_tracker = SeqTracker()
@@ -102,18 +111,34 @@ class BoardService:
         self.last_payload = None
         self._acks.clear()
         self.transport.write(build_command(verb, *args))
-        self.pump()
 
-        for ack in self._acks:
-            if ack.args and ack.args[0] == verb:
-                return ack
+        # 🔴 한 번만 pump 하면 실기기에서 거의 항상 실패한다.
+        #
+        # SerialTransport.read_lines() 는 그때 도착해 있는 바이트만 읽는다.
+        # `$CFG,LIST` 응답은 약 7 KB 라 115200 baud 에서 600 ms 넘게 걸린다.
+        # 한 번 읽고 판정하면 응답이 오는 중인데 "응답 없음" 이 된다.
+        # 시뮬레이터는 즉시 답하므로 시험이 이걸 못 잡는다 — 즉 `--port COM7`
+        # 로 바꾸는 순간에만 드러나는 종류의 결함이다.
+        #
+        # 마감시각은 **벽시계**로 잰다. `self.clock()` 은 시뮬레이터에 주입하는
+        # 장치 시간이라 시험에서 멈춰 있을 수 있고, 그걸로 마감을 재면 영원히
+        # 돈다. 전송 타임아웃은 장치 시간이 아니라 실제 경과 시간의 문제다.
+        deadline = time.monotonic() + self.timeout_s
+        while True:
+            self.pump()
+            for ack in self._acks:
+                if ack.args and ack.args[0] == verb:
+                    return ack
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_POLL_INTERVAL_S)
 
         if self._acks:
             others = [a.args[0] if a.args else "?" for a in self._acks]
             raise ProtocolError(
                 f"{verb} 응답이 오지 않음. 받은 응답: {others}"
             )
-        raise ProtocolError(f"응답 없음: {verb} {args}")
+        raise ProtocolError(f"응답 없음: {verb} {args} ({self.timeout_s}s 초과)")
 
     def heartbeat(self) -> None:
         """$HB 를 보낸다. 응답은 없다."""

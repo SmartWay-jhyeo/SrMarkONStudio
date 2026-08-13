@@ -74,9 +74,43 @@ def test_send_raises_when_only_foreign_acks_arrive():
         def close(self) -> None:
             pass
 
-    svc = BoardService(OnlyForeignAcks(), clock=lambda: 0)
+    svc = BoardService(OnlyForeignAcks(), clock=lambda: 0, timeout_s=0.05)
     with pytest.raises(ProtocolError):
         svc.send("CFG", "GET", "tx.period_ms")
+
+
+def test_send_keeps_pumping_until_the_response_arrives():
+    """🔴 한 번만 pump 하면 실기기에서 거의 항상 실패한다.
+
+    `$CFG,LIST` 응답은 7 KB 라 115200 baud 에서 600 ms 넘게 걸린다.
+    시뮬레이터는 즉시 답하므로 이 결함은 `--port COM7` 로 바꾸는 순간에만
+    드러난다 — 시험이 그걸 흉내내야 한다.
+    """
+
+    class SlowTransport:
+        """세 번째 read 에서야 응답을 내놓는 트랜스포트."""
+
+        def __init__(self):
+            self.reads = 0
+            self._pending = None
+
+        def write(self, data: str) -> None:
+            self._pending = build_command("SACK", "CFG", "OK").rstrip("\r\n")
+
+        def read_lines(self):
+            self.reads += 1
+            if self.reads >= 3 and self._pending:
+                yield self._pending
+                self._pending = None
+
+        def close(self) -> None:
+            pass
+
+    tr = SlowTransport()
+    svc = BoardService(tr, clock=lambda: 0, timeout_s=1.0)
+    ack = svc.send("CFG", "GET", "tx.period_ms")
+    assert ack.args == ("CFG", "OK")
+    assert tr.reads >= 3                       # 한 번으로 끝내지 않았다
 
 
 def test_catalog_collection_does_not_swallow_telemetry(rig):
