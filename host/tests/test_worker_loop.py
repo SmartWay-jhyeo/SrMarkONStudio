@@ -165,3 +165,115 @@ def test_mode_is_carried_through():
     svc.mode = "CONFIG"
     w = WorkerLoop(svc, q)
     assert w.step(0.0).mode == "CONFIG"
+
+
+def test_unrecognized_ack_is_a_failure_not_a_success():
+    """🔴 성공을 적극 확인한다. 실패를 찾는 방식이면 모르는 형태가 새어든다.
+
+    펌웨어 버그로 제3의 상태 문자열이 오거나 약한 XOR 을 우연히 통과한
+    손상 프레임이 오면, 거부를 성공으로 보고하게 된다. 설정 쓰기의 조용한
+    거짓 성공은 이 시스템 최악의 실패 방식이다.
+    """
+    from host.core.framing import Command
+
+    svc, q = FakeService(), CommandQueue()
+
+    class Weird(FakeService):
+        def send(self, verb, *args):
+            return Command(verb="SACK", args=(verb, "MAYBE"))
+
+    w = WorkerLoop(Weird(), q)
+    q.submit("CFG", "SET", "tx.period_ms", "250")
+    r = w.step(0.0)
+    assert r.results[0].ok is False
+
+
+def test_empty_ack_args_is_a_failure():
+    from host.core.framing import Command
+
+    class Empty(FakeService):
+        def send(self, verb, *args):
+            return Command(verb="SACK", args=())
+
+    q = CommandQueue()
+    w = WorkerLoop(Empty(), q)
+    q.submit("STAT")
+    r = w.step(0.0)
+    assert r.results[0].ok is False
+    assert r.results[0].reason == "MALFORMED"
+
+
+def test_dispatch_stops_when_the_time_budget_runs_out():
+    """🔴 개수 상한만으로는 하트비트를 못 지킨다.
+
+    상한 4 에 타임아웃 2초면 한 스텝이 8초 걸릴 수 있는데 보드는 3초면
+    RUN 으로 떨어진다. 더 나쁜 것은 이게 링크가 나쁠 때 터진다는 점이다 —
+    하트비트가 가장 필요한 순간이 곧 그 순간이다.
+    """
+    clock = [0.0]
+
+    class Slow(FakeService):
+        def send(self, verb, *args):
+            clock[0] += 0.4              # 한 번에 0.4초씩 먹는다
+            return super().send(verb, *args)
+
+    svc, q = Slow(), CommandQueue()
+    w = WorkerLoop(svc, q, hb_interval_s=1.0, max_commands_per_step=10,
+                   monotonic=lambda: clock[0])
+    for i in range(10):
+        q.submit("STAT", tag=f"t{i}")
+
+    w.step(0.0)
+    # 예산 0.5초 → 0.4초짜리 두 번이면 0.8초로 초과. 두 개만 나간다.
+    assert len(svc.sent) == 2
+    assert len(q.pending_tags) == 8      # 나머지는 큐에 남는다
+
+
+def test_heartbeat_and_pump_failures_are_reported_separately():
+    """🔴 하나로 합치면 계속 실패하는 하트비트가 펌프 실패를 영원히 가린다."""
+
+    class BothFail(FakeService):
+        def heartbeat(self):
+            raise RuntimeError("hb 끊김")
+
+        def pump(self):
+            raise RuntimeError("pump 끊김")
+
+    w = WorkerLoop(BothFail(), CommandQueue())
+    r = w.step(0.0)
+    assert r.heartbeat_error == "hb 끊김"
+    assert r.pump_error == "pump 끊김"
+
+
+def test_take_records_is_preferred_when_the_service_offers_it():
+    """🔴 길이 커서는 append 전용 리스트에서만 맞다.
+
+    records 가 deque(maxlen=N) 으로 바뀌면 — 예정된 변경이다 — 가득 찬 뒤
+    len() 이 멈춰 슬라이스가 영원히 빈 목록을 낸다. 텔레메트리가 예외도
+    오류 표시도 없이 조용히 끊긴다.
+    """
+
+    class Draining(FakeService):
+        def __init__(self):
+            super().__init__()
+            self._buf = [{"type": "ain", "seq": 1}]
+
+        def take_records(self):
+            out, self._buf = self._buf, []
+            return out
+
+    w = WorkerLoop(Draining(), CommandQueue())
+    assert len(w.step(0.0).records) == 1
+    assert w.step(0.1).records == []
+
+
+def test_replaced_records_container_is_reported_as_discontinuity():
+    """객체가 통째로 바뀌면 커서가 의미를 잃는다. 조용히 넘어가지 않는다."""
+    svc, q = FakeService(), CommandQueue()
+    svc.records = [{"type": "ain", "seq": 1}, {"type": "ain", "seq": 2}]
+    w = WorkerLoop(svc, q)
+    w.step(0.0)
+    svc.records = [{"type": "ain", "seq": 9}]      # 교체
+    r = w.step(0.1)
+    assert r.records_discontinuity is True
+    assert len(r.records) == 1
