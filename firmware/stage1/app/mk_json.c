@@ -1,8 +1,10 @@
 #include "mk_json.h"
 
-#include <string.h>
+/* 🔴 <string.h> 도 <stdio.h> 도 필요 없다. 이 파일은 libc 를 부르지 않는다. */
 
-/* 10^0 .. 10^6 — digits 상한이 6인 이유가 이 표다. */
+/* 10^0 .. 10^6 — digits 상한이 6인 이유가 이 표다.
+ * 🔴 mk_json_f32 의 클램프가 이 배열의 범위를 지킨다. 클램프를 지우면
+ *    digits=10 같은 호출이 POW10[10] 을 읽는다. */
 static const int64_t POW10[7] = {
     1, 10, 100, 1000, 10000, 100000, 1000000
 };
@@ -74,9 +76,31 @@ void mk_json_begin(MkJson *j, char *buf, size_t cap)
     j->buf = buf;
     j->cap = cap;
     j->len = 0u;
-    j->ok = (buf != NULL && cap >= 3u);   /* 최소 "{}" + NUL */
+    /* 🔴 `cap >= 3` 을 여기서 따로 막지 않는다. put() 의 경계 검사가
+     *    같은 결과를 내므로 아무것도 지키지 않는 분기였다 — cap 이
+     *    0·1·2 일 때 모두 첫 put 에서 ok 가 0 이 되고 범위 밖 쓰기도
+     *    없다는 것을 시험으로 못박아 두었다.
+     *    buf != NULL 은 다르다. 이것이 없으면 NULL 에 쓴다. */
+    j->ok = (buf != NULL);
     j->nfield = 0;
     put(j, '{');
+}
+
+/* 짧은 이스케이프가 있는 제어문자. 🔴 Python 의 json.dumps 가 이 다섯을
+ * 짧은 형태로 쓴다. 전부 \u00XX 로 쓰면 JSON 으로는 같은 값이지만 바이트가
+ * 달라져, "C 와 Python 이 같은 바이트를 낸다"는 이 계층의 계약이 깨진다.
+ * 계약이 깨지면 대조 시험이 무엇을 보증하는지도 흐려진다.
+ * 덤으로 전선 바이트가 6에서 2로 준다. */
+static char short_escape(unsigned char c)
+{
+    switch (c) {
+    case '\b': return 'b';
+    case '\t': return 't';
+    case '\n': return 'n';
+    case '\f': return 'f';
+    case '\r': return 'r';
+    default:   return '\0';
+    }
 }
 
 void mk_json_str(MkJson *j, const char *key, const char *val)
@@ -86,9 +110,13 @@ void mk_json_str(MkJson *j, const char *key, const char *val)
     put(j, '"');
     for (const unsigned char *p = (const unsigned char *)val; *p; p++) {
         unsigned char c = *p;
+        char esc;
         if (c == '"' || c == '\\') {
             put(j, '\\');
             put(j, (char)c);
+        } else if ((esc = short_escape(c)) != '\0') {
+            put(j, '\\');
+            put(j, esc);
         } else if (c < 0x20u) {
             /* 설정 계층이 제어문자를 막지만, 여기서 한 번 더 막는다.
              * 값의 출처가 설정만은 아니게 될 수 있다. */

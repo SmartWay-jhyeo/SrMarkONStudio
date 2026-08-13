@@ -19,6 +19,7 @@ import math
 import struct
 import subprocess
 import sys
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -47,28 +48,34 @@ class _Encoder(json.JSONEncoder):
 
 
 def f32(value: float, digits: int) -> _Raw:
-    """C 의 mk_json_f32 와 같은 규칙으로 십진 문자열을 만든다.
+    """C 의 mk_json_f32 가 내야 할 십진 문자열.
 
-    float32 로 한 번 접어 넣는 것이 중요하다 — C 쪽은 float 이므로,
-    Python 의 double 로 계산하면 마지막 자리가 갈릴 수 있다.
+    🔴 C 의 계산 절차(스케일 → +0.5 → 정수 절단)를 Python 으로 그대로 베끼면
+       독립 검증이 아니다. 같은 알고리즘 둘이 같은 답을 낸다는 것만 보이고,
+       그 알고리즘이 옳은지는 아무것도 말하지 않는다.
+
+       그래서 Decimal 로 **정확한 십진값을 0 에서 먼 쪽으로 반올림**한다.
+       이것은 C 가 double 로 흉내내려는 바로 그 값이며, 부동소수점 절차와
+       무관하게 계산된다. 둘이 어긋나면 C 의 double 근사가 경계에서 틀렸다는
+       뜻이고, 그건 알아야 할 사실이다.
+
+       float32 로 한 번 접어 넣는 것은 필요하다 — C 쪽 인자가 float 이므로
+       비교 대상은 double 원값이 아니라 float32 로 접힌 값이다.
     """
     v = struct.unpack("<f", struct.pack("<f", value))[0]
     if not math.isfinite(v):
         return _Raw("null")
-    scaled = v * (10 ** digits)
-    if not (-9.0e18 < scaled < 9.0e18):
+    if not (-9.0e18 < v * (10 ** digits) < 9.0e18):
         return _Raw("null")
 
-    neg = scaled < 0
-    if neg:
-        scaled = -scaled
-    units = int(scaled + 0.5)          # 0 에서 먼 쪽 반올림 (C 와 동일)
+    exact = Decimal(v)                      # float32 의 정확한 이진값
+    quantum = Decimal(1).scaleb(-digits)
+    rounded = exact.quantize(quantum, rounding=ROUND_HALF_UP)
 
-    ip, fp = divmod(units, 10 ** digits)
-    sign = "-" if (neg and units != 0) else ""
-    if digits == 0:
-        return _Raw(f"{sign}{ip}")
-    return _Raw(f"{sign}{ip}.{fp:0{digits}d}")
+    neg = rounded < 0
+    mag = -rounded if neg else rounded
+    text = f"{mag:.{digits}f}"
+    return _Raw(("-" if (neg and mag != 0) else "") + text)
 
 
 def dumps(obj: dict) -> str:
@@ -88,6 +95,10 @@ EXPECTED: dict[str, dict] = {
     "id_escaped": {
         "schema_ver": 3, "seq": 0, "t": 0, "type": "id",
         "device_id": 'a"b\\c', "fw": "0.1.0", "board_rev": "2.0",
+    },
+    "id_controls": {
+        "schema_ver": 3, "seq": 0, "t": 0, "type": "id",
+        "device_id": "a\b\t\n\f\r\x0bz", "fw": "0.1.0", "board_rev": "2.0",
     },
     "ain": {
         "schema_ver": 3, "seq": 1234, "t": 1772200855875, "type": "ain",

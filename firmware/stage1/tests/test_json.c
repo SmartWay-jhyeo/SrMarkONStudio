@@ -87,6 +87,37 @@ static void test_string_escaping(void)
     CHECK_EQ(b, "{\"s\":\"\"}", "빈 문자열");
 }
 
+static void test_short_escapes_match_python(void)
+{
+    /* 🔴 Python 의 json.dumps 는 이 다섯을 짧은 형태로 쓴다. 전부
+     *    \u00XX 로 쓰면 JSON 값은 같아도 바이트가 달라져, 이 계층의
+     *    계약("C 와 Python 이 같은 바이트를 낸다")이 깨진다. */
+    char b[64];
+    MkJson j;
+    struct { const char *in; const char *want; const char *msg; } cases[] = {
+        { "a\bb", "{\"s\":\"a\\bb\"}", "0x08 -> \\b" },
+        { "a\tb", "{\"s\":\"a\\tb\"}", "0x09 -> \\t" },
+        { "a\nb", "{\"s\":\"a\\nb\"}", "0x0A -> \\n" },
+        { "a\fb", "{\"s\":\"a\\fb\"}", "0x0C -> \\f" },
+        { "a\rb", "{\"s\":\"a\\rb\"}", "0x0D -> \\r" },
+        /* 짧은 형태가 없는 것은 \u00XX 그대로다 — Python 과 같다. */
+        { "a\x0b" "b", "{\"s\":\"a\\u000bb\"}", "0x0B -> \\u000b" },
+        { "a\x1f" "b", "{\"s\":\"a\\u001fb\"}", "0x1F -> \\u001f" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof *cases; i++) {
+        mk_json_begin(&j, b, sizeof b);
+        mk_json_str(&j, "s", cases[i].in);
+        mk_json_end(&j);
+        CHECK_EQ(b, cases[i].want, cases[i].msg);
+    }
+
+    /* 0x7F 는 Python 도 이스케이프하지 않는다(ensure_ascii=False). */
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_str(&j, "s", "a\x7f" "b");
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"s\":\"a\x7f" "b\"}", "0x7F 는 그대로");
+}
+
 static void test_float_digits(void)
 {
     char b[64];
@@ -124,6 +155,54 @@ static void test_float_digits(void)
     CHECK_EQ(b, "{\"v\":0.00}", "0 으로 반올림된 음수는 부호를 버린다");
 }
 
+static void test_float_digits_are_clamped(void)
+{
+    /* 🔴 POW10 은 원소가 7개다. 클램프가 없으면 digits=10 이 배열 밖을
+     *    읽는다. 이 시험이 없으면 클램프를 지워도 아무것도 실패하지
+     *    않는다 — 실제로 리뷰에서 그렇게 지적받았다. */
+    char b[64];
+    MkJson j;
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_f32(&j, "v", 1.0f, 10);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"v\":1.000000}", "digits 10 은 6 으로 깎인다");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_f32(&j, "v", 1.0f, -3);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"v\":1}", "음수 digits 는 0 으로 깎인다");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_f32(&j, "v", 1.0f, 6);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"v\":1.000000}", "digits 6 은 그대로");
+}
+
+static void test_tiny_and_null_buffers(void)
+{
+    /* mk_json_begin 이 cap 을 따로 막지 않는 대신, put() 의 경계 검사가
+     * 같은 결과를 낸다는 것을 못박는다. 범위 밖 쓰기가 없어야 한다. */
+    MkJson j;
+    for (size_t cap = 0; cap <= 2u; cap++) {
+        char tiny[4];
+        memset(tiny, 0x5A, sizeof tiny);
+        mk_json_begin(&j, tiny, cap);
+        CHECK(mk_json_end(&j) < 0, "너무 작은 버퍼는 실패");
+        CHECK((unsigned char)tiny[3] == 0x5Au, "너무 작아도 범위 밖을 쓰지 않는다");
+    }
+
+    char exact[3];
+    mk_json_begin(&j, exact, sizeof exact);
+    CHECK(mk_json_end(&j) == 2, "cap 3 이면 {} 가 들어간다");
+    CHECK_EQ(exact, "{}", "cap 3 의 내용");
+
+    /* buf 가 NULL 이면 아무것도 쓰지 않는다 — 이 검사는 살아 있어야 한다. */
+    mk_json_begin(&j, NULL, 64u);
+    mk_json_str(&j, "s", "x");
+    CHECK(mk_json_end(&j) < 0, "NULL 버퍼는 실패");
+}
+
 static void test_float_non_finite_is_null(void)
 {
     /* 🔴 JSON 에 NaN 은 없다. 레코드 전체를 실패시키지 않는 이유는
@@ -158,7 +237,7 @@ static void test_float_non_finite_is_null(void)
 static void test_overflow_is_sticky_and_yields_nothing(void)
 {
     /* 🔴 잘린 JSON 을 흘려보내지 않는다. 잘린 줄은 호스트에서 파싱에
-     * 실패해 어차피 버려지는데, 무엇이 잘렸는지는 남지 않는다. */
+     *    실패해 어차피 버려지는데, 무엇이 잘렸는지는 남지 않는다. */
     char b[16];
     MkJson j;
     mk_json_begin(&j, b, sizeof b);
@@ -214,6 +293,18 @@ static void print_records(void)
     mk_json_end(&j);
     printf("id_escaped\t%s\n", b);
 
+    /* 짧은 이스케이프가 필요한 제어문자들. Python 과 바이트가 같아야 한다. */
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_u32(&j, "schema_ver", 3u);
+    mk_json_u32(&j, "seq", 0u);
+    mk_json_i64(&j, "t", 0LL);
+    mk_json_str(&j, "type", "id");
+    mk_json_str(&j, "device_id", "a\b\t\n\f\r\x0b" "z");
+    mk_json_str(&j, "fw", "0.1.0");
+    mk_json_str(&j, "board_rev", "2.0");
+    mk_json_end(&j);
+    printf("id_controls\t%s\n", b);
+
     /* 규격 §7.2 텔레메트리 — 실수·큰 정수가 다 들어간다 */
     mk_json_begin(&j, b, sizeof b);
     mk_json_u32(&j, "schema_ver", 3u);
@@ -259,7 +350,10 @@ int main(int argc, char **argv)
     test_scalars();
     test_int64_extremes();
     test_string_escaping();
+    test_short_escapes_match_python();
     test_float_digits();
+    test_float_digits_are_clamped();
+    test_tiny_and_null_buffers();
     test_float_non_finite_is_null();
     test_overflow_is_sticky_and_yields_nothing();
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
