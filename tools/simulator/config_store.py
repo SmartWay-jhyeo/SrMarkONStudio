@@ -418,14 +418,18 @@ def default_store(path: Path | None = None) -> ConfigStore:
                       choices=(1, 2, 4, 8, 16, 32, 64), label="PGA"),
         SimConfigItem("adc.drate", "adc", "enum", 60, 60,
                       choices=DRATE_CHOICES, unit="SPS", label="데이터율"),
+        # 🔴 라벨에 핀 번호를 쓰지 않는다 (설계 원칙 1, CLAUDE.md §3).
+        #    화면과 프로토콜은 `PD8` 이 아니라 `24V 전원` 을 쓴다. PCB 배선은
+        #    고정이므로 사용자가 핀을 알아야 할 이유가 없고, 알려 주면 임의로
+        #    바꿀 수 있다는 인상을 준다.
         SimConfigItem("pwr.24v", "pwr", "bool", False, False,
-                      label="24V 레일 (PD8)"),
+                      label="24V 전원"),
         SimConfigItem("pwr.14v9", "pwr", "bool", False, False,
-                      label="14.9V 레일 (PD9)"),
+                      label="14.9V 전원"),
         SimConfigItem(
             "pwr.5v", "pwr", "bool", True, True,
-            readonly=True, interlocked=True, label="5V 레일 (PD10)",
-            note="쿨링 팬이 5V 레일 직결이라 끌 수 없다 (데이터시트 §5.14)",
+            readonly=True, interlocked=True, label="5V 전원",
+            note="쿨링 팬이 5V 전원에 직결이라 끌 수 없다",
         ),
         SimConfigItem("pwr.seq_delay_ms", "pwr", "u16", 500, 500,
                       minimum=0, maximum=5000, unit="ms", label="레일 기동 간격"),

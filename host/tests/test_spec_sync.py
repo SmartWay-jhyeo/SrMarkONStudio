@@ -123,6 +123,38 @@ def test_all_ndjson_uses_the_compact_wire_format():
         )
 
 
+def test_no_pin_names_on_the_wire():
+    """🔴 설계 원칙 1 — 핀 번호를 노출하지 않는다 (CLAUDE.md §3).
+
+    화면과 프로토콜은 `PD8` 이 아니라 `24V 전원` 을 쓴다. PCB 배선은
+    고정이므로 사용자가 핀을 알아야 할 이유가 없고, 알려 주면 임의로 바꿀
+    수 있다는 인상을 준다 — 이 프로젝트는 핀 재배치 도구를 만들지 않는다.
+
+    실제로 설정 카탈로그의 전원 항목 라벨에 `(PD8)` 이 들어가 있었고,
+    GUI 를 띄워 보고서야 발견했다.
+    """
+    import re
+
+    from host.core.framing import build_command
+    from tools.simulator.config_store import default_store
+    from tools.simulator.device_sim import DeviceSim
+
+    sim = DeviceSim(default_store())
+    sim.feed(build_command("HB"))
+
+    lines: list[str] = []
+    lines += sim.feed(build_command("CFG", "LIST"))
+    lines += sim.feed(build_command("ID"))
+    lines += sim.feed(build_command("STAT"))
+    lines += sim.tick(1000)
+
+    # PA0~PE15 꼴. 단어 경계를 두어 `PGA` 같은 것이 걸리지 않게 한다.
+    pin = re.compile(r"\bP[A-K](?:1[0-5]|[0-9])\b")
+    for ln in lines:
+        found = pin.findall(ln)
+        assert not found, f"전선에 핀 이름이 실렸다 {found}: {ln[:120]}"
+
+
 def test_heartbeat_timeout_matches():
     """§6.2 의 3000 ms 와 시뮬레이터의 상수가 같아야 한다."""
     from tools.simulator import device_sim
