@@ -224,6 +224,17 @@ GNSS NMEA(UTC) + PPS(초 경계) → 공통 시간축
 - **GDB로 H723을 구울 때 `set remote memory-write-packet-size 256` + `fixed` 필수.** 없으면 512B 청크 경계에서 데이터가 손상되는데 `compare-sections`·`dump`로는 못 잡는다. 실제 동작으로 확인할 것.
 - **BMP 펌웨어는 `bmp_f103_v2/`만 쓴다.** MiniSTM32용 바이너리를 구우면 USB가 아예 열거되지 않는다.
 - **BMP가 만드는 두 번째 COM 포트로는 H723과 통신할 수 없다**(PB6/PB7 미연결). H723 디버그 VCP는 USART3(PB10/PB11)이다.
+- 🔴 **시리얼 포트를 DTR/RTS를 세운 채 열면 보드가 멈춘다** [실증 2026-08-14]. .NET `System.IO.Ports.SerialPort`는 열 때 둘 다 기본으로 세우므로 **읽기만 할 때도 쓰지 않는다.** pyserial을 쓰되 `s.dtr = False; s.rts = False`를 **열기 전에** 설정한다 — `serial.Serial("COM23", ...)` 한 줄 생성자는 열면서 세우므로 안 된다.
+
+  멈췄을 때는 굽지 말고 GDB로 리셋한다. BMP는 살아 있다:
+  ```
+  target extended-remote \\.\COM24
+  monitor swdp_scan
+  attach 1
+  monitor reset
+  detach
+  ```
+  실제로 이렇게 되살렸다. `seq`가 처음부터 다시 올라가는 것으로 재부팅을 확인한다.
 
 ## 5. 근거 기반 작업 — 추정 금지 (BLOCKING)
 
