@@ -111,14 +111,37 @@ class ConfigStore:
 
         value = _coerce(item, raw)
 
-        if item.interlocked and value != item.current:
+        if value == item.current:
+            return                          # 변화 없음 — 거부할 이유가 없다
+
+        if item.interlocked:
             raise ConfigError(Reason.INTERLOCK, item.note or key)
-        if item.readonly and value != item.current:
+        if item.readonly:
             raise ConfigError(Reason.READONLY, item.note or key)
 
-        if value != item.current:
-            item.current = value
-            self.dirty = True
+        previous = item.current
+        item.current = value
+        try:
+            self._check_combination(previous_load=_load_of(self, previous, item))
+        except ConfigError:
+            item.current = previous
+            raise
+
+        self.dirty = True
+
+    def _check_combination(self, *, previous_load: float) -> None:
+        """여러 항목이 얽힌 제약을 검사한다 (설계 §6.4).
+
+        🔴 부하를 늘리지 않는 변경은 검사하지 않는다. 이미 초과 상태에 빠진
+        저장소에서 채널을 끄거나 주기를 늘리는 것마저 막으면 사용자가 그
+        상태에서 빠져나올 방법이 없어진다.
+        """
+        from tools.simulator.capacity import check_capacity, required_sps
+
+        if required_sps(self) <= previous_load:
+            return                          # 부하가 늘지 않았다 — 통과
+
+        check_capacity(self)
 
     def reset(self) -> None:
         for item in self.items.values():
@@ -312,6 +335,19 @@ def _default_field_mask() -> int:
         if default:
             mask |= 1 << bit
     return mask
+
+
+def _load_of(store: "ConfigStore", previous_value: object,
+             item: SimConfigItem) -> float:
+    """변경 직전의 총 요구 샘플률을 계산한다."""
+    from tools.simulator.capacity import required_sps
+
+    current = item.current
+    item.current = previous_value
+    try:
+        return required_sps(store)
+    finally:
+        item.current = current
 
 
 def default_store(path: Path | None = None) -> ConfigStore:
