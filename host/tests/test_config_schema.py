@@ -162,12 +162,21 @@ def test_parse_catalog_requires_cfg_end():
     assert "cfg_end" in exc.value.detail
 
 
-def test_validate_rejects_non_ascii_string():
-    """🔴 사용자가 넣는 값은 ASCII 만 통과한다.
+def test_validate_rejects_command_injection_and_delimiters():
+    """🔴 값에 줄바꿈·구분자를 넣어 명령을 주입하는 공격을 막는다.
 
-    단위는 'degC'·'kPa' 처럼 쓴다. 보드 쪽 저장소(Task 6)와 같은 규칙이라
-    호스트에서 미리 걸러 왕복을 아낀다. 보드가 최종 권위인 것은 변함없다.
+    보드 쪽 저장소(Task 6)와 같은 규칙이다. 호스트에서 미리 걸러 왕복을
+    아끼되, 보드가 최종 권위인 것은 변함없다.
     """
+    schema = parse_catalog(CATALOG)
+    for payload in ("x\r\n$HB*0A", "a,b", "a*b", "a$b", "a\x00b", "a\x1bb"):
+        with pytest.raises(ConfigError) as exc:
+            schema.validate("ain0.unit", payload)
+        assert exc.value.reason == Reason.RANGE, repr(payload)
+
+
+def test_validate_rejects_non_ascii_string():
+    """단위는 'degC'·'kPa' 처럼 쓴다."""
     schema = parse_catalog(CATALOG)
     for bad in ("℃", "바", "Ω"):
         with pytest.raises(ConfigError) as exc:
