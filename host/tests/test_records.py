@@ -34,6 +34,39 @@ def test_parse_record_rejects_broken_json():
         parse_record('{"schema_ver":3,"seq":1,')
 
 
+def test_parse_record_rejects_non_integer_seq():
+    """펌웨어 직렬화 버그로 seq 가 문자열로 나올 수 있다.
+
+    통과시키면 나중에 observe() 안에서 TypeError 가 터져 수집 루프가
+    통째로 죽는다. ProtocolError 로 잡아야 그 줄만 버리고 계속할 수 있다.
+    """
+    with pytest.raises(ProtocolError):
+        parse_record('{"schema_ver":3,"seq":"1","t":0,"type":"ain"}')
+
+
+def test_parse_record_rejects_bool_seq():
+    """bool 은 int 의 서브클래스라 isinstance 만으로는 안 걸린다."""
+    with pytest.raises(ProtocolError):
+        parse_record('{"schema_ver":3,"seq":true,"t":0,"type":"ain"}')
+
+
+def test_parse_record_rejects_seq_outside_uint32():
+    """음수나 uint32 를 넘는 값은 모듈로 연산을 조용히 망가뜨린다."""
+    for bad in (-1, 1 << 32):
+        with pytest.raises(ProtocolError):
+            parse_record(f'{{"schema_ver":3,"seq":{bad},"t":0,"type":"ain"}}')
+
+
+def test_parse_record_rejects_non_integer_t():
+    with pytest.raises(ProtocolError):
+        parse_record('{"schema_ver":3,"seq":1,"t":"now","type":"ain"}')
+
+
+def test_parse_record_rejects_non_string_type():
+    with pytest.raises(ProtocolError):
+        parse_record('{"schema_ver":3,"seq":1,"t":0,"type":7}')
+
+
 def test_seq_tracker_counts_no_loss():
     t = SeqTracker()
     for s in (10, 11, 12):
@@ -71,6 +104,38 @@ def test_seq_tracker_reset_on_reconnect():
     t.observe(100)
     t.reset()
     assert t.observe(5) == 0           # 재연결 후 첫 값은 기준점일 뿐
+    assert t.missing_total == 0
+
+
+def test_seq_tracker_resyncs_after_unsignaled_board_reboot():
+    """🔴 보드가 재부팅해 seq 가 0 부터 다시 시작해도 측정이 살아난다.
+
+    이 방어가 없으면 _last=500 인 채로 모든 후속 값이 역순으로 분류되어
+    남은 세션 내내 유실이 0 으로 보고된다. 유실 측정이 존재 이유인 모듈에서
+    가장 나쁜 실패 방식이다.
+    """
+    from host.core.records import RESYNC_AFTER
+
+    t = SeqTracker()
+    t.observe(500)
+
+    for s in range(RESYNC_AFTER):          # 재부팅 후 0, 1, 2 …
+        assert t.observe(s) == 0
+    assert t.resync_count == 1
+
+    assert t.observe(RESYNC_AFTER) == 0            # 이어서 정상 전진
+    assert t.observe(RESYNC_AFTER + 2) == 1        # 유실 검출이 되살아났다
+    assert t.missing_total == 1
+
+
+def test_single_duplicate_does_not_trigger_resync():
+    """중복 하나로는 재동기화하지 않는다. 전진하면 카운터가 풀린다."""
+    t = SeqTracker()
+    t.observe(10)
+    t.observe(10)                          # 중복
+    t.observe(11)                          # 전진 → backward_run 리셋
+    t.observe(11)
+    assert t.resync_count == 0
     assert t.missing_total == 0
 
 
