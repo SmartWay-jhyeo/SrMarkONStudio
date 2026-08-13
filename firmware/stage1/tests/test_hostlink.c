@@ -177,6 +177,65 @@ static void test_id_emits_record_then_sack(void)
     }
 }
 
+static void test_id_does_not_claim_ok_when_record_does_not_fit(void)
+{
+    /* 🔴 레코드를 못 만들었는데 $SACK,ID,OK 를 보내면 호스트는 데이터를
+     *    받았다고 믿는다. 그것이 무응답보다 나쁘다 — 무응답은 타임아웃으로
+     *    드러나지만 거짓 OK 는 드러나지 않는다.
+     *
+     *    규격상 device_id 는 15자 이하이므로 지금은 닿지 않는 경로다.
+     *    그래도 시험을 두는 이유는, 나중에 레코드에 필드를 더할 때 이
+     *    계약이 조용히 깨지는 것을 막기 위해서다. */
+    static char huge[300];
+    MkHostlink h; Sink s;
+    memset(huge, 'D', sizeof huge - 1);
+    huge[sizeof huge - 1] = '\0';
+
+    sink_reset(&s);
+    mk_hostlink_init(&h, sink_emit, &s, huge, "0.1.0", "2.0");
+    feed(&h, "ID", 1000);
+    CHECK(s.n == 0, "레코드가 안 들어가면 SACK,ID,OK 도 보내지 않는다");
+}
+
+static void test_id_record_at_buffer_boundary(void)
+{
+    /* 줄바꿈과 NUL 자리까지 세는지 본다. 경계 바로 안쪽은 통과해야 한다.
+     * device_id 길이를 늘려가며 마지막으로 통과하는 지점을 찾는다. */
+    static char id[256];
+    MkHostlink h; Sink s;
+    int last_ok = -1;
+
+    for (int len = 1; len < 240; len++) {
+        memset(id, 'D', (size_t)len);
+        id[len] = '\0';
+        sink_reset(&s);
+        mk_hostlink_init(&h, sink_emit, &s, id, "0.1.0", "2.0");
+        feed(&h, "ID", 0);
+        if (s.n == 2) {
+            last_ok = len;
+        } else {
+            CHECK(s.n == 0, "안 되면 아무것도 안 보낸다 (반쪽 응답 금지)");
+            break;
+        }
+    }
+    CHECK(last_ok > 100, "규격상 device_id(15자)는 넉넉히 들어간다");
+}
+
+static void test_null_emit_does_not_crash(void)
+{
+    /* emit 이 없을 수 있다 — 아직 UART 가 준비되지 않은 부팅 초기 같은
+     * 상황이다. 그때 NULL 을 부르면 보드가 죽는다. */
+    MkHostlink h;
+    mk_hostlink_init(&h, NULL, NULL, "1", "0.1.0", "2.0");
+    feed(&h, "ID", 1000);
+    feed(&h, "NOPE", 1000);
+    mk_hostlink_feed(&h, "$ID*FF\r\n", 8, 1000);
+    mk_hostlink_tick(&h, 1000);
+    feed(&h, "HB", 1000);
+    CHECK(mk_hostlink_mode(&h, 1000) == MK_MODE_CONFIG,
+          "emit 이 NULL 이어도 죽지 않고 모드는 정상 동작한다");
+}
+
 static void test_id_works_in_run_mode(void)
 {
     /* $ID 는 CONFIG 전용이 아니다 (§4). 모드와 무관하게 답해야 한다. */
@@ -354,8 +413,10 @@ static const Step SCENARIO[] = {
     /* 여기부터는 1단계가 아직 구현하지 않은 명령이라 양쪽 응답이 다르다.
      * 표식을 찍어 대조 도구가 문자열 추측 없이 나눌 수 있게 한다. */
     { "MARK", "GAPS" },
-    { "AT",   "6000" },   { "FEED", "STAT" },
-    { "AT",   "6000" },   { "FEED", "CFG,LIST" },
+    /* 🔴 명령별로 짝지어 확인하려면 어느 명령의 응답인지 남아야 한다.
+     *    한 통에 모아 두면 STAT 응답과 CFG 응답이 뒤바뀌어도 통과한다. */
+    { "CMD",  "STAT" },     { "AT", "6000" },   { "FEED", "STAT" },
+    { "CMD",  "CFG,LIST" }, { "AT", "6000" },   { "FEED", "CFG,LIST" },
 };
 
 static void run_scenario(void)
@@ -374,8 +435,8 @@ static void run_scenario(void)
             for (const char *p = st->arg; *p; p++) now = now * 10 + (*p - '0');
             continue;
         }
-        if (strcmp(st->op, "MARK") == 0) {
-            printf("MARK\t%s\n", st->arg);
+        if (strcmp(st->op, "MARK") == 0 || strcmp(st->op, "CMD") == 0) {
+            printf("%s\t%s\n", st->op, st->arg);
             continue;
         }
         if (strcmp(st->op, "MODE") == 0) {
@@ -415,6 +476,9 @@ int main(int argc, char **argv)
     test_broken_hb_sends_no_sack();
     test_good_hb_sends_no_sack();
     test_id_emits_record_then_sack();
+    test_id_does_not_claim_ok_when_record_does_not_fit();
+    test_id_record_at_buffer_boundary();
+    test_null_emit_does_not_crash();
     test_id_works_in_run_mode();
     test_unimplemented_command_is_unsupported();
     test_unknown_verb_is_unsupported();

@@ -41,7 +41,13 @@ static void emit_sack_err(MkHostlink *h, const char *verb, const char *reason)
 }
 
 /* 규격 §5.2 — `$ID` 는 id 레코드 한 줄 뒤에 $SACK 를 보낸다. */
-static void emit_id_record(MkHostlink *h, int64_t now_ms)
+/* 반환: 내보냈으면 1, 못 내보냈으면 0.
+ *
+ * 🔴 호출 쪽이 이 값을 봐야 한다. 레코드를 못 만들었는데 $SACK,ID,OK 를
+ *    보내면 호스트는 데이터를 받았다고 믿는다. 그것이 아무 응답도 없는
+ *    것보다 나쁘다 — 무응답은 타임아웃으로 드러나지만, 거짓 OK 는
+ *    드러나지 않는다. */
+static int emit_id_record(MkHostlink *h, int64_t now_ms)
 {
     char body[MK_LINE_MAX + 8];
     MkJson j;
@@ -57,15 +63,18 @@ static void emit_id_record(MkHostlink *h, int64_t now_ms)
 
     int n = mk_json_end(&j);
     if (n <= 0 || h->emit == NULL) {
-        return;                          /* 잘린 JSON 은 내보내지 않는다 */
+        return 0;                        /* 잘린 JSON 은 내보내지 않는다 */
     }
-    /* NDJSON 은 줄바꿈으로 끝난다. 버퍼에 자리가 있는지 먼저 본다. */
-    if ((size_t)n + 2u >= sizeof body) {
-        return;
+    /* NDJSON 은 줄바꿈으로 끝난다. 버퍼에 자리가 있는지 먼저 본다.
+     * 🔴 `n + 2` 는 줄바꿈과 NUL 이다. 이 검사가 없으면 n 이 버퍼 끝에
+     *    닿았을 때 body[n], body[n+1] 이 범위를 벗어난다. */
+    if ((size_t)n + 2u > sizeof body) {
+        return 0;
     }
     body[n]     = '\n';
     body[n + 1] = '\0';
     h->emit(h->ctx, body, (size_t)n + 1u);
+    return 1;
 }
 
 void mk_hostlink_init(MkHostlink *h, MkEmit emit, void *ctx,
@@ -116,8 +125,11 @@ void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
     }
 
     if (strcmp(c.verb, "ID") == 0) {
-        emit_id_record(h, now_ms);
-        emit_sack_ok(h, "ID");
+        /* 레코드를 못 내보냈으면 OK 라고 하지 않는다. 거짓 OK 는 무응답보다
+         * 나쁘다 — 호스트가 데이터를 받았다고 믿고 다음으로 넘어간다. */
+        if (emit_id_record(h, now_ms)) {
+            emit_sack_ok(h, "ID");
+        }
         return;
     }
 

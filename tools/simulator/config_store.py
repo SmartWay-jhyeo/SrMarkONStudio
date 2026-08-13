@@ -39,6 +39,14 @@ FIELD_BITS: tuple[tuple[int, str, bool, str], ...] = (
     (9, "connector_id", True, "커넥터 번호"),
 )
 
+#: 전선 위 JSON 형식. 🔴 보드가 쓰는 것과 같아야 한다.
+#:
+#: 기본값(`", "`, `": "`)은 공백을 넣어 줄을 10% 넘게 늘린다. 대역폭 계산
+#: (docs/measurements/2026-08-14_link_budget.md)에서 기본 설정이 115200 의
+#: 94.8% 를 쓰고 있으므로 그 공백은 공짜가 아니다. 게다가 펌웨어의 mk_json
+#: 은 압축 형식만 낸다 — 두 형식이 섞이면 두 구현을 바이트로 대조할 수 없다.
+_COMPACT = (",", ":")
+
 #: ADS1256 지원 DRATE (SPS)
 DRATE_CHOICES = (2, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1000, 2000, 3750, 7500)
 
@@ -266,7 +274,7 @@ class ConfigStore:
                 rec["note"] = item.note
             if item.choices:
                 rec["choices"] = list(item.choices)
-            yield json.dumps(rec, ensure_ascii=False)
+            yield json.dumps(rec, ensure_ascii=False, separators=_COMPACT)
 
         for bit, name, default, label in FIELD_BITS:
             yield json.dumps(
@@ -281,6 +289,7 @@ class ConfigStore:
                     "label": label,
                 },
                 ensure_ascii=False,
+                separators=_COMPACT,
             )
 
         yield json.dumps(
@@ -290,7 +299,9 @@ class ConfigStore:
                 "t": 0,
                 "type": "cfg_end",
                 "count": len(self.items) + len(FIELD_BITS),
-            }
+            },
+            ensure_ascii=False,
+            separators=_COMPACT,
         )
 
 

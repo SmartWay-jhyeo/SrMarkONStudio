@@ -47,8 +47,8 @@ STEPS: list[tuple[str, str | None]] = [
     ("AT", "6000"), ("FEED", "NOPE"),
     # 여기부터는 1단계가 아직 구현하지 않은 명령이라 양쪽 응답이 다르다.
     ("MARK", "GAPS"),
-    ("AT", "6000"), ("FEED", "STAT"),
-    ("AT", "6000"), ("FEED", "CFG,LIST"),
+    ("CMD", "STAT"), ("AT", "6000"), ("FEED", "STAT"),
+    ("CMD", "CFG,LIST"), ("AT", "6000"), ("FEED", "CFG,LIST"),
 ]
 
 # 🔴 1단계 펌웨어가 아직 구현하지 않은 명령. 시뮬레이터는 전체 프로토콜을
@@ -57,10 +57,29 @@ STEPS: list[tuple[str, str | None]] = [
 #    건너뛰지 않는다. **양쪽이 각각 무엇을 내야 하는지** 를 못박는다 —
 #    어느 한쪽이라도 달라지면 실패한다. 2단계에서 $CFG 를 구현하면 이
 #    항목을 지워야 하고, 지우지 않으면 시험이 알려 준다.
-STAGE1_GAPS: dict[str, tuple[str, str]] = {
-    #  입력       : (C 가 내야 할 응답, Python 이 내야 할 응답의 성격)
-    "STAT": ("$SACK,STAT,ERR,UNSUPPORTED", "stat 레코드 + SACK,STAT,OK"),
-    "CFG,LIST": ("$SACK,CFG,ERR,UNSUPPORTED", "cfg_* 여러 줄 + SACK,CFG,OK"),
+#    각 항목: 입력 -> (C 가 내야 할 줄들, Python 이 내야 할 줄들의 조건)
+#
+#    🔴 명령별로 **짝지어** 확인한다. 응답을 한 통에 모아 놓고 "어딘가에
+#       있다" 로 확인하면, STAT 의 응답과 CFG 의 응답이 뒤바뀌어도 통과한다.
+#       처음에 그렇게 짜 두었다가 리뷰에서 지적받았다.
+#    C 쪽 기대값은 payload 로 적는다 — 체크섬을 손으로 적으면 어긋난다.
+#    Python 쪽은 응답에 반드시 들어 있어야 할 조각들로 적는다.
+#
+#    🔴 조각을 압축 형식(`"type":"stat"`)으로 적는 것이 요점 중 하나다.
+#       처음 대조했을 때 시뮬레이터의 카탈로그만 공백 있는 JSON 을 내고
+#       있었고, 이 대조가 그것을 잡았다. 대역폭이 94.8% 인 링크에서 공백은
+#       공짜가 아니고, 펌웨어의 mk_json 은 압축 형식만 낸다.
+STAGE1_GAPS: dict[str, tuple[list[str], str, list[str]]] = {
+    "STAT": (
+        ["SACK,STAT,ERR,UNSUPPORTED"],
+        "stat 레코드 1줄 + $SACK,STAT,OK",
+        ['"type":"stat"', "SACK,STAT,OK"],
+    ),
+    "CFG,LIST": (
+        ["SACK,CFG,ERR,UNSUPPORTED"],
+        "cfg_item·cfg_field 여러 줄 + cfg_end + $SACK,CFG,OK",
+        ['"type":"cfg_item"', '"type":"cfg_end"', "SACK,CFG,OK"],
+    ),
 }
 
 
@@ -75,6 +94,33 @@ def _unescape(s: str) -> str:
 def _norm(line: str) -> str:
     """줄끝을 떼어 비교한다. 시뮬레이터는 떼고 돌려주고 C 는 붙여서 낸다."""
     return line.rstrip("\r\n")
+
+
+def _payload_of(line: str) -> str:
+    """`$<payload>*<CS>` 에서 payload 만. `$` 줄이 아니면 그대로 돌려준다."""
+    if not line.startswith("$"):
+        return line
+    star = line.rfind("*")
+    return line[1:star] if star > 0 else line[1:]
+
+
+def _group_by_command(rows: list[tuple[str, str]], side: str) -> dict[str, list[str]]:
+    """`CMD` 표식으로 구간을 나눠 명령별 응답 줄들을 모은다.
+
+    🔴 응답을 한 통에 모아 두면 "어딘가에 있다" 로만 확인하게 되고, 두
+       명령의 응답이 뒤바뀌어도 통과한다.
+    """
+    out: dict[str, list[str]] = {}
+    current: str | None = None
+    for kind, value in rows:
+        if kind == "CMD":
+            current = value
+            out.setdefault(current, [])
+        elif kind == "OUT" and current is not None:
+            out[current].append(value)
+    if not out:
+        raise SystemExit(f"{side} 쪽 기록에 CMD 표식이 없다 — 시나리오가 어긋났다")
+    return out
 
 
 def _find_binary() -> Path:
@@ -109,8 +155,8 @@ def _py_trace() -> list[tuple[str, str]]:
             #    대조 도구에서만 내부 시각을 직접 옮긴다.
             sim._now_ms = int(arg)
             continue
-        if op == "MARK":
-            rows.append(("MARK", arg))
+        if op in ("MARK", "CMD"):
+            rows.append((op, arg))
             continue
         if op == "MODE":
             rows.append(("MODE", "CONFIG" if sim.mode == Mode.CONFIG else "RUN"))
@@ -155,21 +201,36 @@ def main() -> int:
         else:
             print(f"  ok   {a[0]:4} {a[1]}")
 
-    # 1단계 공백 — 양쪽이 각각 무엇을 내는지 못박는다.
+    # 1단계 공백 — 양쪽이 각각 무엇을 내는지 명령별로 짝지어 못박는다.
     print("\n  -- 1단계가 아직 구현하지 않은 명령 --")
-    c_gap_lines = [v for k, v in c_gap if k == "OUT"]
-    for cmd, (want_c, note_py) in STAGE1_GAPS.items():
-        hit = [ln for ln in c_gap_lines if ln.startswith(want_c)]
-        if not hit:
-            mismatches.append(f"  {cmd}: C 가 {want_c!r} 를 내지 않았다 "
-                              f"(낸 것: {c_gap_lines})")
-            continue
-        print(f"  ok   {cmd:9} C={want_c}  py={note_py}")
+    c_by_cmd = _group_by_command(c_gap, "C")
+    py_by_cmd = _group_by_command(py_gap, "py")
 
-    py_gap_lines = [v for k, v in py_gap if k == "OUT"]
-    if not py_gap_lines:
-        mismatches.append("  Python 쪽이 아직 구현하지 않은 명령에 아무 응답도 안 했다 "
-                          "— 시뮬레이터가 퇴화했나?")
+    for cmd, (want_c, note_py, py_needles) in STAGE1_GAPS.items():
+        got_c_raw = c_by_cmd.get(cmd)
+        # payload 만 비교한다. 체크섬은 프레이밍 계층(crosscheck.py)이 이미
+        # 지키고 있고, 여기서 손으로 적으면 어긋난다.
+        got_c = ([_payload_of(ln) for ln in got_c_raw]
+                 if got_c_raw is not None else None)
+        if got_c is None:
+            mismatches.append(f"  {cmd}: C 쪽 기록에 이 명령 구간이 없다")
+        elif got_c != want_c:
+            mismatches.append(f"  {cmd}: C 응답이 다르다\n"
+                              f"    기대: {want_c}\n    받음: {got_c}")
+
+        got_py = py_by_cmd.get(cmd)
+        if got_py is None:
+            mismatches.append(f"  {cmd}: Python 쪽 기록에 이 명령 구간이 없다")
+        else:
+            joined = "\n".join(got_py)
+            missing = [n for n in py_needles if n not in joined]
+            if missing:
+                mismatches.append(
+                    f"  {cmd}: Python 응답에 있어야 할 것이 없다 {missing}\n"
+                    f"    받음 {len(got_py)}줄: {got_py[:2]}...")
+
+        if got_c == want_c and got_py is not None and not missing:
+            print(f"  ok   {cmd:9} C={want_c[0]}  py={note_py}")
 
     if mismatches:
         print("\n두 구현이 어긋난다:", file=sys.stderr)

@@ -81,6 +81,48 @@ def test_schema_ver_matches():
     )
 
 
+def test_all_ndjson_uses_the_compact_wire_format():
+    """🔴 전선 위 JSON 은 한 형식이어야 한다.
+
+    json.dumps 기본값은 `", "` 와 `": "` 로 공백을 넣어 줄을 12% 늘린다.
+    대역폭 계산(docs/measurements/2026-08-14_link_budget.md)에서 기본 설정이
+    115200 의 94.8% 를 쓰고 있으므로 그 공백은 공짜가 아니다.
+
+    더 중요한 것은 펌웨어의 `mk_json` 이 압축 형식만 낸다는 점이다. 두
+    형식이 섞이면 C 와 Python 을 바이트로 대조할 수 없고, 대조가 없으면
+    보드와 호스트가 갈려도 실기기에서만 드러난다.
+
+    실제로 카탈로그(`cfg_item`·`cfg_field`·`cfg_end`)만 공백 형식이었고,
+    C 쪽 대조 도구가 그것을 잡았다.
+    """
+    import json
+
+    from host.core.framing import build_command
+    from tools.simulator.config_store import default_store
+    from tools.simulator.device_sim import DeviceSim
+
+    sim = DeviceSim(default_store())
+    sim.feed(build_command("HB"))
+
+    lines: list[str] = []
+    lines += sim.feed(build_command("CFG", "LIST"))
+    lines += sim.feed(build_command("ID"))
+    lines += sim.feed(build_command("STAT"))
+    lines += sim.feed(build_command("CFG", "GET", "tx.period_ms"))
+    lines += [ln for ln in sim.tick(1000) if ln.startswith("{")]
+
+    records = [ln for ln in lines if ln.startswith("{")]
+    assert len(records) > 50, "레코드를 충분히 모으지 못했다"
+
+    for ln in records:
+        want = json.dumps(json.loads(ln), ensure_ascii=False,
+                          separators=(",", ":"))
+        assert ln == want, (
+            f"압축 형식이 아니다 — 공백이 들어 있다.\n"
+            f"  받음: {ln[:120]}\n  기대: {want[:120]}"
+        )
+
+
 def test_heartbeat_timeout_matches():
     """§6.2 의 3000 ms 와 시뮬레이터의 상수가 같아야 한다."""
     from tools.simulator import device_sim
