@@ -28,6 +28,12 @@ build/
 *.su
 *.lst
 
+# 호스트 시험 산출물 (MSVC). firmware/stage1/tests 에서 cl.exe 가 만든다.
+*.exe
+*.obj
+*.pdb
+*.ilk
+
 # ── Python ───────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
