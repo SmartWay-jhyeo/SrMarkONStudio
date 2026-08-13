@@ -104,3 +104,31 @@ def test_parse_line_rejects_empty_payload():
     """'$*00' 은 체크섬이 맞아도 verb 가 없어 의미가 없다."""
     with pytest.raises(MalformedLineError):
         parse_line("$*00\r\n")
+
+
+def test_build_line_refuses_control_characters():
+    """🔴 한 번 호출 = 한 줄. 프레이밍 계층이 이를 보장한다."""
+    for bad in ("a\rb", "a\nb", "a\x00b", "a\x1bb", "a\x7fb"):
+        with pytest.raises(MalformedLineError):
+            build_line(bad)
+
+
+def test_build_command_blocks_injection_payload():
+    """🔴 실제 주입 페이로드가 조립 단계에서 막힌다.
+
+    이 값을 허용하면 조립 결과가 세 줄로 쪼개지고 가운데 줄
+    '$HB*0A' 가 체크섬까지 유효한 하트비트가 되어 CONFIG 모드를 연다.
+
+    설정 계층 검증만으로는 못 막는다 — 악성 값은 보드의 검증에 닿기 전에
+    줄이 쪼개지므로 보드가 그것을 하나의 값으로 본 적이 없다.
+    """
+    with pytest.raises(MalformedLineError):
+        build_command("CFG", "SET", "dev.id", "x\r\n$HB*0A\r\n")
+
+
+def test_build_line_still_accepts_normal_payloads():
+    """방어가 정상 경로를 막지 않는다."""
+    assert build_line("HB") == "$HB*0A\r\n"
+    assert build_command("CFG", "SET", "ain0.unit", "degC").startswith(
+        "$CFG,SET,ain0.unit,degC*"
+    )
