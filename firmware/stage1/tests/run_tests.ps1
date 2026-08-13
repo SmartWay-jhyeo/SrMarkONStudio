@@ -13,16 +13,28 @@ $vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\
 if (-not (Test-Path $vcvars)) { throw "vcvars64.bat 없음: $vcvars" }
 Set-Location $PSScriptRoot
 
+# 시험 묶음: 실행 파일 이름 -> 소스들
+$suites = @(
+    @{ exe = "test_framing.exe"; src = "test_framing.c ..\app\mk_framing.c" },
+    @{ exe = "test_json.exe";    src = "test_json.c ..\app\mk_json.c" }
+)
+
 # 빌드와 실행을 나눈다. 한 사슬로 묶으면 컴파일 실패와 시험 실패가 같은
 # 종료 코드로 나와, 무엇이 깨졌는지 종료 코드만 보고는 알 수 없다.
-$build = "chcp 65001 >nul && `"$vcvars`" >nul 2>&1 && " +
-         "cl /nologo /W4 /WX /utf-8 /std:c11 /Fe:test_framing.exe " +
-         "test_framing.c ..\app\mk_framing.c >nul"
-cmd /c $build
-if ($LASTEXITCODE -ne 0) {
-    Write-Output "빌드 실패 (exit $LASTEXITCODE) — 시험을 돌리지 않는다."
-    exit 2
+foreach ($s in $suites) {
+    $build = "chcp 65001 >nul && `"$vcvars`" >nul 2>&1 && " +
+             "cl /nologo /W4 /WX /utf-8 /std:c11 /Fe:$($s.exe) $($s.src) >nul"
+    cmd /c $build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "빌드 실패: $($s.exe) (exit $LASTEXITCODE) — 시험을 돌리지 않는다."
+        exit 2
+    }
 }
 
-cmd /c "chcp 65001 >nul && .\test_framing.exe"
-exit $LASTEXITCODE
+$failed = 0
+foreach ($s in $suites) {
+    cmd /c "chcp 65001 >nul && .\$($s.exe)"
+    if ($LASTEXITCODE -ne 0) { $failed = 1 }
+    Write-Output ""
+}
+exit $failed

@@ -2,12 +2,18 @@
 CC ?= gcc
 CFLAGS = -std=c11 -Wall -Wextra -Werror -O1 -g
 
-all: test_framing
+TESTS = test_framing test_json
+
+all: $(TESTS)
 	./test_framing
+	./test_json
 
 test_framing: test_framing.c ../app/mk_framing.c
 	$(CC) $(CFLAGS) -o $@ $^
 
+test_json: test_json.c ../app/mk_json.c
+	$(CC) $(CFLAGS) -o $@ $^
+
 clean:
-	rm -f test_framing test_framing.exe
+	rm -f $(TESTS) $(addsuffix .exe,$(TESTS))
 .PHONY: all clean
