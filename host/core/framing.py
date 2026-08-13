@@ -7,6 +7,12 @@
 from dataclasses import dataclass
 
 from host.core.errors import ChecksumError, MalformedLineError
+from host.core.limits import (
+    MAX_ARG_BYTES,
+    MAX_ARGS,
+    MAX_PAYLOAD_BYTES,
+    MAX_VERB_BYTES,
+)
 
 LINE_END = "\r\n"
 
@@ -64,8 +70,41 @@ def build_line(payload: str) -> str:
 
 
 def build_command(verb: str, *args: str) -> str:
-    """verb 와 인자를 쉼표로 이어 완성된 줄로 만든다."""
+    """verb 와 인자를 쉼표로 이어 완성된 줄로 만든다.
+
+    🔴 보드가 파싱할 수 있는 상한(§3.1)을 **보내기 전에** 확인한다.
+
+    보드는 고정폭 버퍼로 파싱하고, 넘치는 입력은 잘라 담지 않고 **조용히
+    버린다.** verb 가 버퍼에 담기지 않으면 `$SACK,<verb>,...` 를 만들 재료가
+    없기 때문이다. 그래서 상한을 넘겨 보내면 오류도 거부도 아닌 **침묵**이
+    돌아오고, 원인은 프로토콜 어디에도 드러나지 않는다.
+
+    제어문자 검사와 같은 자리에 두는 이유도 같다 — 여기서 막아야 모든
+    호출자가 보호된다.
+
+    Raises:
+        MalformedLineError: 상한을 넘거나 제어문자가 있는 경우.
+    """
+    if len(args) > MAX_ARGS:
+        raise MalformedLineError(
+            f"인자는 최대 {MAX_ARGS}개, 받음 {len(args)}개: {args!r}"
+        )
+    vlen = len(verb.encode("utf-8"))
+    if not verb or vlen > MAX_VERB_BYTES:
+        raise MalformedLineError(f"verb 는 1~{MAX_VERB_BYTES} 바이트, 받음 {vlen}")
+    for i, arg in enumerate(args):
+        alen = len(arg.encode("utf-8"))
+        if alen > MAX_ARG_BYTES:
+            raise MalformedLineError(
+                f"인자 {i} 는 최대 {MAX_ARG_BYTES} 바이트, 받음 {alen}: {arg!r}"
+            )
+
     payload = ",".join((verb, *args))
+    plen = len(payload.encode("utf-8"))
+    if plen > MAX_PAYLOAD_BYTES:
+        raise MalformedLineError(
+            f"payload 는 최대 {MAX_PAYLOAD_BYTES} 바이트, 받음 {plen}"
+        )
     return build_line(payload)
 
 
