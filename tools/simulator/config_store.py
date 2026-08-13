@@ -1,0 +1,338 @@
+"""시뮬레이터 설정 저장소 — 펌웨어 config_store 모듈의 기준 구현.
+
+여기서 정한 항목·타입·범위·기본값이 그대로 펌웨어로 간다.
+검증 순서는 규격 §5 를 따른다: 키 존재 → 읽기 전용 → 타입·범위 → 인터록.
+
+인터록을 범위 검사 뒤에 두는 이유: 값 자체가 틀린 것과 안전 정책상 거부된
+것은 사용자에게 다른 메시지여야 한다.
+"""
+
+import json
+import math
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from host.core.errors import ConfigError, Reason
+from host.core.records import SCHEMA_VER
+
+#: NDJSON 필드 마스크 비트 정의 (규격 §7.2)
+FIELD_BITS: tuple[tuple[int, str, bool, str], ...] = (
+    (0, "device_id", False, "보드 식별자"),
+    (1, "time_source", True, "시간 소스"),
+    (2, "time_quality", False, "시간 품질"),
+    (3, "raw", True, "ADS1256 원시 카운트"),
+    (4, "ma", True, "전류 (mA)"),
+    (5, "value", True, "물리량 환산"),
+    (6, "unit", False, "단위"),
+    (7, "status", True, "채널 상태"),
+    (8, "capture_counter", False, "획득 카운터"),
+    (9, "connector_id", True, "커넥터 번호"),
+)
+
+#: ADS1256 지원 DRATE (SPS)
+DRATE_CHOICES = (2, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1000, 2000, 3750, 7500)
+
+_TRUE_WORDS = ("true", "1", "on", "yes")
+_FALSE_WORDS = ("false", "0", "off", "no")
+_INT_TYPES = ("u8", "u16", "u32")
+
+
+@dataclass
+class SimConfigItem:
+    key: str
+    group: str
+    vtype: str
+    default: object
+    current: object
+    minimum: float | None = None
+    maximum: float | None = None
+    unit: str = ""
+    readonly: bool = False
+    label: str = ""
+    note: str = ""
+    choices: tuple = ()
+    #: 참이면 값 변경 시도를 INTERLOCK 으로 거부한다 (현재값과 같으면 통과)
+    interlocked: bool = False
+
+
+class ConfigStore:
+    """설정 항목 보관, 검증, 영속."""
+
+    def __init__(self, items: list[SimConfigItem], path: Path | None = None):
+        self.items: dict[str, SimConfigItem] = {i.key: i for i in items}
+        self.path = path
+        self.dirty = False
+        self.load_failed = False
+        #: load() 가 거부하고 기본값을 유지한 키들
+        self.rejected_keys: list[str] = []
+
+    # ------------------------------------------------------------------ 조회
+    def get(self, key: str) -> object:
+        item = self.items.get(key)
+        if item is None:
+            raise ConfigError(Reason.UNKNOWN_KEY, key)
+        return item.current
+
+    @property
+    def field_mask(self) -> int:
+        return int(self.items["tx.fields"].current)
+
+    # ------------------------------------------------------------------ 변경
+    def set(self, key: str, raw: str) -> None:
+        """문자열 값을 검증해 반영한다. 규격 §5 의 순서를 지킨다."""
+        item = self.items.get(key)
+        if item is None:
+            raise ConfigError(Reason.UNKNOWN_KEY, key)
+
+        value = _coerce(item, raw)
+
+        if item.interlocked and value != item.current:
+            raise ConfigError(Reason.INTERLOCK, item.note or key)
+        if item.readonly and value != item.current:
+            raise ConfigError(Reason.READONLY, item.note or key)
+
+        if value != item.current:
+            item.current = value
+            self.dirty = True
+
+    def reset(self) -> None:
+        for item in self.items.values():
+            item.current = item.default
+        self.dirty = True
+
+    # ---------------------------------------------------------------- 영속화
+    def save(self) -> None:
+        if self.path is None:
+            self.dirty = False
+            return
+        payload = {k: i.current for k, i in self.items.items()}
+        self.path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        self.dirty = False
+
+    def load(self) -> None:
+        """저장된 값을 복원한다. 파일이 없거나 깨졌으면 기본값을 유지한다.
+
+        🔴 **저장값도 전부 재검증한다.** 저장 매체는 신뢰 대상이 아니다 —
+        Flash 가 손상되거나 사람이 파일을 손으로 고칠 수 있다. 검증 없이
+        대입하면 `pwr.5v = false` 같은 인터록 항목이나 범위 밖 값이
+        그대로 살아난다. 그러면 쿨링 팬이 꺼진 채로 부팅한다.
+
+        복원할 수 없는 항목은 **기본값을 유지하고** `rejected_keys` 에
+        남긴다. 부팅을 막지는 않는다 — 설정 하나가 깨졌다고 보드가 죽으면
+        복구 수단까지 사라진다.
+        """
+        self.load_failed = False
+        self.rejected_keys = []
+        if self.path is None or not self.path.exists():
+            return
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("객체가 아님")
+        except (json.JSONDecodeError, ValueError, OSError):
+            self.load_failed = True
+            self.reset()
+            self.dirty = False
+            return
+
+        for key, value in payload.items():
+            item = self.items.get(key)
+            if item is None:
+                continue                         # 모르는 키는 조용히 무시
+
+            if item.interlocked or item.readonly:
+                # 정책·안전 항목은 저장값을 신뢰하지 않는다. 기본값을 쓴다.
+                if value != item.default:
+                    self.rejected_keys.append(key)
+                continue
+
+            try:
+                item.current = _coerce(item, _to_raw(value))
+            except ConfigError:
+                self.rejected_keys.append(key)   # 기본값 유지
+
+        self.dirty = False
+
+    # ---------------------------------------------------------------- 카탈로그
+    def catalog_lines(self) -> Iterator[str]:
+        """$CFG,LIST 응답 줄들을 생성한다 (규격 §7.3)."""
+        for item in self.items.values():
+            rec: dict = {
+                "schema_ver": SCHEMA_VER,
+                "seq": 0,
+                "t": 0,
+                "type": "cfg_item",
+                "key": item.key,
+                "grp": item.group,
+                "vtype": item.vtype,
+                "default": item.default,
+                "cur": item.current,
+                "ro": item.readonly,
+                "label": item.label,
+            }
+            if item.minimum is not None:
+                rec["min"] = item.minimum
+            if item.maximum is not None:
+                rec["max"] = item.maximum
+            if item.unit:
+                rec["unit"] = item.unit
+            if item.note:
+                rec["note"] = item.note
+            if item.choices:
+                rec["choices"] = list(item.choices)
+            yield json.dumps(rec, ensure_ascii=False)
+
+        for bit, name, default, label in FIELD_BITS:
+            yield json.dumps(
+                {
+                    "schema_ver": SCHEMA_VER,
+                    "seq": 0,
+                    "t": 0,
+                    "type": "cfg_field",
+                    "bit": bit,
+                    "name": name,
+                    "default": default,
+                    "label": label,
+                },
+                ensure_ascii=False,
+            )
+
+        yield json.dumps(
+            {
+                "schema_ver": SCHEMA_VER,
+                "seq": 0,
+                "t": 0,
+                "type": "cfg_end",
+                "count": len(self.items) + len(FIELD_BITS),
+            }
+        )
+
+
+def _to_raw(value: object) -> str:
+    """JSON 에서 읽은 값을 _coerce 가 받는 문자열 형태로 되돌린다.
+
+    저장은 JSON 네이티브 타입으로 하지만 검증 경로는 하나뿐이어야 한다.
+    파일에서 온 값과 $CFG,SET 으로 온 값이 서로 다른 검사를 받으면,
+    한쪽만 막히는 구멍이 반드시 생긴다.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _coerce(item: SimConfigItem, raw: str) -> object:
+    """문자열을 vtype 에 맞게 변환하고 범위를 검사한다."""
+    if item.vtype == "bool":
+        low = raw.strip().lower()
+        if low in _TRUE_WORDS:
+            return True
+        if low in _FALSE_WORDS:
+            return False
+        raise ConfigError(Reason.RANGE, f"불리언이 아님: {raw!r}")
+
+    if item.vtype == "str":
+        # 🔴 사용자가 넣는 값은 ASCII 만 통과시킨다.
+        # 단위는 'degC'·'kPa'·'LPM' 처럼 쓴다. '℃' 같은 기호를 허용하면
+        # 펌웨어의 고정폭 버퍼(str<=7 은 바이트 기준이다)와 호스트의 문자
+        # 기준 길이가 어긋나고, 저장 파일 인코딩까지 따라 흔들린다.
+        if not raw.isascii():
+            bad = [c for c in raw if not c.isascii()]
+            raise ConfigError(Reason.RANGE, f"ASCII 만 허용: {bad!r}")
+        if item.maximum is not None and len(raw) > int(item.maximum):
+            raise ConfigError(
+                Reason.RANGE, f"최대 {int(item.maximum)}자, 받음 {len(raw)}자"
+            )
+        return raw
+
+    if item.vtype == "enum":
+        try:
+            value: object = int(raw)
+        except ValueError:
+            value = raw
+        if value not in item.choices:
+            raise ConfigError(Reason.RANGE, f"허용값 {list(item.choices)}")
+        return value
+
+    if item.vtype in _INT_TYPES:
+        try:
+            value = int(raw, 0)
+        except ValueError:
+            raise ConfigError(Reason.RANGE, f"정수가 아님: {raw!r}") from None
+    elif item.vtype == "f32":
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ConfigError(Reason.RANGE, f"실수가 아님: {raw!r}") from None
+        # 🔴 float("nan") / float("inf") 는 파싱을 통과한다. 그리고 NaN 은
+        # 아래 범위 검사도 뚫는다 — nan < min 도 nan > max 도 False 이기
+        # 때문이다. 여기서 막지 않으면 변환식에 NaN 이 들어가 모든 측정값이
+        # 조용히 NaN 이 된다.
+        if not math.isfinite(value):
+            raise ConfigError(Reason.RANGE, f"유한한 실수가 아님: {raw!r}")
+    else:
+        raise ConfigError(Reason.RANGE, f"알 수 없는 타입: {item.vtype}")
+
+    if item.minimum is not None and value < item.minimum:
+        raise ConfigError(Reason.RANGE, f"최소 {item.minimum}, 받음 {value}")
+    if item.maximum is not None and value > item.maximum:
+        raise ConfigError(Reason.RANGE, f"최대 {item.maximum}, 받음 {value}")
+    return value
+
+
+def _default_field_mask() -> int:
+    mask = 0
+    for bit, _name, default, _label in FIELD_BITS:
+        if default:
+            mask |= 1 << bit
+    return mask
+
+
+def default_store(path: Path | None = None) -> ConfigStore:
+    """스펙 §6.1 의 설정 항목 전체를 담은 저장소를 만든다."""
+    mask = _default_field_mask()
+    items: list[SimConfigItem] = [
+        SimConfigItem("dev.id", "dev", "str", "1", "1", maximum=15,
+                      label="장치 ID"),
+        SimConfigItem("tx.fields", "tx", "u32", mask, mask,
+                      minimum=0, maximum=0xFFFFFFFF, label="NDJSON 필드 마스크"),
+        SimConfigItem("tx.period_ms", "tx", "u16", 100, 100,
+                      minimum=10, maximum=10000, unit="ms", label="전송 주기"),
+        SimConfigItem("tx.float_digits", "tx", "u8", 4, 4,
+                      minimum=2, maximum=6, label="실수 자릿수"),
+        SimConfigItem("adc.pga", "adc", "enum", 1, 1,
+                      choices=(1, 2, 4, 8, 16, 32, 64), label="PGA"),
+        SimConfigItem("adc.drate", "adc", "enum", 60, 60,
+                      choices=DRATE_CHOICES, unit="SPS", label="데이터율"),
+        SimConfigItem("pwr.24v", "pwr", "bool", False, False,
+                      label="24V 레일 (PD8)"),
+        SimConfigItem("pwr.14v9", "pwr", "bool", False, False,
+                      label="14.9V 레일 (PD9)"),
+        SimConfigItem(
+            "pwr.5v", "pwr", "bool", True, True,
+            readonly=True, interlocked=True, label="5V 레일 (PD10)",
+            note="쿨링 팬이 5V 레일 직결이라 끌 수 없다 (데이터시트 §5.14)",
+        ),
+        SimConfigItem("pwr.seq_delay_ms", "pwr", "u16", 500, 500,
+                      minimum=0, maximum=5000, unit="ms", label="레일 기동 간격"),
+    ]
+
+    for ch in range(7):
+        connector = ch + 3                       # AIN0 → J3
+        items += [
+            SimConfigItem(f"ain{ch}.enabled", "ain", "bool",
+                          ch == 0, ch == 0, label=f"J{connector} 사용"),
+            SimConfigItem(f"ain{ch}.period_ms", "ain", "u16", 100, 100,
+                          minimum=10, maximum=60000, unit="ms",
+                          label=f"J{connector} 수집 주기"),
+            SimConfigItem(f"ain{ch}.zero", "ain", "f32", 4.0, 4.0,
+                          unit="mA", label=f"J{connector} 영점"),
+            SimConfigItem(f"ain{ch}.scale", "ain", "f32", 1.0, 1.0,
+                          label=f"J{connector} 스케일"),
+            SimConfigItem(f"ain{ch}.unit", "ain", "str", "", "",
+                          maximum=7, label=f"J{connector} 단위"),
+        ]
+
+    return ConfigStore(items, path)
