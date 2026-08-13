@@ -92,12 +92,21 @@ class CommandQueue:
             return set(self._pending)
 
     # ---------------------------------------------------------- 워커 쪽
-    def drain_pending(self) -> list[Command]:
-        """보낼 명령을 꺼내 간다. 꺼낸 것은 다시 나오지 않는다."""
+    def drain_pending(self, limit: int | None = None) -> list[Command]:
+        """보낼 명령을 꺼내 간다. 꺼낸 것은 다시 나오지 않는다.
+
+        🔴 `limit` 을 주면 그만큼만 꺼내고 **나머지는 큐에 그대로 둔다.**
+
+        꺼낸 뒤 되돌리는 방식은 쓰지 않는다. 되돌리는 사이에 같은 태그로
+        새 값이 들어오면 오래된 값이 새 값을 덮어쓰고, 되돌리려고 만든
+        가짜 결과가 진짜 결과에 섞인다. 애초에 안 꺼내는 편이 안전하다.
+        """
         with self._lock:
-            cmds = list(self._pending.values())
-            self._in_flight.update(self._pending)
-            self._pending.clear()
+            keys = list(self._pending)
+            if limit is not None:
+                keys = keys[:limit]
+            cmds = [self._pending.pop(k) for k in keys]
+            self._in_flight.update(k for k in keys)
         return cmds
 
     def complete(self, tag: str, *, ok: bool, reason: str | None = None,

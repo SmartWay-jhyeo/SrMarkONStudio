@@ -126,3 +126,26 @@ def test_merging_only_affects_commands_not_yet_sent():
     assert q.in_flight == 2                 # 보낸 것 + 대기 중인 것
     q.complete(first, ok=True)
     assert q.take_results()[0].tag == "spin"
+
+
+def test_drain_respects_a_limit_and_leaves_the_rest_queued():
+    """🔴 상한을 넘긴 것은 큐에 남는다 — 꺼낸 뒤 되돌리지 않는다.
+
+    되돌리는 사이에 같은 태그로 새 값이 들어오면 오래된 값이 새 값을
+    덮어쓴다. 애초에 안 꺼내는 편이 안전하다.
+    """
+    q = CommandQueue()
+    for i in range(7):
+        q.submit("STAT", tag=f"t{i}")
+    assert len(q.drain_pending(limit=3)) == 3
+    assert len(q.pending_tags) == 4
+    assert len(q.drain_pending(limit=3)) == 3
+    assert len(q.drain_pending(limit=3)) == 1
+    assert q.drain_pending(limit=3) == []
+
+
+def test_drain_without_a_limit_takes_everything():
+    q = CommandQueue()
+    for i in range(5):
+        q.submit("STAT", tag=f"t{i}")
+    assert len(q.drain_pending()) == 5
