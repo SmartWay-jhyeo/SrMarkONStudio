@@ -1516,13 +1516,1046 @@ git commit -F <메시지 파일>
 
 ---
 
-## Task 3~5 (개요)
+## Task 3: 명령 디스패치와 모드 — 프레이밍과 JSON 이 만나는 곳
 
-Task 2 검토 후 상세화한다.
+**Files:**
+- Create: `firmware/stage1/app/mk_hostlink.h`, `firmware/stage1/app/mk_hostlink.c`
+- Create: `firmware/stage1/tests/test_hostlink.c`, `firmware/stage1/tests/crosscheck_hostlink.py`
+- Modify: `firmware/stage1/tests/run_tests.ps1` — 시험 세 벌을 돌린다
+- Modify: `firmware/stage1/tests/Makefile` — 같은 이유
+
+**Interfaces:**
+- Consumes: `mk_framing`(Task 1)의 `mk_build_line`·`mk_parse_line`·`MkCommand`,
+  `mk_json`(Task 2)의 조립기 전체
+- Produces:
+  - `typedef enum { MK_MODE_RUN = 0, MK_MODE_CONFIG } MkMode;`
+  - `typedef void (*MkEmit)(void *ctx, const char *line, size_t len);`
+  - `void mk_hostlink_init(MkHostlink *h, MkEmit emit, void *ctx, const char *device_id, const char *fw, const char *board_rev)`
+  - `void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len, int64_t now_ms)`
+  - `void mk_hostlink_tick(MkHostlink *h, int64_t now_ms)`
+  - `MkMode mk_hostlink_mode(const MkHostlink *h, int64_t now_ms)`
+
+**HAL 을 include 하지 않는다.** 시각도 UART 도 바깥에서 넣어 준다. 그래서
+3초 타임아웃을 실기기에서 3초 기다리지 않고 시험한다.
+
+### 이 태스크가 지켜야 하는 것
+
+1. **🔴 규격 §6.3 — 체크섬을 통과하고 verb 가 정확히 `HB` 일 때만 하트비트
+   시각을 갱신한다.** 앞부분이 `$HB` 처럼 보이는 것만으로는 안 된다.
+
+   규격이 이 항목에 **회귀 시험을 필수로** 지정했다. 기존 Q2 펌웨어
+   (`host_link.c:183-187`)가 줄이 `$HB*` 로 시작하는지만 보고 체크섬 검증
+   **전에** 갱신했기 때문이다. Q2 에서 `$HB` 는 단순 생존 신호라 무해했지만,
+   이 프로토콜에서 `$HB` 는 **설정 변경을 여는 열쇠**다. 그대로 옮기면
+   잡음으로 깨진 프레임이 설정 변경을 계속 허용한다.
+
+2. **모드 경계는 `>` 이지 `>=` 가 아니다.** 정확히 3000 ms 가 지난 순간은
+   아직 CONFIG 다. 시뮬레이터(`device_sim.mode`)와 같은 경계를 써야 한다 —
+   한쪽이 CONFIG 로 보는 순간에 다른 쪽이 RUN 이면 설정 변경이 간헐적으로
+   거부되고, 그 원인은 재현되지 않는다.
+
+3. **`$HB` 에는 어느 방향으로도 `$SACK` 를 보내지 않는다.** 체크섬이 틀려도
+   마찬가지다(규격 §3 의 예외, §6.1). `$HB` 는 1 Hz 로 오므로 링크가 나빠지면
+   초당 하나씩 쌓여 이미 나쁜 링크를 더 나쁘게 만든다. 알릴 내용은 어차피
+   3000 ms 뒤 RUN 전환으로 전달된다.
+
+4. **구현하지 않은 명령에는 `ERR,UNSUPPORTED` 를 보낸다.** 조용히 버리면
+   죽은 링크와 구분되지 않는다 — 호스트가 보는 것은 어느 쪽이든 "응답 없음"
+   이고, 사용자가 보는 것은 "눌렀는데 아무 일도 안 일어남" 이다. 1단계는
+   `$HB` 와 `$ID` 만 답한다.
+
+5. **보낼 수 없는 줄은 내보내지 않는다.** 체크섬이 틀린 줄에서 건져낸 verb 에
+   제어문자가 있으면 `mk_build_line` 이 거부하므로 아무것도 나가지 않아야
+   한다. 반쪽짜리 줄보다 침묵이 낫다. (호스트 시뮬레이터에서 같은 결함을
+   실제로 겪었다.)
+
+- [ ] **Step 1: 실패하는 시험 작성**
+
+`firmware/stage1/tests/test_hostlink.c`:
+```c
+/* mk_hostlink 단위 시험. 보드도 크로스 툴체인도 필요 없다.
+ *
+ * 시각을 손으로 돌려가며 3초 타임아웃과 1 Hz 하트비트를 시험한다.
+ * 실기기에서 3초를 기다릴 필요가 없다는 것이 HAL 비의존의 값이다. */
+#include <stdio.h>
+#include <string.h>
+#include "../app/mk_hostlink.h"
+#include "../app/mk_framing.h"
+
+static int failures = 0;
+
+#define CHECK(cond, msg) do {                                   \
+    if (!(cond)) { printf("  FAIL %s\n", msg); failures++; }    \
+    else         { printf("  ok   %s\n", msg); }                \
+} while (0)
+
+#define CHECK_EQ(got, want, msg) do {                                       \
+    if (strcmp((got), (want)) != 0) {                                       \
+        printf("  FAIL %s\n        got  %s\n        want %s\n",             \
+               msg, (got), (want));                                         \
+        failures++;                                                         \
+    } else { printf("  ok   %s\n", msg); }                                  \
+} while (0)
+
+/* ---- 내보낸 줄을 모으는 통 -------------------------------------------- */
+
+#define CAP_LINES 16
+typedef struct {
+    char lines[CAP_LINES][256];
+    int  n;
+} Sink;
+
+static void sink_emit(void *ctx, const char *line, size_t len)
+{
+    Sink *s = (Sink *)ctx;
+    if (s->n >= CAP_LINES) {
+        return;
+    }
+    size_t n = len < sizeof s->lines[0] - 1u ? len : sizeof s->lines[0] - 1u;
+    memcpy(s->lines[s->n], line, n);
+    s->lines[s->n][n] = '\0';
+    s->n++;
+}
+
+static void sink_reset(Sink *s) { s->n = 0; }
+
+static void setup(MkHostlink *h, Sink *s)
+{
+    sink_reset(s);
+    mk_hostlink_init(h, sink_emit, s, "1", "0.1.0", "2.0");
+}
+
+/* 완성된 줄을 만들어 feed 한다. */
+static void feed(MkHostlink *h, const char *payload, int64_t now_ms)
+{
+    char line[256];
+    int n = mk_build_line(line, sizeof line, payload);
+    mk_hostlink_feed(h, line, (size_t)n, now_ms);
+}
+
+/* 🔴 기대하는 줄의 체크섬을 손으로 적지 않는다. Task 1 에서 손으로 적은
+ *    체크섬 때문에 시험이 길이 검사에 닿지도 못하고 헛돌았다. */
+static const char *expect_line(const char *payload)
+{
+    static char buf[256];
+    mk_build_line(buf, sizeof buf, payload);
+    return buf;
+}
+
+/* ---- 모드 ------------------------------------------------------------- */
+
+static void test_boots_in_run(void)
+{
+    /* 규격 §6.2 — 부팅 직후 기본값은 RUN 이다. USB 를 감지할 수 없으므로
+     * 케이블이 아니라 하트비트로 판정한다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    CHECK(mk_hostlink_mode(&h, 0) == MK_MODE_RUN, "부팅 직후는 RUN");
+    CHECK(mk_hostlink_mode(&h, 999999) == MK_MODE_RUN, "HB 없이 오래 있어도 RUN");
+}
+
+static void test_hb_opens_config(void)
+{
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    feed(&h, "HB", 5000);
+    CHECK(mk_hostlink_mode(&h, 5000) == MK_MODE_CONFIG, "HB 받으면 CONFIG");
+}
+
+static void test_mode_boundary_is_strictly_greater(void)
+{
+    /* 🔴 `>` 이지 `>=` 가 아니다. 시뮬레이터(device_sim.mode)와 같은
+     *    경계를 써야 한다 — 한쪽이 CONFIG 로 보는 순간에 다른 쪽이 RUN
+     *    이면 설정 변경이 간헐적으로 거부되고 재현되지 않는다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    feed(&h, "HB", 1000);
+    CHECK(mk_hostlink_mode(&h, 1000 + 2999) == MK_MODE_CONFIG, "2999 ms 는 CONFIG");
+    CHECK(mk_hostlink_mode(&h, 1000 + 3000) == MK_MODE_CONFIG, "정확히 3000 ms 도 CONFIG");
+    CHECK(mk_hostlink_mode(&h, 1000 + 3001) == MK_MODE_RUN,    "3001 ms 부터 RUN");
+}
+
+static void test_hb_refreshes(void)
+{
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "HB", 3500);
+    CHECK(mk_hostlink_mode(&h, 6000) == MK_MODE_CONFIG, "새 HB 가 시각을 민다");
+    CHECK(mk_hostlink_mode(&h, 6501) == MK_MODE_RUN,    "그 뒤로 다시 3초");
+}
+
+/* ---- §6.3 회귀 시험 (규격이 필수로 지정) ------------------------------ */
+
+static void test_broken_hb_does_not_open_config(void)
+{
+    /* 🔴 규격 §6.3 이 회귀 시험을 필수로 둔 지점이다.
+     *
+     *    기존 Q2 펌웨어(host_link.c:183-187)는 줄이 `$HB*` 로 시작하는지만
+     *    보고 체크섬 검증 **전에** 시각을 갱신했다. Q2 에서 $HB 는 단순
+     *    생존 신호라 무해했지만, 여기서 $HB 는 설정 변경을 여는 열쇠다.
+     *    그대로 옮기면 잡음으로 깨진 프레임이 설정 변경을 계속 허용한다. */
+    MkHostlink h; Sink s;
+
+    setup(&h, &s);
+    mk_hostlink_feed(&h, "$HB*FF\r\n", 8, 1000);
+    CHECK(mk_hostlink_mode(&h, 1000) == MK_MODE_RUN, "체크섬 틀린 HB 는 CONFIG 를 열지 않는다");
+
+    setup(&h, &s);
+    mk_hostlink_feed(&h, "$HB*xx\r\n", 8, 1000);
+    CHECK(mk_hostlink_mode(&h, 1000) == MK_MODE_RUN, "16진수 아닌 체크섬도 마찬가지");
+
+    setup(&h, &s);
+    mk_hostlink_feed(&h, "$HBQ*0A\r\n", 9, 1000);
+    CHECK(mk_hostlink_mode(&h, 1000) == MK_MODE_RUN, "$HB 로 시작만 해서는 안 된다");
+
+    /* 이미 CONFIG 인 상태에서 깨진 HB 가 와도 시각이 밀리지 않아야 한다. */
+    setup(&h, &s);
+    feed(&h, "HB", 1000);
+    mk_hostlink_feed(&h, "$HB*FF\r\n", 8, 3500);
+    CHECK(mk_hostlink_mode(&h, 4001) == MK_MODE_RUN, "깨진 HB 는 시각을 밀지 않는다");
+}
+
+static void test_broken_hb_sends_no_sack(void)
+{
+    /* 규격 §3·§6.1 — $HB 는 체크섬이 틀려도 SACK 를 보내지 않는다.
+     * 1 Hz 로 오므로 링크가 나빠지면 초당 하나씩 쌓인다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    mk_hostlink_feed(&h, "$HB*FF\r\n", 8, 1000);
+    CHECK(s.n == 0, "깨진 HB 에 아무것도 안 보낸다");
+}
+
+static void test_good_hb_sends_no_sack(void)
+{
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    feed(&h, "HB", 1000);
+    CHECK(s.n == 0, "정상 HB 에도 SACK 를 보내지 않는다");
+}
+
+/* ---- 명령 ------------------------------------------------------------- */
+
+static void test_id_emits_record_then_sack(void)
+{
+    /* 규격 §5.2 — 데이터를 돌려주는 명령은 $SACK 앞에 NDJSON 을 먼저 보낸다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    feed(&h, "ID", 1772200855875LL);
+    CHECK(s.n == 2, "id 는 두 줄을 낸다");
+    if (s.n == 2) {
+        CHECK_EQ(s.lines[0],
+                 "{\"schema_ver\":3,\"seq\":0,\"t\":1772200855875,\"type\":\"id\","
+                 "\"device_id\":\"1\",\"fw\":\"0.1.0\",\"board_rev\":\"2.0\"}\n",
+                 "첫 줄은 id 레코드");
+        CHECK_EQ(s.lines[1], expect_line("SACK,ID,OK"), "둘째 줄은 SACK");
+    }
+}
+
+static void test_id_works_in_run_mode(void)
+{
+    /* $ID 는 CONFIG 전용이 아니다 (§4). 모드와 무관하게 답해야 한다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    CHECK(mk_hostlink_mode(&h, 0) == MK_MODE_RUN, "지금 RUN 이다");
+    feed(&h, "ID", 0);
+    CHECK(s.n == 2, "RUN 에서도 $ID 는 답한다");
+}
+
+static void test_unimplemented_command_is_unsupported(void)
+{
+    /* 규격 §5 — 조용히 버리면 죽은 링크와 구분되지 않는다.
+     * 1단계 펌웨어는 $CFG 도 $STAT 도 아직 없다. */
+    MkHostlink h; Sink s;
+
+    setup(&h, &s);
+    feed(&h, "CFG,LIST", 1000);
+    CHECK(s.n == 1, "한 줄만 낸다");
+    if (s.n == 1) {
+        CHECK_EQ(s.lines[0], expect_line("SACK,CFG,ERR,UNSUPPORTED"), "CFG 는 UNSUPPORTED");
+    }
+
+    setup(&h, &s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 1, "STAT 도 한 줄");
+    if (s.n == 1) {
+        CHECK_EQ(s.lines[0], expect_line("SACK,STAT,ERR,UNSUPPORTED"), "STAT 는 UNSUPPORTED");
+    }
+}
+
+static void test_unknown_verb_is_unsupported(void)
+{
+    /* 오타든 미구현이든 호스트가 할 일은 같다 (§5). */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    feed(&h, "NOPE", 1000);
+    CHECK(s.n == 1, "모르는 verb 에도 답한다");
+}
+
+static void test_bad_checksum_on_real_command_gets_sack(void)
+{
+    /* $HB 가 아닌 명령은 체크섬이 틀리면 SACK 를 보낸다 (§3).
+     * verb 를 읽을 수 있어야 보낼 수 있다 — Task 1 에서 파서 순서를
+     * 바꾼 이유가 이것이다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    mk_hostlink_feed(&h, "$ID*FF\r\n", 8, 1000);
+    CHECK(s.n == 1, "체크섬 틀린 $ID 에 한 줄 답한다");
+    if (s.n == 1) {
+        CHECK_EQ(s.lines[0], expect_line("SACK,ID,ERR,CHECKSUM"), "ERR,CHECKSUM");
+    }
+}
+
+static void test_malformed_line_is_silent(void)
+{
+    /* verb 를 읽을 수 없으면 조용히 버린다 (§3). SACK 에 실을 것이 없다. */
+    MkHostlink h; Sink s;
+
+    setup(&h, &s);
+    mk_hostlink_feed(&h, "garbage\r\n", 9, 1000);
+    CHECK(s.n == 0, "$ 없는 줄은 조용히 버린다");
+
+    setup(&h, &s);
+    mk_hostlink_feed(&h, "$*00\r\n", 6, 1000);
+    CHECK(s.n == 0, "빈 payload 도 조용히");
+
+    setup(&h, &s);
+    mk_hostlink_feed(&h, "", 0, 1000);
+    CHECK(s.n == 0, "빈 입력도 조용히");
+}
+
+static void test_unsendable_verb_is_dropped(void)
+{
+    /* 🔴 체크섬이 틀린 줄에서 건져낸 verb 를 그대로 SACK 에 실으면,
+     *    그 verb 에 제어문자가 있을 때 줄이 쪼개진다. mk_build_line 이
+     *    거부하므로 아무것도 나가지 않아야 한다 — 반쪽짜리 줄보다 낫다.
+     *    (호스트 쪽 시뮬레이터에서 같은 결함을 실제로 겪었다.) */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    /* payload 안에 탭이 든 줄. 체크섬은 틀리게 둔다. */
+    mk_hostlink_feed(&h, "$A\tB*00\r\n", 9, 1000);
+    CHECK(s.n == 0, "보낼 수 없는 verb 는 아무것도 내보내지 않는다");
+}
+
+/* ---- 하트비트 송신 ---------------------------------------------------- */
+
+static void test_tick_emits_hb_at_1hz(void)
+{
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+
+    mk_hostlink_tick(&h, 0);
+    CHECK(s.n == 0, "부팅 직후에는 안 보낸다");
+
+    mk_hostlink_tick(&h, 999);
+    CHECK(s.n == 0, "999 ms 도 아직");
+
+    mk_hostlink_tick(&h, 1000);
+    CHECK(s.n == 1, "1000 ms 에 한 번");
+    if (s.n >= 1) {
+        CHECK_EQ(s.lines[0], expect_line("HB"), "보내는 줄은 $HB*0A");
+    }
+
+    mk_hostlink_tick(&h, 1500);
+    CHECK(s.n == 1, "주기 안에서는 더 안 보낸다");
+
+    mk_hostlink_tick(&h, 2000);
+    CHECK(s.n == 2, "다음 주기에 한 번 더");
+}
+
+static void test_tick_does_not_depend_on_mode(void)
+{
+    /* 보드 -> 호스트 $HB 는 "보드가 살아 있다" 는 뜻이다 (§6.1).
+     * RUN 이든 CONFIG 든 계속 보내야 호스트가 연결을 판단할 수 있다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    CHECK(mk_hostlink_mode(&h, 1000) == MK_MODE_RUN, "RUN 이다");
+    mk_hostlink_tick(&h, 1000);
+    CHECK(s.n == 1, "RUN 에서도 HB 를 보낸다");
+}
+
+/* ---- Python 시뮬레이터와 대조할 시나리오 ------------------------------ */
+
+/* 🔴 이 대조가 이 계층에서 가장 값지다. GUI 는 시뮬레이터를 상대로 개발되고
+ *    실물 보드에서 돌아야 한다. 둘이 같은 입력에 다르게 답하면, GUI 는
+ *    시뮬레이터에서 멀쩡하다가 실기기에서만 틀어진다.
+ *
+ *    각 줄: 지시\t인자...
+ *      FEED  <payload>      완성된 줄을 만들어 넣는다
+ *      RAW   <이스케이프>   깨진 줄을 그대로 넣는다
+ *      TICK                 주기 처리
+ *      AT    <ms>           시각을 옮긴다
+ *      MODE                 지금 모드를 찍는다
+ *    출력: OUT\t<줄> 또는 MODE\t<CONFIG|RUN> */
+
+static size_t unescape_line(const char *s, char *out, size_t cap)
+{
+    size_t w = 0u;
+    for (const char *p = s; *p && w + 1u < cap; p++) {
+        if (p[0] == '\\' && p[1] == 'r') { out[w++] = '\r'; p++; }
+        else if (p[0] == '\\' && p[1] == 'n') { out[w++] = '\n'; p++; }
+        else if (p[0] == '\\' && p[1] == 't') { out[w++] = '\t'; p++; }
+        else out[w++] = *p;
+    }
+    out[w] = '\0';
+    return w;
+}
+
+static void print_escaped(const char *s, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        if      (s[i] == '\r') printf("\\r");
+        else if (s[i] == '\n') printf("\\n");
+        else if (s[i] == '\t') printf("\\t");
+        else                   putchar(s[i]);
+    }
+}
+
+typedef struct { const char *op; const char *arg; } Step;
+
+static const Step SCENARIO[] = {
+    { "AT",   "0" },      { "MODE", NULL },        /* 부팅 직후 */
+    { "AT",   "2000" },   { "FEED", "HB" },   { "MODE", NULL },
+    { "AT",   "5000" },   { "MODE", NULL },        /* 정확히 3000 ms */
+    { "AT",   "5001" },   { "MODE", NULL },        /* 그 다음 ms */
+    { "AT",   "6000" },   { "FEED", "HB" },   { "MODE", NULL },
+    { "AT",   "6000" },   { "FEED", "ID" },
+    { "AT",   "6000" },   { "RAW",  "$HB*FF\\r\\n" },  { "MODE", NULL },
+    { "AT",   "6000" },   { "RAW",  "$ID*FF\\r\\n" },
+    { "AT",   "6000" },   { "RAW",  "garbage\\r\\n" },
+    { "AT",   "6000" },   { "RAW",  "$*00\\r\\n" },
+    { "AT",   "6000" },   { "RAW",  "$A\\tB*00\\r\\n" },
+    { "AT",   "6000" },   { "FEED", "NOPE" },
+    /* 여기부터는 1단계가 아직 구현하지 않은 명령이라 양쪽 응답이 다르다.
+     * 표식을 찍어 대조 도구가 문자열 추측 없이 나눌 수 있게 한다. */
+    { "MARK", "GAPS" },
+    { "AT",   "6000" },   { "FEED", "STAT" },
+    { "AT",   "6000" },   { "FEED", "CFG,LIST" },
+};
+
+static void run_scenario(void)
+{
+    MkHostlink h;
+    Sink s;
+    int64_t now = 0;
+
+    setup(&h, &s);
+    for (size_t i = 0; i < sizeof SCENARIO / sizeof *SCENARIO; i++) {
+        const Step *st = &SCENARIO[i];
+        sink_reset(&s);
+
+        if (strcmp(st->op, "AT") == 0) {
+            now = 0;
+            for (const char *p = st->arg; *p; p++) now = now * 10 + (*p - '0');
+            continue;
+        }
+        if (strcmp(st->op, "MARK") == 0) {
+            printf("MARK\t%s\n", st->arg);
+            continue;
+        }
+        if (strcmp(st->op, "MODE") == 0) {
+            printf("MODE\t%s\n",
+                   mk_hostlink_mode(&h, now) == MK_MODE_CONFIG ? "CONFIG" : "RUN");
+            continue;
+        }
+        if (strcmp(st->op, "TICK") == 0) {
+            mk_hostlink_tick(&h, now);
+        } else if (strcmp(st->op, "FEED") == 0) {
+            feed(&h, st->arg, now);
+        } else if (strcmp(st->op, "RAW") == 0) {
+            char line[256];
+            size_t n = unescape_line(st->arg, line, sizeof line);
+            mk_hostlink_feed(&h, line, n, now);
+        }
+        for (int k = 0; k < s.n; k++) {
+            printf("OUT\t");
+            print_escaped(s.lines[k], strlen(s.lines[k]));
+            putchar('\n');
+        }
+    }
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "--scenario") == 0) {
+        run_scenario();
+        return 0;
+    }
+    printf("mk_hostlink\n");
+    test_boots_in_run();
+    test_hb_opens_config();
+    test_mode_boundary_is_strictly_greater();
+    test_hb_refreshes();
+    test_broken_hb_does_not_open_config();
+    test_broken_hb_sends_no_sack();
+    test_good_hb_sends_no_sack();
+    test_id_emits_record_then_sack();
+    test_id_works_in_run_mode();
+    test_unimplemented_command_is_unsupported();
+    test_unknown_verb_is_unsupported();
+    test_bad_checksum_on_real_command_gets_sack();
+    test_malformed_line_is_silent();
+    test_unsendable_verb_is_dropped();
+    test_tick_emits_hb_at_1hz();
+    test_tick_does_not_depend_on_mode();
+    printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
+    return failures ? 1 : 0;
+}
+```
+
+- [ ] **Step 2: 시험 실행해 실패 확인**
+
+Run: `powershell -File firmware/stage1/tests/run_tests.ps1`
+Expected: FAIL — `mk_hostlink.h: 그런 파일이 없습니다`
+
+- [ ] **Step 3: `mk_hostlink.h` 작성**
+
+`firmware/stage1/app/mk_hostlink.h`:
+```c
+/* MarkON 호스트 링크 — 명령 디스패치와 모드 판정. HAL 비의존.
+ *
+ * 🔴 이 파일은 stm32h7xx_hal.h 를 include 하지 않는다. 시각도 UART 도
+ *    바깥에서 넣어 준다. 그래서 호스트에서 시계를 손으로 돌려가며
+ *    3초 타임아웃 같은 것을 시험할 수 있다.
+ *
+ * mk_framing 과 mk_json 이 여기서 처음 만난다.
+ *
+ * 규격: protocol/specification.md §4·§5·§6
+ */
+#ifndef MK_HOSTLINK_H
+#define MK_HOSTLINK_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "mk_framing.h"
+
+/* 규격 §6.2 */
+#define MK_HB_TIMEOUT_MS   3000
+#define MK_HB_INTERVAL_MS  1000
+
+typedef enum {
+    MK_MODE_RUN = 0,     /* 부팅 직후 기본값 */
+    MK_MODE_CONFIG
+} MkMode;
+
+/* 한 줄을 내보낸다. 줄끝(`\r\n` 또는 `\n`)은 이미 붙어 있다. */
+typedef void (*MkEmit)(void *ctx, const char *line, size_t len);
+
+typedef struct {
+    MkEmit      emit;
+    void       *ctx;
+
+    const char *device_id;
+    const char *fw;
+    const char *board_rev;
+
+    int64_t     last_hb_rx_ms;   /* 검증을 통과한 $HB 를 마지막으로 받은 시각 */
+    int64_t     last_hb_tx_ms;   /* 우리가 $HB 를 마지막으로 보낸 시각 */
+    int         hb_seen;         /* 아직 한 번도 못 받았으면 0 */
+
+    char        out[MK_LINE_MAX + 8];
+} MkHostlink;
+
+void mk_hostlink_init(MkHostlink *h, MkEmit emit, void *ctx,
+                      const char *device_id, const char *fw,
+                      const char *board_rev);
+
+/* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
+ *
+ * 🔴 규격 §6.3 — **체크섬을 통과하고 verb 가 정확히 `HB` 일 때만**
+ *    하트비트 시각을 갱신한다. 앞부분이 `$HB` 처럼 보이는 것만으로는
+ *    안 된다. 기존 Q2 펌웨어(host_link.c:183-187)가 체크섬 검증 전에
+ *    갱신했는데, 그 프로토콜에서 $HB 는 단순 생존 신호였다. 여기서
+ *    $HB 는 **설정 변경을 여는 열쇠**라 그대로 옮기면 잡음으로 깨진
+ *    프레임이 설정 변경을 계속 허용한다. */
+void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
+                      int64_t now_ms);
+
+/* 주기 처리. 1 Hz 로 우리 쪽 $HB 를 내보낸다. */
+void mk_hostlink_tick(MkHostlink *h, int64_t now_ms);
+
+/* 지금 모드. 시각을 넣는 이유는 마지막 수신 이후 흐른 시간으로 판정하기
+ * 때문이다 — 상태를 저장하지 않으므로 tick 을 놓쳐도 답이 바뀌지 않는다. */
+MkMode mk_hostlink_mode(const MkHostlink *h, int64_t now_ms);
+
+#endif /* MK_HOSTLINK_H */
+```
+
+- [ ] **Step 4: `mk_hostlink.c` 작성**
+
+`firmware/stage1/app/mk_hostlink.c`:
+```c
+#include "mk_hostlink.h"
+
+#include "mk_json.h"
+
+#include <string.h>
+
+static void emit_line(MkHostlink *h, const char *payload)
+{
+    int n = mk_build_line(h->out, sizeof h->out, payload);
+    if (n > 0 && h->emit != NULL) {
+        h->emit(h->ctx, h->out, (size_t)n);
+    }
+    /* n < 0 이면 보내지 않는다. 반쪽짜리 줄을 흘리지 않는다. */
+}
+
+static void emit_sack_ok(MkHostlink *h, const char *verb)
+{
+    char payload[MK_LINE_MAX + 1];
+    size_t n = 0;
+    const char *p;
+
+    for (p = "SACK,"; *p && n + 1u < sizeof payload; p++) payload[n++] = *p;
+    for (p = verb;    *p && n + 1u < sizeof payload; p++) payload[n++] = *p;
+    for (p = ",OK";   *p && n + 1u < sizeof payload; p++) payload[n++] = *p;
+    payload[n] = '\0';
+    emit_line(h, payload);
+}
+
+static void emit_sack_err(MkHostlink *h, const char *verb, const char *reason)
+{
+    char payload[MK_LINE_MAX + 1];
+    size_t n = 0;
+    const char *p;
+
+    for (p = "SACK,"; *p && n + 1u < sizeof payload; p++) payload[n++] = *p;
+    for (p = verb;    *p && n + 1u < sizeof payload; p++) payload[n++] = *p;
+    for (p = ",ERR,"; *p && n + 1u < sizeof payload; p++) payload[n++] = *p;
+    for (p = reason;  *p && n + 1u < sizeof payload; p++) payload[n++] = *p;
+    payload[n] = '\0';
+    emit_line(h, payload);
+}
+
+/* 규격 §5.2 — `$ID` 는 id 레코드 한 줄 뒤에 $SACK 를 보낸다. */
+static void emit_id_record(MkHostlink *h, int64_t now_ms)
+{
+    char body[MK_LINE_MAX + 8];
+    MkJson j;
+
+    mk_json_begin(&j, body, sizeof body);
+    mk_json_u32(&j, "schema_ver", 3u);
+    mk_json_u32(&j, "seq", 0u);          /* §5.2 — 명령 응답의 seq 는 항상 0 */
+    mk_json_i64(&j, "t", now_ms);
+    mk_json_str(&j, "type", "id");
+    mk_json_str(&j, "device_id", h->device_id);
+    mk_json_str(&j, "fw", h->fw);
+    mk_json_str(&j, "board_rev", h->board_rev);
+
+    int n = mk_json_end(&j);
+    if (n <= 0 || h->emit == NULL) {
+        return;                          /* 잘린 JSON 은 내보내지 않는다 */
+    }
+    /* NDJSON 은 줄바꿈으로 끝난다. 버퍼에 자리가 있는지 먼저 본다. */
+    if ((size_t)n + 2u >= sizeof body) {
+        return;
+    }
+    body[n]     = '\n';
+    body[n + 1] = '\0';
+    h->emit(h->ctx, body, (size_t)n + 1u);
+}
+
+void mk_hostlink_init(MkHostlink *h, MkEmit emit, void *ctx,
+                      const char *device_id, const char *fw,
+                      const char *board_rev)
+{
+    memset(h, 0, sizeof *h);
+    h->emit = emit;
+    h->ctx = ctx;
+    h->device_id = device_id;
+    h->fw = fw;
+    h->board_rev = board_rev;
+    h->last_hb_rx_ms = 0;
+    h->last_hb_tx_ms = 0;
+    h->hb_seen = 0;                      /* 부팅 직후는 RUN (§6.2) */
+}
+
+void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
+                      int64_t now_ms)
+{
+    MkCommand c;
+    MkParseResult r = mk_parse_line(line, len, &c);
+
+    if (r == MK_ERR_MALFORMED) {
+        return;                          /* verb 를 못 읽었다 — 조용히 버린다 */
+    }
+
+    if (r == MK_ERR_CHECKSUM) {
+        /* 🔴 $HB 는 예외다 (§3, §6.1). 체크섬이 틀려도 SACK 를 보내지
+         *    않는다. 1 Hz 로 오므로 링크가 나빠지면 초당 하나씩 쌓여
+         *    이미 나쁜 링크를 더 나쁘게 만든다. 알릴 내용은 어차피
+         *    3초 뒤 RUN 전환으로 전달된다.
+         *
+         *    그리고 여기서 하트비트 시각을 갱신하지 **않는다**. 이것이
+         *    §6.3 이 회귀 시험을 필수로 둔 바로 그 지점이다. */
+        if (strcmp(c.verb, "HB") != 0) {
+            emit_sack_err(h, c.verb, "CHECKSUM");
+        }
+        return;
+    }
+
+    /* 여기부터는 체크섬을 통과한 줄이다. */
+    if (strcmp(c.verb, "HB") == 0) {
+        /* §6.1 — 어느 방향이든 $HB 에는 $SACK 를 보내지 않는다. */
+        h->last_hb_rx_ms = now_ms;
+        h->hb_seen = 1;
+        return;
+    }
+
+    if (strcmp(c.verb, "ID") == 0) {
+        emit_id_record(h, now_ms);
+        emit_sack_ok(h, "ID");
+        return;
+    }
+
+    /* 규격 §5 — 알아들었으나 이 펌웨어가 아직 구현하지 않은 명령.
+     * 조용히 버리면 죽은 링크와 구분되지 않는다. */
+    emit_sack_err(h, c.verb, "UNSUPPORTED");
+}
+
+void mk_hostlink_tick(MkHostlink *h, int64_t now_ms)
+{
+    /* 시뮬레이터(device_sim.tick)와 같은 조건이다 — `>=`. 부팅 직후
+     * (now_ms 0, last_hb_tx_ms 0)에는 내보내지 않고 1000 ms 부터 시작한다. */
+    if (now_ms - h->last_hb_tx_ms >= MK_HB_INTERVAL_MS) {
+        h->last_hb_tx_ms = now_ms;
+        emit_line(h, "HB");
+    }
+}
+
+MkMode mk_hostlink_mode(const MkHostlink *h, int64_t now_ms)
+{
+    if (!h->hb_seen) {
+        return MK_MODE_RUN;              /* 부팅 직후 기본값 */
+    }
+    /* 🔴 `>` 이지 `>=` 가 아니다. 정확히 3000 ms 가 지난 순간은 아직
+     *    CONFIG 다. 시뮬레이터(device_sim.mode)와 같은 경계를 쓴다 —
+     *    한쪽이 CONFIG 라고 보는 순간에 다른 쪽이 RUN 이면 설정 변경이
+     *    간헐적으로 거부되고, 그 원인은 재현되지 않는다. */
+    if (now_ms - h->last_hb_rx_ms > MK_HB_TIMEOUT_MS) {
+        return MK_MODE_RUN;
+    }
+    return MK_MODE_CONFIG;
+}
+```
+
+- [ ] **Step 5: 러너를 세 벌로 넓히고 시험 통과 확인**
+
+`firmware/stage1/tests/run_tests.ps1`:
+```powershell
+# 🔴 이 개발 호스트에는 gcc 도 clang 도 없다 (2026-08-13 확인). arm-none-eabi-gcc
+#    는 크로스 전용이라 호스트 시험에 못 쓴다. 있는 것은 MSVC 뿐이다.
+#    Makefile 은 gcc 가 있는 환경(CI·리눅스)을 위해 남겨 둔다.
+#
+#    /utf-8 이 필수다. 이 파일들은 UTF-8 인데 MSVC 는 기본으로 CP949 로 읽어,
+#    한글 바이트열 안의 0x5C 를 백슬래시로 오인하고 문자열을 깨뜨린다.
+#
+# 🔴 이 파일은 BOM 이 붙은 UTF-8 로 저장해야 한다. Windows PowerShell 5.1 은
+#    BOM 이 없으면 스크립트를 CP949 로 읽어 한글이 깨지고, 아래 throw 문의
+#    따옴표가 어긋나면 구문 오류로 죽는다. MSVC 문제의 거울상이다.
+$ErrorActionPreference = "Stop"
+$vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+if (-not (Test-Path $vcvars)) { throw "vcvars64.bat 없음: $vcvars" }
+Set-Location $PSScriptRoot
+
+# 시험 묶음: 실행 파일 이름 -> 소스들
+$suites = @(
+    @{ exe = "test_framing.exe";  src = "test_framing.c ..\app\mk_framing.c" },
+    @{ exe = "test_json.exe";     src = "test_json.c ..\app\mk_json.c" },
+    @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c" }
+)
+
+# 빌드와 실행을 나눈다. 한 사슬로 묶으면 컴파일 실패와 시험 실패가 같은
+# 종료 코드로 나와, 무엇이 깨졌는지 종료 코드만 보고는 알 수 없다.
+foreach ($s in $suites) {
+    $build = "chcp 65001 >nul && `"$vcvars`" >nul 2>&1 && " +
+             "cl /nologo /W4 /WX /utf-8 /std:c11 /Fe:$($s.exe) $($s.src) >nul"
+    cmd /c $build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "빌드 실패: $($s.exe) (exit $LASTEXITCODE) — 시험을 돌리지 않는다."
+        exit 2
+    }
+}
+
+$failed = 0
+foreach ($s in $suites) {
+    cmd /c "chcp 65001 >nul && .\$($s.exe)"
+    if ($LASTEXITCODE -ne 0) { $failed = 1 }
+    Write-Output ""
+}
+exit $failed
+```
+
+`firmware/stage1/tests/Makefile`:
+```make
+# 호스트 네이티브 빌드. 크로스 툴체인도 보드도 필요 없다.
+CC ?= gcc
+CFLAGS = -std=c11 -Wall -Wextra -Werror -O1 -g
+
+TESTS = test_framing test_json test_hostlink
+
+all: $(TESTS)
+	./test_framing
+	./test_json
+	./test_hostlink
+
+test_framing: test_framing.c ../app/mk_framing.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test_json: test_json.c ../app/mk_json.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test_hostlink: test_hostlink.c ../app/mk_hostlink.c ../app/mk_framing.c ../app/mk_json.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+clean:
+	rm -f $(TESTS) $(addsuffix .exe,$(TESTS))
+.PHONY: all clean
+```
+
+Run: `powershell -File firmware/stage1/tests/run_tests.ps1`
+Expected: framing 45건 + json 44건 + hostlink 38건, 셋 다 `PASSED`, exit 0
+
+- [ ] **Step 6: Python 시뮬레이터와 대조**
+
+`firmware/stage1/tests/crosscheck_hostlink.py`:
+```python
+"""C 펌웨어 로직과 Python 시뮬레이터가 같은 입력에 같게 답하는지 대조한다.
+
+🔴 이 대조가 stage 1 에서 가장 값지다. GUI 는 시뮬레이터를 상대로 개발되고
+   실물 보드에서 돌아야 한다. 둘이 다르게 답하면 GUI 는 시뮬레이터에서
+   멀쩡하다가 실기기에서만 틀어지고, 그때는 어느 쪽이 틀렸는지조차 알기
+   어렵다.
+
+무엇을 대조하나
+  - 명령 한 줄에 대한 **응답 줄들**
+  - 그 시점의 **모드**
+
+무엇을 대조하지 않나
+  - 하트비트 송신 주기와 텔레메트리. 양쪽 단위 시험이 각각 지킨다.
+    시뮬레이터는 텔레메트리를 내지만 1단계 펌웨어에는 아직 ADS1256 이
+    없으므로, 여기서 비교하면 알맹이 없는 차이만 잔뜩 나온다.
+
+C 쪽 시나리오는 test_hostlink.c 의 `SCENARIO` 배열에 있고 아래 `STEPS` 와
+같아야 한다. 어긋나면 줄 수가 맞지 않아 바로 드러난다.
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[2]
+sys.path.insert(0, str(REPO))
+
+from host.core.framing import build_command  # noqa: E402
+from tools.simulator.config_store import default_store  # noqa: E402
+from tools.simulator.device_sim import DeviceSim, Mode  # noqa: E402
+
+# C 쪽 SCENARIO 와 같은 순서여야 한다.
+STEPS: list[tuple[str, str | None]] = [
+    ("AT", "0"), ("MODE", None),
+    ("AT", "2000"), ("FEED", "HB"), ("MODE", None),
+    ("AT", "5000"), ("MODE", None),          # 정확히 3000 ms — 아직 CONFIG
+    ("AT", "5001"), ("MODE", None),          # 그 다음 ms 부터 RUN
+    ("AT", "6000"), ("FEED", "HB"), ("MODE", None),
+    ("AT", "6000"), ("FEED", "ID"),
+    ("AT", "6000"), ("RAW", "$HB*FF\\r\\n"), ("MODE", None),
+    ("AT", "6000"), ("RAW", "$ID*FF\\r\\n"),
+    ("AT", "6000"), ("RAW", "garbage\\r\\n"),
+    ("AT", "6000"), ("RAW", "$*00\\r\\n"),
+    ("AT", "6000"), ("RAW", "$A\\tB*00\\r\\n"),
+    ("AT", "6000"), ("FEED", "NOPE"),
+    # 여기부터는 1단계가 아직 구현하지 않은 명령이라 양쪽 응답이 다르다.
+    ("MARK", "GAPS"),
+    ("AT", "6000"), ("FEED", "STAT"),
+    ("AT", "6000"), ("FEED", "CFG,LIST"),
+]
+
+# 🔴 1단계 펌웨어가 아직 구현하지 않은 명령. 시뮬레이터는 전체 프로토콜을
+#    구현하므로 여기서 갈리는 것은 결함이 아니라 진행 상황이다.
+#
+#    건너뛰지 않는다. **양쪽이 각각 무엇을 내야 하는지** 를 못박는다 —
+#    어느 한쪽이라도 달라지면 실패한다. 2단계에서 $CFG 를 구현하면 이
+#    항목을 지워야 하고, 지우지 않으면 시험이 알려 준다.
+STAGE1_GAPS: dict[str, tuple[str, str]] = {
+    #  입력       : (C 가 내야 할 응답, Python 이 내야 할 응답의 성격)
+    "STAT": ("$SACK,STAT,ERR,UNSUPPORTED", "stat 레코드 + SACK,STAT,OK"),
+    "CFG,LIST": ("$SACK,CFG,ERR,UNSUPPORTED", "cfg_* 여러 줄 + SACK,CFG,OK"),
+}
+
+
+def _escape(s: str) -> str:
+    return s.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+
+
+def _unescape(s: str) -> str:
+    return s.replace("\\r", "\r").replace("\\n", "\n").replace("\\t", "\t")
+
+
+def _norm(line: str) -> str:
+    """줄끝을 떼어 비교한다. 시뮬레이터는 떼고 돌려주고 C 는 붙여서 낸다."""
+    return line.rstrip("\r\n")
+
+
+def _find_binary() -> Path:
+    for name in ("test_hostlink.exe", "test_hostlink"):
+        p = HERE / name
+        if p.exists():
+            return p
+    raise SystemExit("시험 바이너리가 없다. 먼저 run_tests.ps1 (또는 make) 을 돌려라.")
+
+
+def _c_trace() -> list[tuple[str, str]]:
+    out = subprocess.run(
+        [str(_find_binary()), "--scenario"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    rows = []
+    for ln in out.splitlines():
+        if not ln.strip():
+            continue
+        kind, _, value = ln.partition("\t")
+        rows.append((kind, _norm(_unescape(value)) if kind == "OUT" else value))
+    return rows
+
+
+def _py_trace() -> list[tuple[str, str]]:
+    sim = DeviceSim(default_store())
+    rows: list[tuple[str, str]] = []
+    for op, arg in STEPS:
+        if op == "AT":
+            # 🔴 시뮬레이터에는 공개된 시각 설정기가 없다. tick() 을 부르면
+            #    하트비트·텔레메트리 상태까지 움직여 비교가 흐려지므로,
+            #    대조 도구에서만 내부 시각을 직접 옮긴다.
+            sim._now_ms = int(arg)
+            continue
+        if op == "MARK":
+            rows.append(("MARK", arg))
+            continue
+        if op == "MODE":
+            rows.append(("MODE", "CONFIG" if sim.mode == Mode.CONFIG else "RUN"))
+            continue
+        if op == "FEED":
+            lines = sim.feed(build_command(*arg.split(",")))
+        elif op == "RAW":
+            lines = sim.feed(_unescape(arg))
+        else:
+            raise SystemExit(f"모르는 지시: {op}")
+        for line in lines:
+            rows.append(("OUT", _norm(line)))
+    return rows
+
+
+def _gap_inputs() -> list[str]:
+    return list(STAGE1_GAPS)
+
+
+def main() -> int:
+    c_rows = _c_trace()
+    py_rows = _py_trace()
+
+    # 아직 구현되지 않은 명령은 응답 모양이 다르므로 따로 확인한다.
+    # 나누는 자리는 시나리오에 찍은 표식이다 — 문자열을 추측해 자르면
+    # 응답 내용이 조금만 바뀌어도 엉뚱한 데서 갈린다(실제로 겪었다).
+    def split_at_mark(rows: list[tuple[str, str]]) -> tuple[list, list]:
+        for i, (kind, _val) in enumerate(rows):
+            if kind == "MARK":
+                return rows[:i], rows[i + 1:]
+        raise SystemExit("표식(MARK)이 없다 — 시나리오가 어긋났다")
+
+    c_common, c_gap = split_at_mark(c_rows)
+    py_common, py_gap = split_at_mark(py_rows)
+
+    mismatches: list[str] = []
+    for i in range(max(len(c_common), len(py_common))):
+        a = c_common[i] if i < len(c_common) else ("<없음>", "")
+        b = py_common[i] if i < len(py_common) else ("<없음>", "")
+        if a != b:
+            mismatches.append(f"  {i}번째\n    C : {a}\n    py: {b}")
+        else:
+            print(f"  ok   {a[0]:4} {a[1]}")
+
+    # 1단계 공백 — 양쪽이 각각 무엇을 내는지 못박는다.
+    print("\n  -- 1단계가 아직 구현하지 않은 명령 --")
+    c_gap_lines = [v for k, v in c_gap if k == "OUT"]
+    for cmd, (want_c, note_py) in STAGE1_GAPS.items():
+        hit = [ln for ln in c_gap_lines if ln.startswith(want_c)]
+        if not hit:
+            mismatches.append(f"  {cmd}: C 가 {want_c!r} 를 내지 않았다 "
+                              f"(낸 것: {c_gap_lines})")
+            continue
+        print(f"  ok   {cmd:9} C={want_c}  py={note_py}")
+
+    py_gap_lines = [v for k, v in py_gap if k == "OUT"]
+    if not py_gap_lines:
+        mismatches.append("  Python 쪽이 아직 구현하지 않은 명령에 아무 응답도 안 했다 "
+                          "— 시뮬레이터가 퇴화했나?")
+
+    if mismatches:
+        print("\n두 구현이 어긋난다:", file=sys.stderr)
+        print("\n".join(mismatches), file=sys.stderr)
+        return 1
+    print(f"\nMATCH ({len(c_common)} steps, {len(STAGE1_GAPS)} known gaps)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+Run: `python firmware/stage1/tests/crosscheck_hostlink.py`
+Expected: `MATCH (10 steps, 2 known gaps)`, exit 0
+
+- [ ] **Step 7: 커밋**
+
+커밋 메시지는 파일로 써서 `git commit -F` 로 넘긴다.
+
+```bash
+git add firmware/stage1/app/mk_hostlink.h firmware/stage1/app/mk_hostlink.c \
+        firmware/stage1/tests/test_hostlink.c \
+        firmware/stage1/tests/crosscheck_hostlink.py \
+        firmware/stage1/tests/run_tests.ps1 firmware/stage1/tests/Makefile
+git commit -F <메시지 파일>
+```
+
+### Task 3 사전 실행 기록 (2026-08-14)
+
+구현자에게 넘기기 전에 위 코드를 그대로 컴파일해 돌렸다.
+
+- `/W4 /WX` 무경고, 단위 시험 **38건 통과**
+- `MATCH (10 steps, 2 known gaps)` — C 와 Python 시뮬레이터가 명령·응답·모드
+  10단계에서 한 줄씩 일치. `id` 레코드 JSON 까지 바이트가 같다.
+
+**설계 단계에서 규격 충돌 두 개를 판정했고, 시뮬레이터에서 그 판정을 어기는
+곳 두 군데를 찾아 고쳤다.** 자세한 내용은 커밋 `a0a935a`.
+
+| 되돌린 것 | 결과 |
+|---|---|
+| 체크섬 검증 전에 HB 시각 갱신 (Q2 결함 재현) | 단위 시험 실패 — 잡는다 |
+| 모드 경계를 `>` 에서 `>=` 로 | 단위·대조 둘 다 실패 — 잡는다 |
+| 깨진 HB 에도 SACK 를 보낸다 | 단위·대조 둘 다 실패 — 잡는다 |
+| 모르는 명령을 조용히 버린다 | 단위·대조 둘 다 실패 — 잡는다 |
+| 부팅 직후를 CONFIG 로 | 단위·대조 둘 다 실패 — 잡는다 |
+
+첫 줄이 규격 §6.3 이 회귀 시험을 필수로 둔 바로 그 지점이다. Q2 의 실제
+코드를 그대로 옮겨 심었더니 시험이 실패한다 — 시험이 제 일을 한다.
+
+대조 도구에서 한 가지를 고쳤다. 처음에는 응답 문자열에 `STAT`·`CFG` 가
+들었는지로 "구현된 부분"과 "아직 없는 부분"을 나눴는데, 시뮬레이터의 stat
+레코드에는 그 문자열이 없어서 엉뚱한 데서 갈렸다. 시나리오에 표식(`MARK`)을
+찍어 나누도록 바꿨다 — 문자열 추측으로 자르지 않는다.
+
+---
+
+## Task 4~5 (개요)
+
+Task 3 검토 후 상세화한다.
 
 | Task | 내용 | 핵심 |
 |---|---|---|
-| 3 | `mk_hostlink.c` — 명령 디스패치·모드 | 체크섬 통과 후에만 HB 갱신. `$HB` 에 SACK 없음 |
 | 4 | `main.c` + Makefile — HAL 초기화·UART3·슈퍼루프 | **레일을 켜지 않는다** |
 | 5 | 실기기 검증 | 굽고 `markon_cli --port COM23` 으로 확인. 실패 시 복구 지점으로 되돌린다 |
 
