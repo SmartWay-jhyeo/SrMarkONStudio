@@ -53,8 +53,36 @@ def test_above_twenty_is_over_range_not_broken():
     assert r.label == "과입력"
 
 
-def test_over_range_fraction_is_clamped():
-    assert read_loop(25.0).fraction == 1.0
+def test_over_range_has_no_fraction_so_it_cannot_be_drawn_as_normal():
+    """🔴 `fraction` 은 믿을 수 있는 측정일 때만 값이 있다.
+
+    과입력에 `fraction=1.0` 을 주면 정상 만재(20.00 mA)와 데이터 형태가
+    같아진다. 위젯이 `over` 를 확인하는 것을 성실함에 맡기게 되고,
+    깜빡하면 고장이 건강한 만재로 보인다. 단선은 이미 이 방식으로
+    보호되고 있으므로 과입력도 같은 불변식을 따른다.
+    """
+    r = read_loop(25.0)
+    assert r.fraction is None
+    assert r.bar_fraction == 1.0      # 꽉 채워 그리려면 over 를 본 뒤에
+
+
+def test_full_scale_and_over_range_are_distinguishable_in_data():
+    full, over = read_loop(20.0), read_loop(20.1)
+    assert full.fraction == 1.0 and full.over is False
+    assert over.fraction is None and over.over is True
+
+
+def test_non_finite_current_is_not_a_reading():
+    """🔴 NaN 은 두 범위 비교를 모두 False 로 통과한다.
+
+    막지 않으면 '정상' 분기로 들어가 label 이 'nan mA' 가 되고,
+    확신에 찬 그럴듯한 측정값처럼 보인다. 단선의 구조적 방어를 우회한다.
+    """
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        r = read_loop(bad)
+        assert r.fraction is None
+        assert r.broken is True
+        assert r.label == "값 없음"
 
 
 def test_normal_reading_labels_with_two_decimals():

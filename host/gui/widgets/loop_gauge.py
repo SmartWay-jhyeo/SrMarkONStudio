@@ -21,6 +21,7 @@
 20 mA = 2.40 V, ADS1256 외부 기준 2.5 V.
 """
 
+import math
 from dataclasses import dataclass
 
 #: 살아 있는 0 점. 이 아래는 측정값이 아니다.
@@ -31,8 +32,15 @@ LOOP_MAX_MA = 20.0
 @dataclass(frozen=True)
 class LoopReading:
     ma: float
-    #: 0.0~1.0. 단선이면 None — 그릴 바가 없다.
+    #: 🔴 **믿을 수 있는 정상 범위 측정일 때만 값이 들어간다.** 그 외에는 None.
+    #:
+    #: 단선·과입력·비유한값은 전부 None 이다. 위젯이 `fraction` 만 보고
+    #: 순진하게 바를 그려도 **고장을 정상처럼 그릴 수가 없다.**
+    #: `over` 플래그를 확인하는 것을 위젯의 성실함에 맡기지 않는다.
     fraction: float | None
+    #: 바를 꽉 채워 그리고 싶을 때 쓴다. 과입력이면 1.0.
+    #: 이 필드를 쓰려면 `over` 를 이미 확인했다는 뜻이다.
+    bar_fraction: float
     broken: bool
     over: bool
     label: str
@@ -40,21 +48,26 @@ class LoopReading:
 
 def read_loop(ma: float) -> LoopReading:
     """전류값을 게이지가 그릴 수 있는 형태로 해석한다."""
+    # 🔴 NaN 은 두 비교를 모두 False 로 통과해 "정상" 분기로 들어간다.
+    # 그러면 label 이 "nan mA" 가 되어 **확신에 찬 그럴듯한 측정값**처럼
+    # 보인다. 단선은 fraction=None 이라 구조적으로 못 그리는데 NaN 은
+    # 그 방어를 우회한다.
+    if not math.isfinite(ma):
+        return LoopReading(ma=ma, fraction=None, bar_fraction=0.0,
+                           broken=True, over=False, label="값 없음")
+
     if ma < LOOP_MIN_MA:
         # 측정값이 아니다. 숫자를 보여주면 값으로 읽힌다.
-        return LoopReading(ma=ma, fraction=None, broken=True, over=False,
-                           label="루프 단선")
+        return LoopReading(ma=ma, fraction=None, bar_fraction=0.0,
+                           broken=True, over=False, label="루프 단선")
 
     if ma > LOOP_MAX_MA:
-        # 과입력은 단선과 다른 고장이다. 바는 꽉 찬 채로 둔다.
-        return LoopReading(ma=ma, fraction=1.0, broken=False, over=True,
-                           label="과입력")
+        # 과입력은 단선과 다른 고장이다. 바는 꽉 채우되 fraction 은 비운다 —
+        # 정상 만재(20.00 mA)와 데이터 형태가 같으면 안 된다.
+        return LoopReading(ma=ma, fraction=None, bar_fraction=1.0,
+                           broken=False, over=True, label="과입력")
 
     span = LOOP_MAX_MA - LOOP_MIN_MA
-    return LoopReading(
-        ma=ma,
-        fraction=(ma - LOOP_MIN_MA) / span,
-        broken=False,
-        over=False,
-        label=f"{ma:.2f} mA",
-    )
+    f = (ma - LOOP_MIN_MA) / span
+    return LoopReading(ma=ma, fraction=f, bar_fraction=f,
+                       broken=False, over=False, label=f"{ma:.2f} mA")

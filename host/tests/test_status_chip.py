@@ -49,6 +49,22 @@ def test_text_color_is_legible_on_the_chip():
         assert contrast_ratio(s.text, s.fill) >= 4.0, lvl
 
 
+def test_outline_chip_text_meets_the_text_contrast_bar():
+    """🔴 테두리 칩은 상태색을 **글자**로 쓴다 — 4.5:1 이 필요하다.
+
+    테마 쪽 검사는 3.0:1(UI 요소 기준)만 요구하고, 채운 칩 검사는
+    VERIFIED 경로만 지난다. 그래서 테두리 칩의 글자 대비는 아무도 안 본다.
+    상태색을 나중에 손보면 이 경로만 조용히 안 읽히게 될 수 있다.
+    """
+    from host.gui.theme import Color, contrast_ratio
+
+    for lvl in Level:
+        s = chip_style(lvl, Verification.COMMANDED)
+        if s.filled:
+            continue                      # FAULT 는 명령됨이어도 채운다
+        assert contrast_ratio(s.text, Color.SURFACE) >= 4.5, lvl
+
+
 def test_commanded_label_differs_from_verified_label():
     """같은 상태라도 문구가 달라야 한다."""
     from host.gui.widgets.status_chip import rail_label
