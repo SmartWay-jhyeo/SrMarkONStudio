@@ -235,6 +235,15 @@ static const char *const PARSE_VECTORS[] = {
     "$*00\\r\\n",                   /* 빈 payload */
     "$A*B*41\\r\\n",                /* payload 안의 * */
     "",                             /* 빈 입력 */
+
+    /* 🔴 아래 셋은 C 와 Python 이 설계상 갈리는 입력이다. C 는 고정폭
+     *    버퍼라 담을 수 없는 verb 를 조용히 버리고(규격 §3), Python 은
+     *    상한이 없어 체크섬 오류를 낸다. crosscheck.py 의
+     *    KNOWN_DIVERGENCES 가 양쪽 기대값을 못박는다 — 건너뛰지 않는다. */
+    "$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA*00\\r\\n",          /* verb 99자 */
+    "$CFG,BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB*00\\r\\n", /* arg 40자 */
+    "$CFG,a,b,c,d,e*00\\r\\n",                              /* 인자 5개 */
 };
 
 static size_t unescape(const char *s, char *out, size_t cap)
