@@ -258,7 +258,11 @@ def _coerce(item: SimConfigItem, raw: str) -> object:
 
     if item.vtype in _INT_TYPES:
         try:
-            value = int(raw, 0)
+            # 🔴 base 0 을 쓰면 안 된다. int("08", 0) 은 ValueError 다 —
+            # 파이썬이 앞의 0 을 8진수 접두사로 읽기 때문이다. 사용자가
+            # 고정폭 습관으로 "08" 을 넣는 건 지극히 자연스럽고, 그게
+            # "정수가 아님" 으로 거부되면 원인을 짐작할 수도 없다.
+            value = int(raw, 10)
         except ValueError:
             raise ConfigError(Reason.RANGE, f"정수가 아님: {raw!r}") from None
     elif item.vtype == "f32":

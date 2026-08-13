@@ -134,6 +134,17 @@ def test_load_rejects_nan_stored_value(tmp_path):
     assert "ain0.scale" in store.rejected_keys
 
 
+def test_set_accepts_zero_padded_integer():
+    """🔴 '0250' 은 유효한 십진수다.
+
+    int(raw, 0) 을 쓰면 파이썬이 앞의 0 을 8진수 접두사로 읽어 ValueError 가
+    난다. GUI 의 고정폭 입력이나 사람의 습관으로 0 이 채워지는 건 흔하다.
+    """
+    store = default_store()
+    store.set("tx.period_ms", "0250")
+    assert store.get("tx.period_ms") == 250
+
+
 def test_set_rejects_non_ascii_string_value():
     """🔴 사용자가 넣는 값은 ASCII 만 통과한다.
 
