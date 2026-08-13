@@ -72,3 +72,33 @@ def test_seq_tracker_reset_on_reconnect():
     t.reset()
     assert t.observe(5) == 0           # 재연결 후 첫 값은 기준점일 뿐
     assert t.missing_total == 0
+
+
+def test_is_telemetry_distinguishes_command_responses():
+    """🔴 seq 는 텔레메트리 전용이다 (규격 §7.1.1).
+
+    명령 응답 레코드의 seq 는 항상 0 이다. 그 0 을 시퀀스에 넣으면 매번
+    거대한 역방향 점프로 보여 유실 통계가 망가진다.
+    """
+    from host.core.records import is_telemetry
+
+    assert is_telemetry({"type": "ain"}) is True
+    for t in ("id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end"):
+        assert is_telemetry({"type": t}) is False, t
+
+
+def test_seq_tracker_is_not_polluted_by_command_responses():
+    """명령 응답을 걸러내면 텔레메트리 시퀀스가 온전히 유지된다."""
+    from host.core.records import is_telemetry
+
+    t = SeqTracker()
+    stream = [
+        {"type": "ain", "seq": 10},
+        {"type": "cfg_value", "seq": 0},   # 응답이 중간에 끼어든다
+        {"type": "ain", "seq": 11},
+    ]
+    for rec in stream:
+        if is_telemetry(rec):
+            t.observe(rec["seq"])
+    assert t.missing_total == 0
+    assert t.received_total == 2

@@ -12,6 +12,13 @@ SCHEMA_VER = 3
 #: 필드 마스크로 끌 수 없는 필드 (규격 §7.1)
 MANDATORY_FIELDS = ("schema_ver", "seq", "t", "type")
 
+#: seq 시퀀스에 참여하지 않는 레코드 (규격 §7.1.1).
+#: 요청이 있을 때만 나가므로 "빠졌다"는 개념이 성립하지 않고,
+#: 응답 자체가 $SACK 로 보증된다. seq 는 항상 0 이다.
+COMMAND_RESPONSE_TYPES = frozenset(
+    {"id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end"}
+)
+
 #: seq 는 uint32
 SEQ_MODULO = 1 << 32
 
@@ -44,6 +51,15 @@ def parse_record(line: str) -> dict:
         )
 
     return rec
+
+
+def is_telemetry(rec: dict) -> bool:
+    """이 레코드가 seq 시퀀스에 참여하는가 (규격 §7.1.1).
+
+    명령 응답의 seq(항상 0)를 SeqTracker 에 넣으면 매번 거대한 역방향
+    점프로 보여 유실 통계가 망가진다. 호출측은 observe() 앞에 이걸 건다.
+    """
+    return rec.get("type") not in COMMAND_RESPONSE_TYPES
 
 
 class SeqTracker:
