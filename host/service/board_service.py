@@ -14,6 +14,7 @@ _POLL_INTERVAL_S = 0.005
 
 from host.core.config_schema import ConfigSchema, parse_catalog
 from host.core.errors import ProtocolError
+from host.core.limits import DEFAULT_BAUD
 from host.core.framing import Command, build_command, parse_line
 from host.core.records import SeqTracker, is_telemetry, parse_record
 
@@ -52,7 +53,7 @@ class LoopbackTransport:
 class SerialTransport:
     """pyserial 기반 트랜스포트."""
 
-    def __init__(self, port: str, baud: int = 115200, timeout: float = 0.1):
+    def __init__(self, port: str, baud: int = DEFAULT_BAUD, timeout: float = 0.1):
         import serial  # 지연 import — 시리얼 없이도 테스트가 돌게 한다
 
         self._ser = serial.Serial(port, baud, timeout=timeout)

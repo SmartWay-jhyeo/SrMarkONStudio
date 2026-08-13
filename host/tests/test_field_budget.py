@@ -217,75 +217,59 @@ def test_all_fields_on_is_measurable():
     assert b.bytes_per_s > 0
 
 
-def test_settings_screen_does_not_fit_at_115200_today():
-    """🔴 지금 기본값에서는 설정 화면이 사실상 열리지 않는다.
+def _catalog_bytes_and_budget(baud: int):
+    from host.core.framing import build_command
+    from tools.simulator.config_store import default_store
+    from tools.simulator.device_sim import DeviceSim
+    from tools.simulator.telemetry import build_ain_record
 
-    측정 기록: `docs/measurements/2026-08-14_link_budget.md`
+    sim = DeviceSim(default_store())
+    sim.feed(build_command("HB"))
+    catalog = sum(len(ln.encode("utf-8")) + 1
+                  for ln in sim.feed(build_command("CFG", "LIST")))
+    store = default_store()
+    rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
+                           raw=8388608, capture_counter=123456789)
+    return catalog, compute_budget(
+        rec, channels_enabled=7,
+        period_ms=int(store.get("tx.period_ms")), baud=baud,
+    )
+
+
+def test_settings_screen_opens_quickly_at_the_default_baud():
+    """🔴 설정 화면이 실용적인 시간 안에 열려야 한다.
 
     규격 §6.3 이 "수집과 전송은 두 모드에서 모두 계속된다"고 못박고 있으므로
-    `$CFG,LIST` 카탈로그(약 10 KB)는 텔레메트리가 쓰고 남은 대역폭으로
-    흘러야 한다. 115200 에서 남는 여유는 초당 600 바이트 남짓이라 16 초가
-    넘게 걸린다 — `board_service` 가 잡아 둔 600 ms 타임아웃과 27배 어긋난다.
+    `$CFG,LIST` 카탈로그는 텔레메트리가 쓰고 남은 대역폭으로 흘러야 한다.
 
-    이것은 사용자 요구의 핵심을 직접 건드린다: "USB 를 연결했을 때만 GUI 로
-    설정하고 제어한다". 기본 설정에서 그 GUI 가 열리지 않는다.
+    115200 에서는 여유가 초당 600 바이트뿐이라 **16.7 초**가 걸렸다 —
+    사용자 요구의 핵심("USB 를 연결했을 때만 GUI 로 설정하고 제어한다")이
+    기본 설정에서 성립하지 않았다. 921600 으로 올려 해결했고 실기기에서
+    확인했다 (`docs/measurements/2026-08-14_baud_921600.md`).
 
-    **이 시험은 결함을 고정하는 것이 아니라 사실을 붙들어 둔다.** baud 를
-    올리거나 기본 주기를 늘려 문제가 사라지면 이 시험이 실패하고, 그때
-    측정 문서와 함께 지우면 된다. 지금 상태로 조용히 굳는 것을 막는 것이
-    목적이다.
+    이 시험은 그 해결이 되돌아가지 않게 붙든다.
     """
-    from host.core.framing import build_command
-    from tools.simulator.config_store import default_store
-    from tools.simulator.device_sim import DeviceSim
-    from tools.simulator.telemetry import build_ain_record
+    from host.core.limits import DEFAULT_BAUD
 
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-    catalog_bytes = sum(
-        len(ln.encode("utf-8")) + 1
-        for ln in sim.feed(build_command("CFG", "LIST"))
-    )
-    assert catalog_bytes > 5000, "카탈로그가 갑자기 작아졌다 — 계산을 다시 보라"
-
-    store = default_store()
-    rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
-                           raw=8388608, capture_counter=123456789)
-    b = compute_budget(rec, channels_enabled=7,
-                       period_ms=int(store.get("tx.period_ms")), baud=115200)
-
+    catalog, b = _catalog_bytes_and_budget(DEFAULT_BAUD)
+    assert catalog > 5000, "카탈로그가 갑자기 작아졌다 — 계산을 다시 보라"
     spare = b.headroom_bytes_per_s
-    assert spare > 0, "텔레메트리만으로 이미 초과다"
-    seconds = catalog_bytes / spare
-    assert seconds > 5.0, (
-        f"설정 화면 열기가 {seconds:.1f}초로 빨라졌다. 문제가 해결됐다면 "
-        f"docs/measurements/2026-08-14_link_budget.md 와 함께 이 시험을 지워라."
+    assert spare > 0, "텔레메트리만으로 이미 링크가 찬다"
+    seconds = catalog / spare
+    assert seconds < 1.0, (
+        f"설정 화면 열기가 {seconds:.1f}초다. board_service 의 $CFG,LIST "
+        f"타임아웃 안에 들어와야 한다."
     )
 
 
-def test_higher_baud_makes_the_settings_screen_usable():
-    """같은 계산으로 답도 확인해 둔다 — baud 를 올리면 해결된다.
+def test_the_old_baud_is_why_we_raised_it():
+    """왜 올렸는지를 계산으로 남긴다.
 
-    다만 **BMP 의 USB-VCP 가 그 속도를 통과시키는지는 실기기 확인이
-    필요하다** [미확인]. 확인 전에는 기본값을 바꾸지 않는다.
+    115200 으로 되돌리자는 이야기가 나올 때 이 숫자가 근거가 된다.
     """
-    from host.core.framing import build_command
-    from tools.simulator.config_store import default_store
-    from tools.simulator.device_sim import DeviceSim
-    from tools.simulator.telemetry import build_ain_record
-
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-    catalog_bytes = sum(
-        len(ln.encode("utf-8")) + 1
-        for ln in sim.feed(build_command("CFG", "LIST"))
-    )
-    store = default_store()
-    rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
-                           raw=8388608, capture_counter=123456789)
-    b = compute_budget(rec, channels_enabled=7,
-                       period_ms=int(store.get("tx.period_ms")), baud=921600)
-    assert catalog_bytes / b.headroom_bytes_per_s < 1.0
+    catalog, b = _catalog_bytes_and_budget(115200)
+    assert b.ratio > 0.9, f"115200 에서 {b.ratio*100:.1f}% 를 쓴다"
+    assert catalog / b.headroom_bytes_per_s > 10.0
 
 
 def test_imports_no_qt():

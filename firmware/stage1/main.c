@@ -28,7 +28,17 @@
 #define FW_VERSION   "0.1.0"
 #define BOARD_REV    "2.0"
 #define DEVICE_ID    "1"
-#define UART_BAUD    115200u
+/* 🔴 921600 (사용자 확정 2026-08-14).
+ *
+ * 115200 에서는 기본 설정이 링크의 94.8% 를 쓰고, $CFG,LIST 카탈로그
+ * (8.8 KB)를 남는 600 B/s 로 흘리면 설정 화면 여는 데 16.7초가 걸린다.
+ * 921600 이면 11.8% 를 쓰고 카탈로그가 0.1초에 온다.
+ * (docs/measurements/2026-08-14_link_budget.md)
+ *
+ * H723 쪽 여유는 충분하다. APB1 = 64 MHz, USARTDIV = 64e6/921600 = 69.44
+ * 이고 BRR 은 정수 69 이므로 실제 927,536 baud — 오차 +0.64% 다. UART
+ * 허용 오차(보통 2~3%) 안이다. */
+#define UART_BAUD    921600u
 
 /* 상태 LED. PD11 = LED5 — 참고 펌웨어와 같은 핀이다.
  * 🔴 PD8/PD9/PD10 은 건드리지 않는다. 그것들이 전원 레일이다. */

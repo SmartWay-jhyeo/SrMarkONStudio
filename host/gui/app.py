@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 )
 
 from host.core.config_schema import parse_catalog
+from host.core.limits import DEFAULT_BAUD
 from host.gui.command_queue import CommandQueue
 from host.gui.last_known import StateHistory, build_chip_state
 from host.gui.qt.chip import ChipCard
@@ -207,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="markon-gui")
     parser.add_argument("--port", default="sim",
                         help="시리얼 포트 또는 sim (기본: sim)")
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     args = parser.parse_args(argv)
 
     app = QApplication(sys.argv[:1])

@@ -7,11 +7,12 @@
 import time
 from pathlib import Path
 
+from host.core.limits import DEFAULT_BAUD
 from tools.simulator.config_store import default_store
 from tools.simulator.device_sim import DeviceSim
 
 
-def run_simulator_server(port: str, baud: int = 115200,
+def run_simulator_server(port: str, baud: int = DEFAULT_BAUD,
                          state: Path | None = None) -> None:
     """시뮬레이터를 시리얼 포트에 붙이고 무한 루프로 돌린다."""
     import serial

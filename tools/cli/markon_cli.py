@@ -14,6 +14,7 @@ import sys
 import time
 
 from host.core.errors import ProtocolError
+from host.core.limits import DEFAULT_BAUD
 from host.service.board_service import BoardService, LoopbackTransport, SerialTransport
 from tools.simulator.config_store import default_store
 from tools.simulator.device_sim import DeviceSim
@@ -29,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--port", default=SIM_PORT,
         help="시리얼 포트 (예: COM7, /dev/ttyUSB0). 기본 'sim' = 내장 시뮬레이터",
     )
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
 
     sub = parser.add_subparsers(dest="command", required=True)
 

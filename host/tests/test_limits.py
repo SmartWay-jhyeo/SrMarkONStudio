@@ -56,6 +56,43 @@ def test_python_limit_matches_firmware_header(py_name: str, c_name: str):
     )
 
 
+def test_baud_matches_the_firmware():
+    """🔴 호스트와 보드가 같은 UART 속도를 써야 한다.
+
+    다르면 전선에 쓰레기만 흐르고, 증상은 "아무것도 안 나온다" 라 원인을
+    찾기 어렵다 — 케이블·포트·전원을 다 의심하게 된다.
+
+    921600 인 이유와 실기기 확인 결과는 `host/core/limits.py` 와
+    `docs/measurements/2026-08-14_baud_921600.md` 에 있다.
+    """
+    main_c = HEADER.parent.parent / "main.c"
+    assert main_c.exists(), f"펌웨어 main.c 를 찾을 수 없다: {main_c}"
+    text = main_c.read_text(encoding="utf-8")
+    m = re.search(r"^#define\s+UART_BAUD\s+(\d+)u?\s*$", text, re.M)
+    assert m, "main.c 에서 UART_BAUD 를 못 찾았다"
+    assert int(m.group(1)) == limits.DEFAULT_BAUD, (
+        f"펌웨어는 {m.group(1)}, 호스트는 {limits.DEFAULT_BAUD} — 갈렸다"
+    )
+
+
+def test_host_entry_points_use_the_shared_baud():
+    """CLI·GUI·서비스가 각자 숫자를 들고 있지 않은지.
+
+    한 곳만 고치고 다른 곳을 잊으면 도구마다 다른 속도로 연다.
+    """
+    import inspect
+
+    from host.gui import app as gui_app
+    from host.service import board_service
+    from tools.cli import markon_cli
+
+    for mod in (gui_app, markon_cli, board_service):
+        src = inspect.getsource(mod)
+        assert "115200" not in src.replace("115200 baud 에서", "").replace(
+            "115200 에서", ""
+        ), f"{mod.__name__} 에 115200 이 박혀 있다"
+
+
 def test_build_command_rejects_long_verb():
     long_verb = "V" * (limits.MAX_VERB_BYTES + 1)
     with pytest.raises(MalformedLineError):
