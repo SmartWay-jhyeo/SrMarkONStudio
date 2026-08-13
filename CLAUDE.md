@@ -29,9 +29,18 @@ MarkON_Studio/
 - 버전관리 밖이라 **되돌릴 수 없다.** 문서를 고칠 때는 상위 저장소(`D:\STM32_PCB_Board`, §1)에 원본이 있는지 먼저 확인한다.
 - 문서를 고쳐야 할 상황이면 그 사실을 사용자에게 알린다. 커밋으로 남지 않으므로 변경 이력은 문서 안의 개정 이력 표가 전부다.
 
-작업 시작 전 **두 문서를 모두 읽는다.** 데이터시트가 "무엇이 있는가"(사실), 계획서가 "무엇을 만드는가"(목표)다. 충돌하면 **데이터시트가 우선**이다(§6 참조).
+작업 시작 전 **두 문서를 모두 읽는다.** 데이터시트가 "무엇이 있는가"(사실), 계획서가 "무엇을 만드는가"(목표)다. 충돌하면 **데이터시트가 우선**이다(§7 참조).
 
-## 1. 상위 저장소 `D:\STM32_PCB_Board`
+## 1. 참조 저장소 (여기 없는 원본이 있는 곳)
+
+| 궁금한 것 | 볼 곳 |
+|---|---|
+| **PCB·회로·부품** (핀맵, 넷, 전원, 데이터시트 PDF) | `D:\STM32_PCB_Board` → §1.1 |
+| **센서 수집 펌웨어** (선행 구현, 검증된 모듈) | `C:\Users\xovud\Desktop\Mac에 있던 것\LaneControlSystem\EmbeddedCode` 의 Q1·Q2 → §1.2 |
+
+둘 다 **읽기 전용 참조**다. 신규 코드는 이 저장소에서 개발하고, 저쪽 파일을 수정하지 않는다.
+
+### 1.1 하드웨어 원본 — `D:\STM32_PCB_Board`
 
 이 저장소는 하드웨어 저장소 `D:\STM32_PCB_Board`에서 문서만 떼어 온 것이다. 다음은 **여기 없고 상위 저장소에만 있다.**
 
@@ -45,7 +54,52 @@ MarkON_Studio/
 
 - 데이터시트 본문의 `hardware/...`, `output/...`, `docs/...` 경로는 **전부 상위 저장소 기준**이다. 여기서 찾지 말 것.
 - `docs/datasheet/_internal/*.py`는 `D:\STM32_PCB_Board\...`를 **하드코딩**하고 있다. 상위 저장소가 없으면 실행되지 않는다.
-- 신규 코드(펌웨어·호스트 SW)는 **이 저장소에서** 개발한다. 상위 저장소는 하드웨어·문서 원본으로만 참조한다.
+- **ADS1256 드라이버 참고 구현**은 여기 있다: `hardware/firmware/h723_sensor_read/ads1256.c` (PGA=1, DRATE=60SPS + 120Ω 션트). LaneControlSystem 쪽에는 ADS1256이 없다(§1.2).
+
+### 1.2 선행 펌웨어 — `LaneControlSystem` Q1 / Q2
+
+경로: `C:\Users\xovud\Desktop\Mac에 있던 것\LaneControlSystem\EmbeddedCode\` (공백·한글 포함 — 셸에서 반드시 인용부호로 감쌀 것)
+
+**🔴 둘 다 타깃이 STM32H7A3ZITxQ(NUCLEO-H7A3ZI-Q)다.** MarkON Studio는 **STM32H723ZGT6**이므로 `.ioc`·`.ld`·CubeMX 설정·빌드 산출물을 **그대로 쓸 수 없다.** 클럭·메모리 도메인·핀·주변장치가 다르다. 가져오는 것은 **HAL 비의존 애플리케이션 모듈의 로직**뿐이다.
+
+| | Q1 | Q2 |
+|---|---|---|
+| 성격 | RTK 측위 중심 원형 | **MarkON Studio의 직계 조상** |
+| 센서 | UM982 GNSS(RTK) / MPU9250 IMU / TSL2591 조도 | 4~20mA 아날로그 / BH1750·BNO055·MLX90614 / 압력·유량 / UM982 |
+| 고유 모듈 | `data_pipeline` `error_mgr` `session_mgr` | `sol_valve_mgr` `led_status` `ws2812b` `jetson_tx` `host_link` `submcu_comm` `markonsync_mgr` `analog_4_20ma` |
+| 호스트 단위 테스트 | **있음** — `STM32Code/Tests/` (time_sync, serializer, um982, mpu9250, tsl2591, session_mgr) | 없음 |
+| NDJSON | `schema_ver` 1 | `schema_ver` 2 |
+| 문서 | 저장소 README | `HANDOFF.md`, `Docs/` |
+
+**계층 구조 (양쪽 공통, 그대로 계승할 만한 패턴)**
+
+```
+Core/Src/main.c   슈퍼루프 오케스트레이터
+   ↓
+App/Modules/      애플리케이션 로직 (HAL 비의존 — 호스트에서 단위 테스트 가능)
+   ↓
+App/Drivers/      센서 드라이버 (물리량 변환, HAL 비의존)
+   ↓
+App/BSP/bsp_io.h  HAL 추상화 (함수 포인터)
+   ↓
+Drivers/          CubeMX HAL
+```
+
+계획서 §6의 펌웨어 모듈 분리는 이 구조의 확장판이다. **`App/Modules`와 `App/Drivers`를 HAL 비의존으로 유지하는 것이 호스트 단위 테스트의 전제**이므로, 신규 코드도 이 경계를 지킨다.
+
+**가져올 때 주의**
+
+- **`time_sync`(Q2)** — `int64_t epoch_ms` + 4단계 폴백(gnss / gnss_nmea / host_clock / device_clock). 계획서 §7.2의 6단계 등급으로 확장할 기반이지만, **PPS를 `HAL_GetTick()`으로 잡아 분해능이 1ms다.** 계획서 §7.3이 요구하는 타이머 Input Capture + 오버플로 확장 카운터로 **반드시 교체**해야 한다. 그대로 이식하면 안 된다.
+- **`adc_manager`(Q2)는 ADS1256이 아니다.** STM32 내장 ADC1 3채널 DMA(Flow/Pressure×2)다. MarkON Studio의 7채널 ADS1256에는 쓸 수 없다 — §1.1의 `ads1256.c`를 볼 것.
+- **`sol_valve_mgr`·`markonsync_mgr`(Q2)** — EXTI 엣지 캡처 + 링큐 + 디바운스 패턴. 계획서의 GPIO 이벤트 타임스탬프에 그대로 쓸 만하다. 단 **옵토 극성이 서로 반대**다(Sol은 HIGH=ON, MarkOnSync는 PC817이라 LOW=ON). v2.0 보드의 J18~J20은 **출력**으로 확정됐으므로(데이터시트 §5.7) 방향을 그대로 가정하지 말 것.
+- **`sensor_queue.h`** — 채널별 독립 링큐. 계획서 §9의 원형이다.
+- **`JetsonCode/`(양쪽)** — Python 호스트 측 선행 구현(`uart_receiver` `spool_manager` `file_writer` `batch_builder` `mqtt_publisher` `ntrip_forwarder`). 계획서 §12의 Board Service 설계 시 참고.
+
+**🔴 미해결 이슈 — 대역폭·유실 (Q2 `HANDOFF.md`, 2026-06-17)**
+
+Q2에서 **STM32→Jetson UART 직결에 ~2% 유실 + ~0.4~1% 손상**이 실측됐다(2Mbps, seq 카운터로 정량화). 송신측·버퍼·주기·baud·stopbit·RX스레드 등 **8개 가설이 기각**됐고 물리계층(배선/신호)이 남은 의심으로 미해결 상태다. 통신 주기는 10ms→20ms로 되돌려 둔 상태.
+
+→ 계획서 §20의 "데이터량이 시리얼 대역폭을 초과할 수 있다" 위험은 **이미 실측으로 발현된 문제**다. Phase 1(통신)에서 **시퀀스 번호 기반 유실 검출을 처음부터 넣고**, 최대 데이터율을 계산해 확정할 것. 상세는 Q2의 `Docs/Jetson/jetson_dropout_session_report_2026-06-17.md`.
 
 ## 2. 명령어
 
@@ -98,7 +152,7 @@ GNSS NMEA(UTC) + PPS(초 경계) → 공통 시간축
    → Board Service (Windows / Jetson 공통) → GUI · 저장 · 오류기록
 ```
 
-- **펌웨어**: STM32H723ZGT6용 CubeMX 프로젝트를 **새로 생성**한다. 기존 LaneControlSystemQ1은 **H7A3용**이라 바이너리·CubeMX 설정 재사용 금지. `time_sync`·`sensor_queue`·`data_pipeline`·`serializer`·`error_mgr`·GNSS 드라이버만 검토 후 이식.
+- **펌웨어**: STM32H723ZGT6용 CubeMX 프로젝트를 **새로 생성**한다. LaneControlSystem Q1·Q2는 **둘 다 H7A3용**이라 바이너리·CubeMX 설정 재사용 금지. HAL 비의존 모듈(`time_sync`·`sensor_queue`·`data_pipeline`·`serializer`·`error_mgr`·GNSS 드라이버 등)만 검토 후 이식한다 — 주의점은 §1.2.
 - **호스트**: Python 3 + PyQt6 + pyserial + pyqtgraph + SQLite/Parquet + pytest. **Board Service와 GUI를 분리** — Jetson은 GUI 없이 부팅 후 자동 수집해야 한다.
 - **디렉터리 계획**: `firmware/` `host/` `protocol/` `hardware_reference/` `tools/` `docs/` (계획서 §18).
 - **단계**: Phase 0(회로 확정) → 1(통신) → 2(전원·출력) → 3(GNSS/PPS) → 4(ADS1256) → 5(I2C) → 6(Service) → 7(GUI) → 8(배포). 각 Phase 완료 기준이 계획서 §16에 있다.
@@ -139,12 +193,28 @@ GNSS NMEA(UTC) + PPS(초 경계) → 공통 시간축
 
 **검증 상태 배지를 지어내지 않는다.** 데이터시트는 **[실증]**(실물 확인, 날짜 병기) / **[설계확정]**(회로·계산 확정, 실물 미검증) / **[미확인]**을 구분한다. 현재 **실증된 것은 커넥터 핀맵과 펌웨어 굽기 절차뿐**이고 전원 시퀀싱 동작·ADS1256 측정 체인·I2C·GNSS·WS2812·LCD·배터리 절체는 전부 **[설계확정·실기기 미검증]**이다. 미검증 항목을 "동작한다"고 서술하지 말 것.
 
-## 6. 알려진 문서 불일치
+## 6. Codex 점검 결과 (`docs/status/`)
 
-- 계획서 §4 표: `Jetson 데이터 UART = PA2/PA3`, `H723 플래시 UART = PA9/PA10`. 데이터시트 기준으로는 **PA9/PA10은 J29 핀4·5의 Jetson 보조 UART1**이고, **H723 디버그/플래시용 VCP는 USART3(PB10/PB11)**, UART 부트로더 직접 굽기도 PB10/PB11을 쓴다(§7.6). 계획서가 MiniSTM32 기준을 일부 물고 온 것으로 보인다. **데이터시트를 따르고**, 계획서 §4를 고칠 때 함께 정정한다.
+**Codex가 이 프로젝트의 작업 상태를 외부에서 점검하고 결과를 기록한다.** 세션 시작 시 그리고 작업 방향을 정할 때 **읽고 반영한다.**
+
+| 경로 | 내용 |
+|---|---|
+| `docs/status/PROJECT_STATUS.md` | **최신 상태.** 여기부터 읽는다 |
+| `docs/status/history/YYYY-MM-DD_HHMM.md` | 점검 이력 (시점별 스냅샷) |
+| `docs/status/logs/` | 터미널·시험 원본 로그 |
+
+- **이 파일들은 Codex가 쓴다. 내가 고치지 않는다.** 점검 결과가 사실과 다르다고 판단되면 파일을 수정하는 대신 **사용자에게 근거와 함께 알린다.**
+- 지적받은 항목은 **§5의 근거 기준으로 검증한 뒤** 반영한다. "지적당했으니 일단 고친다"도, "내가 맞으니 무시한다"도 아니다. 로그가 있으면 `logs/`의 원본을 직접 확인한다.
+- 내가 한 주장(동작 확인, 시험 통과)이 `logs/`의 실제 출력과 어긋나면 **로그가 맞다.**
+- `docs/status/`도 `docs/` 아래라 **git 추적 대상이 아니다**(§0). 점검 이력은 파일 자체가 유일한 기록이므로 삭제·덮어쓰기에 주의한다.
+
+## 7. 알려진 문서 불일치
+
+- 계획서 §6.1은 이식 대상으로 **Q1만** 언급하지만, 실제로는 **Q2가 직계 조상**이고(4~20mA·솔레노이드·WS2812·Jetson 링크) Q1에만 있는 모듈(`data_pipeline` `error_mgr`)과 호스트 단위 테스트가 따로 있다. **양쪽을 모두 봐야 한다**(§1.2).
+- 계획서 §4 표: `Jetson 데이터 UART = PA2/PA3`, `H723 플래시 UART = PA9/PA10`. 데이터시트 기준으로는 **PA9/PA10은 J29 핀4·5의 Jetson 보조 UART1**이고, **H723 디버그/플래시용 VCP는 USART3(PB10/PB11)**, UART 부트로더 직접 굽기도 PB10/PB11을 쓴다(데이터시트 §7.6). 계획서가 MiniSTM32 기준을 일부 물고 온 것으로 보인다. **데이터시트를 따르고**, 계획서 §4를 고칠 때 함께 정정한다.
 - `docs/PCB_PIN_CONNECTIONS.md`(07-02), `docs/NETLIST.md`(07-09)는 상위 저장소에 있으나 **낡았다** — J34와 LCD 변경이 빠져 있다. 커넥터 정보는 항상 데이터시트를 기준으로 본다.
 
-## 7. Git 규칙
+## 8. Git 규칙
 
 기본 브랜치 `main`, **원격 없음(로컬 전용)**. 추적 범위는 **소스 코드만** — `docs/`는 제외한다(§0).
 
