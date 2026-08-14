@@ -37,6 +37,8 @@ C_SRC = \
   app/mk_cfgwire.c \
   app/mk_crc.c \
   app/mk_cfgtable.c \
+  app/mk_queue.c \
+  app/mk_ads1256.c \
   bsp/mk_flash.c \
   bsp/mk_uart.c \
   bsp/stm32h7xx_it.c \

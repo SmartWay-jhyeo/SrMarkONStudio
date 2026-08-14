@@ -17,10 +17,12 @@ Set-Location $PSScriptRoot
 $suites = @(
     @{ exe = "test_framing.exe";  src = "test_framing.c ..\app\mk_framing.c" },
     @{ exe = "test_json.exe";     src = "test_json.c ..\app\mk_json.c" },
-    @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c ..\app\mk_config.c ..\app\mk_cfgwire.c" },
+    @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c ..\app\mk_config.c ..\app\mk_cfgwire.c ..\app\mk_ads1256.c ..\app\mk_queue.c" },
     @{ exe = "test_config.exe";   src = "test_config.c ..\app\mk_config.c" },
     @{ exe = "test_cfgwire.exe";  src = "test_cfgwire.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
     @{ exe = "test_crc.exe";      src = "test_crc.c ..\app\mk_crc.c" },
+    @{ exe = "test_queue.exe";    src = "test_queue.c ..\app\mk_queue.c" },
+    @{ exe = "test_ads1256.exe"; src = "test_ads1256.c ..\app\mk_ads1256.c ..\app\mk_queue.c" },
     @{ exe = "test_cfgtable.exe"; src = "test_cfgtable.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" }
 )
 
@@ -52,7 +54,7 @@ foreach ($s in $suites) {
 #    시험이 깨졌으면 대조는 건너뛴다. 깨진 바이너리로 대조해 봐야
 #    무엇이 원인인지 흐려질 뿐이다.
 if ($failed -eq 0) {
-    $checks = @("crosscheck.py", "crosscheck_json.py", "crosscheck_crc.py",
+    $checks = @("check_sources.py", "crosscheck.py", "crosscheck_json.py", "crosscheck_crc.py",
                 "crosscheck_cfg.py", "crosscheck_cfgtable.py",
                 "crosscheck_hostlink.py")
     foreach ($c in $checks) {

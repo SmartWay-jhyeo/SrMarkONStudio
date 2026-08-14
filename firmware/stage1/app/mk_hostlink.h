@@ -50,6 +50,13 @@ typedef struct {
     MkCfgSave         save;
     void             *save_ctx;
 
+    /* 수집기. 붙어 있으면 $STAT 이 채널별 큐 깊이·최고치·유실을 보고한다.
+     *
+     * 🔴 없으면 `queues` 가 빈 배열이다. 0 을 채워 보내지 않는다 —
+     *    "채널이 없다" 와 "채널이 있는데 유실이 0" 은 다른 말이고,
+     *    유실을 찾으려고 이 창구를 보는 사람에게는 그 차이가 전부다. */
+    struct MkAds     *ads;
+
     int64_t     last_hb_rx_ms;   /* 검증을 통과한 $HB 를 마지막으로 받은 시각 */
     int64_t     last_hb_tx_ms;   /* 우리가 $HB 를 마지막으로 보낸 시각 */
     int         hb_seen;         /* 아직 한 번도 못 받았으면 0 */
@@ -65,6 +72,14 @@ void mk_hostlink_init(MkHostlink *h, MkEmit emit, void *ctx,
 void mk_hostlink_attach_config(MkHostlink *h, MkConfig *cfg,
                                const MkFieldBit *fields, size_t n_fields,
                                MkCfgSave save, void *save_ctx);
+
+/* 수집기를 붙인다. 부르지 않으면 $STAT 의 `queues` 가 빈 배열이다.
+ *
+ * 🔴 전방 선언으로 받는다. mk_hostlink 는 mk_ads1256.h 를 include 하지
+ *    않는다 — 명령 디스패치가 수집기를 아는 순간, 수집기 없이 통신만
+ *    시험하는 일이 어려워진다. 지금 시험들이 전부 그렇게 돌고 있다. */
+struct MkAds;
+void mk_hostlink_attach_ads(MkHostlink *h, struct MkAds *ads);
 
 /* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
  *

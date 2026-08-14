@@ -6,6 +6,7 @@
 #include <string.h>
 #include "../app/mk_hostlink.h"
 #include "../app/mk_framing.h"
+#include "../app/mk_ads1256.h"
 
 static int failures = 0;
 
@@ -24,9 +25,14 @@ static int failures = 0;
 
 /* ---- 내보낸 줄을 모으는 통 -------------------------------------------- */
 
+/* 🔴 줄 하나가 256 자를 넘을 수 있다. 7채널을 다 켠 $STAT 이 약 450 자다.
+ *    처음에 256 으로 두었더니 뒷부분이 잘려 "마지막 채널이 안 실린다" 로
+ *    보였다 — 펌웨어는 멀쩡했고 시험의 통이 작았던 것이다. 통을 레코드보다
+ *    넉넉히 잡아, 잘림이 결함으로 오인되지 않게 한다. */
 #define CAP_LINES 16
+#define CAP_LINE_LEN 1024
 typedef struct {
-    char lines[CAP_LINES][256];
+    char lines[CAP_LINES][CAP_LINE_LEN];
     int  n;
 } Sink;
 
@@ -628,6 +634,93 @@ static void test_stat_works_in_run_mode(void)
     }
 }
 
+static void test_stat_reports_real_queue_state(void)
+{
+    /* 🔴 `queues` 가 3단계의 유일한 진단 창구다(규격 §7.4). Q2 에서 UART
+     *    유실이 ~2% 났는데 어디서 나는지 몰라 8개 가설이 전부 기각된 채로
+     *    미해결이다(CLAUDE.md §1.2). 그 일을 되풀이하지 않으려면 이 값이
+     *    실제 큐를 비춰야 한다 — 0 을 채워 보내면 없느니만 못하다. */
+    static MkAds ads;
+    static MkSample qbuf[8];
+    static uint8_t tx[8], rx[8];
+    MkHostlink h; Sink s;
+
+    setup_cfg(&h, &s);
+    mk_ads_init(&ads, NULL, tx, rx, sizeof tx, 500);
+    mk_ads_attach_queue(&ads, 2, qbuf, 4);
+    mk_ads_configure(&ads, 2, 1, 100, 0);
+    mk_hostlink_attach_ads(&h, &ads);
+
+    /* 칸 4개에 6개를 밀어 넣어 2개를 버리게 한다. */
+    for (int i = 0; i < 6; i++) {
+        mk_queue_push(mk_ads_queue(&ads, 2), 1000 + i, i);
+    }
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"queues\":[{\"ch\":2,\"depth\":4,\"peak\":4,\"drops\":2}]")
+              != NULL, "켜진 채널의 실제 깊이·최고치·유실을 싣는다");
+        /* 🔴 `ch` 가 2 다. 배열 첨자(0)가 아니라 채널 번호다 — 꺼진 채널을
+         *    건너뛰므로 둘은 다르다. */
+        CHECK(strstr(s.lines[0], "\"ch\":0") == NULL,
+              "꺼진 채널은 목록에 없다");
+    }
+}
+
+static void test_stat_fits_with_all_seven_channels(void)
+{
+    /* 🔴 사용자가 채널을 다 켜는 순간 진단 창구가 닫히면 안 된다.
+     *
+     *    처음 버퍼를 400 으로 잡았을 때 실제로 그랬다. 7채널을 켜면 stat
+     *    레코드가 622 바이트라 만들어지지 못하고 $SACK,STAT,ERR,BUSY 만
+     *    나갔다. 유실을 보러 들어온 사람이 아무것도 못 보는 상태다.
+     *    되돌림 검사에서 우연히 드러난 것을 시험으로 못박는다. */
+    static MkAds ads;
+    static MkSample qbuf[MK_ADS_CHANNELS][2];
+    static uint8_t tx[8], rx[8];
+    MkHostlink h; Sink s;
+
+    setup_cfg(&h, &s);
+    mk_ads_init(&ads, NULL, tx, rx, sizeof tx, 500);
+    for (int i = 0; i < MK_ADS_CHANNELS; i++) {
+        mk_ads_attach_queue(&ads, i, qbuf[i], 2);
+        mk_ads_configure(&ads, i, 1, 100, 0);
+        /* 넘치게 밀어 넣어 큰 수가 실리게 한다 */
+        for (int k = 0; k < 5; k++) {
+            mk_queue_push(mk_ads_queue(&ads, i), 1000 + k, k);
+        }
+    }
+    mk_hostlink_attach_ads(&h, &ads);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "7채널을 다 켜도 본문이 나온다");
+    if (s.n == 2) {
+        CHECK_EQ(s.lines[1], expect_line("SACK,STAT,OK"), "BUSY 가 아니다");
+        CHECK(strstr(s.lines[0], "\"ch\":6") != NULL, "마지막 채널까지 실린다");
+        CHECK(strstr(s.lines[0], "\"drops\":3") != NULL, "유실 수도 온전하다");
+    }
+}
+
+static void test_stat_without_an_ads_reports_no_queues(void)
+{
+    /* 🔴 0 을 채워 보내지 않는다. "채널이 없다" 와 "채널이 있는데 유실이
+     *    0" 은 다른 말이고, 유실을 찾는 사람에게는 그 차이가 전부다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0], "\"queues\":[]") != NULL,
+              "수집기가 없으면 빈 배열");
+    } else {
+        CHECK(0, "수집기가 없으면 빈 배열");
+    }
+}
+
 static void test_stat_unsupported_without_a_store(void)
 {
     MkHostlink h; Sink s;
@@ -799,6 +892,9 @@ int main(int argc, char **argv)
     test_cfg_reset();
     test_stat_emits_record_then_sack();
     test_stat_works_in_run_mode();
+    test_stat_reports_real_queue_state();
+    test_stat_fits_with_all_seven_channels();
+    test_stat_without_an_ads_reports_no_queues();
     test_stat_unsupported_without_a_store();
     test_cfg_unknown_subcommand();
     test_tick_emits_hb_at_1hz();

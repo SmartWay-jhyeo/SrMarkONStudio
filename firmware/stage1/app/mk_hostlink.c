@@ -1,5 +1,6 @@
 #include "mk_hostlink.h"
 
+#include "mk_ads1256.h"
 #include "mk_json.h"
 
 #include <string.h>
@@ -215,6 +216,11 @@ static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
  *
  * 🔴 CONFIG 전용이 아니다 (규격 §4). RUN 에서 상태를 못 보면 진단할 수
  *    없다 — 유실이 나는 것은 대개 RUN 일 때다. */
+void mk_hostlink_attach_ads(MkHostlink *h, struct MkAds *ads)
+{
+    h->ads = ads;
+}
+
 static void on_stat(MkHostlink *h, int64_t now_ms)
 {
     if (h->cfg == NULL) {
@@ -222,9 +228,45 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         return;
     }
 
-    char body[400];
-    /* 🔴 큐는 3단계에서 들어온다. 지금 없는 것을 있는 척하지 않는다 —
-     *    빈 배열을 보내면 호스트가 "채널이 없다" 를 정확히 읽는다. */
+    /* 🔴 수집기가 안 붙어 있으면 빈 배열이다. 0 을 채워 보내지 않는다 —
+     *    "채널이 없다" 와 "채널이 있는데 유실이 0" 은 다른 말이고, 유실을
+     *    찾으려고 이 창구를 보는 사람에게는 그 차이가 전부다.
+     *
+     * 🔴 켜진 채널만 싣는다. 그래서 `ch` 는 배열 첨자가 아니라 채널 번호다
+     *    (규격 §7.4). 시뮬레이터도 같은 규칙이다. */
+    MkQueueStat qs[MK_ADS_CHANNELS];
+    size_t n_q = 0;
+    if (h->ads != NULL) {
+        for (int i = 0; i < MK_ADS_CHANNELS; i++) {
+            MkQueue *q = mk_ads_queue(h->ads, i);
+            if (q == NULL || !mk_ads_channel_enabled(h->ads, i)) {
+                continue;
+            }
+            qs[n_q].ch = (uint8_t)i;
+            qs[n_q].depth = mk_queue_count(q);
+            qs[n_q].peak = mk_queue_peak(q);
+            qs[n_q].drops = mk_queue_drops(q);
+            n_q++;
+        }
+    }
+
+    /* 🔴 7채널을 다 켰을 때의 최악 길이를 세어 잡은 값이다.
+     *
+     *      머리(schema_ver..uptime_ms, 최악값)      178
+     *      rails                                     47
+     *      queues 7개 (ch/depth/peak/drops 최댓값)   397
+     *      + 줄바꿈 + NUL                              2
+     *      ---------------------------------------------
+     *                                               624
+     *
+     *    처음에 400 으로 잡아 두었다가 되돌림 검사에서 발견했다. 꺼진 채널을
+     *    거르는 코드를 지웠더니 $STAT 이 ERR,BUSY 로 떨어졌는데, 그것은
+     *    **7채널을 다 켜면 정상 동작에서도 그렇게 된다**는 뜻이었다.
+     *    사용자가 채널을 다 켜는 순간 진단 창구가 닫히는 셈이다.
+     *
+     *    이 줄은 $ 프레임이 아니라 NDJSON 이라 MK_LINE_MAX(192)의 제약을
+     *    받지 않는다. 그쪽은 명령·SACK 의 payload 한도다(규격 §3). */
+    char body[768];
     int n = mk_cfgwire_stat(
         h->cfg, now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
@@ -233,7 +275,7 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
          *    UTC 가 아니다 — 호스트가 이것을 시각으로 저장하면 안 된다.
          *    3단계에서 시간 소스가 붙으면 여기가 바뀐다. */
         "device_clock", 0u,
-        NULL, 0, body, sizeof body);
+        n_q > 0 ? qs : NULL, n_q, body, sizeof body);
 
     if (!emit_json(h, body, sizeof body, n)) {
         emit_sack_err(h, "STAT", "BUSY");
