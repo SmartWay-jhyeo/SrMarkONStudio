@@ -33,11 +33,42 @@ _estack = ORIGIN(RAM) + LENGTH(RAM);	/* end of "RAM" Ram type memory */
 _Min_Heap_Size = 0x200;	/* required amount of heap  */
 _Min_Stack_Size = 0x400;	/* required amount of stack */
 
-/* Memories definition */
+/* Memories definition
+ *
+ * 🔴 RAM(DTCM)에는 DMA 버퍼를 둘 수 없다. 여기가 이 보드에서 가장 조용히
+ *    실패하는 자리다 — 컴파일도 링크도 통과하고 전송만 안 된다.
+ *
+ *    RM0468, p.140: "DTCM-RAM on TCM interface is mapped at the address
+ *    0x2000 0000 and accessible by Cortex-M7, and by MDMA through AHBS
+ *    slave bus of the Cortex-M7 CPU."
+ *    RM0468, p.106 의 Bus-master-to-bus-slave 표에서 DTCM 행에 표시된
+ *    마스터는 `Cortex-M7 - DTCM` 과 `MDMA - AHBS` 뿐이다. DMA1·DMA2 는
+ *    칸이 비어 있다.
+ *
+ *    ADS1256(SPI4)도 I2C 세 버스도 DMA1/DMA2 를 쓴다. 그러니 그 버퍼는
+ *    아래 RAM_D2 나 AXISRAM 에 두어야 한다. 배치는 bsp/mk_dma_mem.h 의
+ *    MK_DMA_BUF 로 하고, tools/check_dma_placement.py 가 링크 후에
+ *    실제 주소를 확인한다.
+ */
 MEMORY
 {
   ITCMRAM    (xrw)    : ORIGIN = 0x00000000,   LENGTH = 64K
+
+  /* DTCM — CPU 전용. 스택·힙·일반 변수 자리다.
+   * RM0468 p.140: "can be used as read-write segment to host critical
+   * real-time data (such as stack and heap)" */
   RAM    (xrw)    : ORIGIN = 0x20000000,   LENGTH = 128K
+
+  /* D1 AXI SRAM — RM0468 p.139: 0x24 00 0000, 128 Kbytes,
+   * "accessible by all system masters except BDMA" */
+  AXISRAM    (xrw)    : ORIGIN = 0x24000000,   LENGTH = 128K
+
+  /* D2 AHB SRAM1+SRAM2 — RM0468 p.139~140. SRAM1 은 0x3000 0000 에 16K,
+   * SRAM2 는 바로 이어지는 0x3000 4000 에 16K 라 32K 로 붙는다.
+   * 둘 다 "can be used as DMA buffers to store peripheral input/output
+   * data in D2 domain" 로 명시돼 있다 — DMA 버퍼의 기본 자리다. */
+  RAM_D2    (xrw)    : ORIGIN = 0x30000000,   LENGTH = 32K
+
   ROM    (rx)    : ORIGIN = 0x08000000,   LENGTH = 1024K
 }
 
@@ -165,6 +196,26 @@ SECTIONS
     . = . + _Min_Stack_Size;
     . = ALIGN(8);
   } >RAM
+
+  /* DMA 버퍼 — D2 도메인. bsp/mk_dma_mem.h 의 MK_DMA_BUF 가 여기로 보낸다.
+   *
+   * NOLOAD 다. 시작 코드가 .bss 처럼 0 으로 채워 주지 않으므로 내용을
+   * 가정하지 않는다 — DMA 가 덮어쓸 자리라 초기값에 의미가 없고,
+   * 굽는 이미지도 커지지 않는다.
+   *
+   * 🔴 32바이트 정렬. 지금은 D-캐시가 꺼져 있어(SCB_EnableDCache 호출이
+   *    없다) 코히런시 문제가 없지만, 나중에 켜면 Cortex-M7 의 캐시 라인이
+   *    32바이트라 그 경계에 맞지 않은 버퍼는 이웃 변수까지 무효화한다.
+   *    켤 때 이 정렬을 다시 찾아 헤매지 않도록 지금 맞춰 둔다. */
+  .dma_buffers (NOLOAD) :
+  {
+    . = ALIGN(32);
+    _sdma_buffers = .;
+    *(.dma_buffers)
+    *(.dma_buffers*)
+    . = ALIGN(32);
+    _edma_buffers = .;
+  } >RAM_D2
 
   /* Remove information from the compiler libraries */
   /DISCARD/ :

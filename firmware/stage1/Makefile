@@ -85,6 +85,17 @@ VPATH = $(sort $(dir $(C_SRC)))
 # ── 규칙 ─────────────────────────────────────────────────────
 all: $(BUILD)/$(TARGET).elf $(BUILD)/$(TARGET).bin $(BUILD)/$(TARGET).hex
 	@"$(SZ)" $(BUILD)/$(TARGET).elf
+	@$(MAKE) --no-print-directory check-dma
+
+# 🔴 DMA 버퍼가 DTCM 에 잡혔는지 링크 후에 본다.
+#
+#    DTCM 에 잡혀도 컴파일·링크가 전부 통과하고 경고가 없다. 실기기에서
+#    전송만 조용히 안 된다(RM0468 p.140/p.106 — DMA1·DMA2 는 DTCM 에 닿지
+#    못한다). 그래서 `all` 에 매달아 둔다 — 따로 부르게 두면 아무도 안 부른다.
+check-dma: $(BUILD)/$(TARGET).map
+	@python tools/check_dma_placement.py $(BUILD)/$(TARGET).map
+
+.PHONY: all check-dma
 
 $(BUILD)/%.o: %.c | $(BUILD)
 	@"$(CC)" $(CFLAGS) -c $< -o $@
