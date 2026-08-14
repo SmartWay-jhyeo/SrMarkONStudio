@@ -56,7 +56,25 @@ class SerialTransport:
     def __init__(self, port: str, baud: int = DEFAULT_BAUD, timeout: float = 0.1):
         import serial  # 지연 import — 시리얼 없이도 테스트가 돌게 한다
 
-        self._ser = serial.Serial(port, baud, timeout=timeout)
+        # 🔴 DTR/RTS 를 **열기 전에** 내린다.
+        #
+        #    `serial.Serial(port, baud, ...)` 한 줄 생성자는 생성과 동시에
+        #    포트를 열면서 두 선을 세운다. 이 보드는 그러면 멈춘다
+        #    (CLAUDE.md §4, 2026-08-14 실증). 한 번은 보드가 죽어 GDB 로
+        #    리셋해야 했고, 한 번은 F103 의 UART 브리지가 멈춰 보드 전원을
+        #    끊었다 넣어야 했다.
+        #
+        #    포트를 만들고 → 두 선을 내리고 → 그 다음에 연다. 순서가 전부다.
+        self._ser = serial.Serial()
+        self._ser.port = port
+        self._ser.baudrate = baud
+        self._ser.timeout = timeout
+        self._ser.dtr = False
+        self._ser.rts = False
+        self._ser.open()
+        # 연 뒤에도 한 번 더 내린다 — 드라이버에 따라 열면서 되살아난다.
+        self._ser.dtr = False
+        self._ser.rts = False
         self._buf = ""
 
     def write(self, data: str) -> None:

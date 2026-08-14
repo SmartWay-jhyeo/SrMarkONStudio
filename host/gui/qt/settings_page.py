@@ -122,11 +122,21 @@ class SettingsPage(QWidget):
 
     #: 보드에 보낼 (키, 값) 목록
     apply_requested = pyqtSignal(list)
+    #: $CFG,SAVE — Flash 에 남긴다
+    save_requested = pyqtSignal()
+    #: $CFG,RESET — 전부 기본값으로
+    reset_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._form: SettingsForm | None = None
         self._rows: dict[str, RowWidget] = {}
+        #: 보드에 적용됐지만 아직 Flash 에 저장되지 않은 변경이 있는가.
+        #: 🔴 보드의 dirty 플래그와 별개로 호스트가 자기가 보낸 것을 센다 —
+        #:    보드는 그것을 알려 주지 않고, 물어볼 명령도 없다.
+        self._unsaved = False
+        #: 시험에서 확인 대화상자를 건너뛰기 위한 고리.
+        self._confirm = self._ask_confirm
 
         self._body = QVBoxLayout()
         self._body.setSpacing(Space.MD)
@@ -149,10 +159,28 @@ class SettingsPage(QWidget):
         self._revert.setEnabled(False)
         self._revert.clicked.connect(self._on_revert)
 
+        # 🔴 적용과 저장은 다른 사실이다.
+        #
+        #    적용은 보드의 RAM 에 들어간 것이고, 저장은 Flash 에 남은 것이다.
+        #    적용만 하고 전원을 끄면 사라진다. 화면이 둘을 같은 것처럼 보이면
+        #    사용자는 설정이 남은 줄 알고 보드를 떼어 간다.
+        #
+        #    이 앱이 "명령됨 / 확인됨" 을 구분하는 것과 같은 부류다.
+        self._save = QPushButton("보드에 저장")
+        self._save.setEnabled(False)
+        self._save.clicked.connect(lambda: self.save_requested.emit())
+
+        self._reset = QPushButton("기본값으로")
+        self._reset.setEnabled(False)
+        self._reset.clicked.connect(self._on_reset)
+
         bar = QHBoxLayout()
+        bar.setSpacing(Space.SM)
         bar.addWidget(self._status, 1)
+        bar.addWidget(self._reset)
         bar.addWidget(self._revert)
         bar.addWidget(self._apply)
+        bar.addWidget(self._save)
 
         col = QVBoxLayout(self)
         col.setContentsMargins(Space.LG, Space.LG, Space.LG, Space.LG)
@@ -224,13 +252,22 @@ class SettingsPage(QWidget):
         errors = self._form.errors()
         self._apply.setEnabled(bool(pending))
         self._revert.setEnabled(self._form.has_changes)
+        self._save.setEnabled(self._unsaved)
+        self._reset.setEnabled(True)
 
         if errors:
             self._status.setText(f"고칠 것 {len(errors)}개 — 보낼 수 없다")
             self._status.setStyleSheet(f"color: {Color.FAULT};")
         elif pending:
-            self._status.setText(f"바뀐 항목 {len(pending)}개")
+            self._status.setText(f"보내지 않은 변경 {len(pending)}개")
             self._status.setStyleSheet("")
+        elif self._unsaved:
+            # 🔴 이 문구가 이 화면에서 가장 중요하다. 적용은 RAM 이고
+            #    저장은 Flash 다. 여기서 그만두고 보드를 떼어 가면 설정이
+            #    사라지는데, 화면이 말해 주지 않으면 알 길이 없다.
+            self._status.setText("보드에 적용됐지만 저장되지 않았다 — "
+                                 "전원을 끄면 사라진다")
+            self._status.setStyleSheet(f"color: {Color.WARN};")
         else:
             self._status.setText("바뀐 것이 없다")
             self._status.setStyleSheet("")
@@ -244,7 +281,53 @@ class SettingsPage(QWidget):
         if self._form is None:
             return
         self._form.revert_all()
+        unsaved = self._unsaved
         self.set_form(self._form)
+        # 🔴 되돌리기는 **화면의 편집**을 되돌린다. 이미 보드에 보낸 것은
+        #    되돌리지 않으므로 저장 여부도 그대로다. 여기서 지우면 사용자가
+        #    저장하지 않은 채 화면을 떠난다.
+        self._unsaved = unsaved
+        self._refresh_buttons()
+
+    def _ask_confirm(self, text: str) -> bool:
+        from PyQt6.QtWidgets import QMessageBox
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("확인")
+        box.setText(text)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes
+                               | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        return box.exec() == QMessageBox.StandardButton.Yes
+
+    def _on_reset(self) -> None:
+        """🔴 되돌릴 수 없는 동작이라 먼저 묻는다.
+
+        전 항목이 기본값으로 간다. 채널 영점·스케일처럼 손으로 맞춘 값이
+        섞여 있고, 그것을 다시 만들려면 센서를 다시 재야 한다.
+        """
+        if not self._confirm("설정을 전부 기본값으로 되돌린다.\n"
+                             "채널 영점·스케일처럼 손으로 맞춘 값도 사라진다.\n\n"
+                             "계속할까?"):
+            return
+        self.reset_requested.emit()
+
+    # ------------------------------------------------------------- 저장 상태
+
+    def mark_unsaved(self) -> None:
+        """보드에 무언가를 적용했다 — 아직 Flash 에는 없다."""
+        self._unsaved = True
+        self._refresh_buttons()
+
+    def mark_saved(self) -> None:
+        """$CFG,SAVE 가 성공했다."""
+        self._unsaved = False
+        self._refresh_buttons()
+
+    @property
+    def has_unsaved(self) -> bool:
+        return self._unsaved
 
     # ------------------------------------------------------------- 응답
 
@@ -255,6 +338,17 @@ class SettingsPage(QWidget):
         if key in self._rows:
             self._rows[key].mark_dirty(False)
             self._rows[key].clear_error()
+        # 보드의 RAM 에 들어갔을 뿐이다. Flash 는 아직이다.
+        self._unsaved = True
+        self._refresh_buttons()
+
+    def on_reset_done(self) -> None:
+        """보드가 $CFG,RESET 을 받아들였다.
+
+        보드의 값이 전부 바뀌었으므로 화면도 다시 읽어야 한다. 여기서는
+        저장이 필요하다는 것만 세우고, 카탈로그 재요청은 호출 쪽이 한다.
+        """
+        self._unsaved = True
         self._refresh_buttons()
 
     def on_rejected(self, key: str, reason: str) -> None:

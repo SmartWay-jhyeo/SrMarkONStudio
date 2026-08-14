@@ -93,6 +93,37 @@ def test_host_entry_points_use_the_shared_baud():
         ), f"{mod.__name__} 에 115200 이 박혀 있다"
 
 
+def test_serial_ports_are_opened_with_dtr_rts_down():
+    """🔴 이 보드는 DTR/RTS 를 세운 채 열면 멈춘다 (CLAUDE.md §4).
+
+    `serial.Serial(port, baud, ...)` 한 줄 생성자는 생성과 동시에 포트를
+    열면서 두 선을 세운다. 실제로 두 번 당했다 — 한 번은 보드가 죽어 GDB 로
+    리셋했고, 한 번은 F103 의 UART 브리지가 멈춰 보드 전원을 끊었다 넣어야
+    했다. 두 번째는 GUI 가 이 경로로 포트를 연 직후였다.
+
+    포트를 만들고 → 두 선을 내리고 → 그 다음에 연다. 순서가 전부다.
+    """
+    import inspect
+    import re
+
+    from host.service import board_service
+
+    src = inspect.getsource(board_service.SerialTransport)
+    body = re.sub(r"#[^\n]*", "", src)          # 주석은 뺀다
+
+    assert not re.search(r"serial\.Serial\s*\(\s*[^)\s]", body), (
+        "serial.Serial(...) 에 인자를 주면 열면서 DTR/RTS 를 세운다. "
+        "빈 생성자로 만들고 dtr/rts 를 내린 뒤 open() 해야 한다."
+    )
+    assert "dtr = False" in body and "rts = False" in body, (
+        "DTR/RTS 를 내리는 코드가 없다"
+    )
+    # open() 보다 먼저 내려야 한다.
+    assert body.index("dtr = False") < body.index(".open()"), (
+        "open() 뒤에만 내리면 이미 늦다 — 여는 순간 세워진다"
+    )
+
+
 def test_build_command_rejects_long_verb():
     long_verb = "V" * (limits.MAX_VERB_BYTES + 1)
     with pytest.raises(MalformedLineError):

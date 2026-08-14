@@ -183,6 +183,98 @@ def test_revert_restores_the_screen(app, form):
     assert not page._apply.isEnabled()
 
 
+# ------------------------------------------------------ 적용 vs 저장
+
+def test_applying_marks_unsaved(app, form):
+    """🔴 적용은 보드의 RAM 이고 저장은 Flash 다.
+
+    적용만 하고 전원을 끄면 사라진다. 화면이 둘을 같은 것으로 보이면
+    사용자는 설정이 남은 줄 알고 보드를 떼어 간다.
+    """
+    page = SettingsPage()
+    page.set_form(form)
+    assert page.has_unsaved is False
+    assert not page._save.isEnabled()
+
+    page._rows["tx.period_ms"]._editor.setText("250")
+    page._apply.click()
+    page.on_accepted("tx.period_ms")
+
+    assert page.has_unsaved is True
+    assert page._save.isEnabled()
+    assert "저장되지 않았다" in page._status.text()
+
+
+def test_saving_clears_the_warning(app, form):
+    page = SettingsPage()
+    page.set_form(form)
+    page._rows["tx.period_ms"]._editor.setText("250")
+    page.on_accepted("tx.period_ms")
+
+    got = []
+    page.save_requested.connect(lambda: got.append(True))
+    page._save.click()
+    assert got
+
+    page.mark_saved()
+    assert page.has_unsaved is False
+    assert not page._save.isEnabled()
+    assert "저장되지 않았다" not in page._status.text()
+
+
+def test_reverting_does_not_clear_unsaved(app, form):
+    """🔴 되돌리기는 **화면의 편집**을 되돌린다.
+
+    이미 보드에 보낸 것은 되돌리지 않으므로 저장 여부도 그대로다. 여기서
+    지우면 사용자가 저장하지 않은 채 화면을 떠난다.
+    """
+    page = SettingsPage()
+    page.set_form(form)
+    page._rows["tx.period_ms"]._editor.setText("250")
+    page.on_accepted("tx.period_ms")
+    page._rows["dev.id"]._editor.setText("x")
+    page._revert.click()
+
+    assert page.has_unsaved is True
+    assert page._save.isEnabled()
+
+
+def test_reset_asks_first(app, form):
+    """🔴 되돌릴 수 없는 동작이라 먼저 묻는다.
+
+    채널 영점·스케일처럼 손으로 맞춘 값도 사라지고, 다시 만들려면 센서를
+    다시 재야 한다.
+    """
+    page = SettingsPage()
+    page.set_form(form)
+    got = []
+    page.reset_requested.connect(lambda: got.append(True))
+
+    asked = []
+    page._confirm = lambda text: (asked.append(text), False)[1]
+    page._reset.click()
+    assert asked, "묻지 않았다"
+    assert "기본값" in asked[0]
+    assert not got, "거절했는데 보냈다"
+
+    page._confirm = lambda text: True
+    page._reset.click()
+    assert got, "수락했는데 안 보냈다"
+
+
+def test_save_and_reset_are_separate_commands(app):
+    """저장과 초기화가 값 설정과 같은 태그로 합쳐지면 안 된다."""
+    from host.gui.command_queue import CommandQueue
+
+    q = CommandQueue()
+    q.submit("CFG", "SET", "tx.period_ms", "250", tag="set:tx.period_ms")
+    q.submit("CFG", "SAVE", tag="cfg:save")
+    q.submit("CFG", "RESET", tag="cfg:reset")
+    sent = q.drain_pending()
+    assert len(sent) == 3
+    assert {c.args[0] for c in sent} == {"SET", "SAVE", "RESET"}
+
+
 # ------------------------------------------------------------ 루프 게이지
 
 def test_gauge_never_draws_a_bar_for_a_fault(app):

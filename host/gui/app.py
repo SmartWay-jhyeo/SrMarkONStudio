@@ -51,6 +51,8 @@ class MainWindow(QMainWindow):
         self._dashboard = Dashboard()
         self._settings = SettingsPage()
         self._settings.apply_requested.connect(self._on_apply)
+        self._settings.save_requested.connect(self._on_save)
+        self._settings.reset_requested.connect(self._on_reset)
 
         self._pages = QStackedWidget()
         self._pages.addWidget(self._dashboard)
@@ -129,7 +131,26 @@ class MainWindow(QMainWindow):
         self._apply_records(result.records, reachable=reachable)
 
         for res in result.results:
-            key = res.tag.split(":", 1)[-1] if res.tag else ""
+            tag = res.tag or ""
+            if tag == "cfg:save":
+                if res.ok:
+                    self._settings.mark_saved()
+                    self._top.set_link("저장됨")
+                else:
+                    self._top.set_link(
+                        f"저장 실패: {res.reason or res.error}", bad=True)
+                continue
+            if tag == "cfg:reset":
+                if res.ok:
+                    # 보드 값이 전부 바뀌었다 — 화면을 다시 읽는다.
+                    self._settings.on_reset_done()
+                    self._load_catalog()
+                else:
+                    self._top.set_link(
+                        f"초기화 실패: {res.reason or res.error}", bad=True)
+                continue
+
+            key = tag.split(":", 1)[-1]
             if res.ok:
                 self._settings.on_accepted(key)
             else:
@@ -173,6 +194,20 @@ class MainWindow(QMainWindow):
     def _on_apply(self, changes: list) -> None:
         for key, value in changes:
             self._queue.submit("CFG", "SET", key, value, tag=f"set:{key}")
+
+    def _on_save(self) -> None:
+        """🔴 태그를 주지 않는다 — 합쳐지면 안 된다.
+
+        저장을 두 번 누른 것은 두 번 저장하겠다는 뜻이다. 값 설정과 달리
+        "마지막 것만 반영되면 되는" 종류가 아니다 (command_queue 참조).
+
+        다만 결과를 화면에 되돌려 붙이려면 태그가 필요하다. 고정 태그를
+        쓰되, 저장은 보통 한 번에 하나만 떠 있으므로 합쳐질 일이 없다.
+        """
+        self._queue.submit("CFG", "SAVE", tag="cfg:save")
+
+    def _on_reset(self) -> None:
+        self._queue.submit("CFG", "RESET", tag="cfg:reset")
 
     def closeEvent(self, event) -> None:      # noqa: N802
         self._worker.stop()
