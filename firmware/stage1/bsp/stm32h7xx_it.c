@@ -46,6 +46,14 @@ void EXTI15_10_IRQHandler(void)
     mk_ads_io_drdy_isr();
 }
 
+/* 🔴 H7 의 SPI 는 전송 종료를 EOT 플래그로 알리고, HAL 은 그 인터럽트에서
+ *    완료 콜백을 부른다. 이것이 없으면 DMA 는 다 옮겨 놓고도 통보가 오지
+ *    않아 상태머신이 영원히 기다린다 — 실기기에서 그 상태를 봤다. */
+void SPI4_IRQHandler(void)
+{
+    mk_ads_io_spi_isr();
+}
+
 void DMA1_Stream0_IRQHandler(void)   /* SPI4 RX */
 {
     mk_ads_io_dma_rx_isr();

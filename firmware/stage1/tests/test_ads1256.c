@@ -226,6 +226,41 @@ static void test_round_robin_does_not_starve_later_channels(void)
     CHECK(seen[3] > 0, "느린 채널도 차례가 온다 (굶지 않는다)");
 }
 
+static void test_reconfiguring_with_the_same_values_does_not_starve(void)
+{
+    /* 🔴 실기기에서 찾은 결함의 짝이다.
+     *
+     *    설정은 슈퍼루프가 매 바퀴 mk_ads_configure 로 밀어 넣는다 —
+     *    GUI 에서 값이 바뀐 것을 알아챌 다른 통로가 없다. 그때마다
+     *    next_due_ms 를 `now + period` 로 다시 잡으면 예정이 영원히
+     *    도착하지 않고 채널이 **한 번도** 읽히지 않는다.
+     *
+     *    보드에 올리기 전에는 드러나지 않는다. 시험에서는 configure 를
+     *    한 번만 부르기 때문이다. */
+    setup(0);
+    mk_ads_configure(&A, 0, 1, 100, 0);
+
+    /* 슈퍼루프가 도는 흉내 — 매 ms 마다 같은 설정을 다시 밀어 넣는다. */
+    for (int64_t t = 0; t <= 100; t++) {
+        mk_ads_configure(&A, 0, 1, 100, t);
+        mk_ads_tick(&A, t);
+    }
+    CHECK(mk_ads_state(&A) != MK_ADS_IDLE,
+          "같은 값을 계속 밀어 넣어도 예정이 도착한다");
+}
+
+static void test_changing_the_period_does_reschedule(void)
+{
+    /* 위 최적화가 진짜 변경까지 무시하면 안 된다. */
+    setup(0);
+    mk_ads_configure(&A, 0, 1, 100, 0);
+    mk_ads_configure(&A, 0, 1, 500, 0);
+    mk_ads_tick(&A, 100);
+    CHECK(mk_ads_state(&A) == MK_ADS_IDLE, "주기를 늘리면 그만큼 미뤄진다");
+    mk_ads_tick(&A, 500);
+    CHECK(mk_ads_state(&A) == MK_ADS_SETUP, "새 주기에 맞춰 돈다");
+}
+
 static void test_the_longest_waiting_channel_goes_first(void)
 {
     /* 🔴 여러 채널이 한꺼번에 밀렸을 때 **가장 오래 기다린 것**부터 읽는다.
@@ -373,6 +408,8 @@ int main(void)
     test_timestamp_is_the_drdy_moment();
     test_negative_code_is_sign_extended();
     test_round_robin_does_not_starve_later_channels();
+    test_reconfiguring_with_the_same_values_does_not_starve();
+    test_changing_the_period_does_reschedule();
     test_the_longest_waiting_channel_goes_first();
     test_drdy_timeout_frees_the_other_channels();
     test_stray_drdy_is_ignored();

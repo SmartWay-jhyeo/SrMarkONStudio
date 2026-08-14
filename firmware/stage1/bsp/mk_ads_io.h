@@ -45,6 +45,9 @@ void mk_ads_io_init(MkAds *a);
 /* EXTI15 인터럽트에서 부른다 (stm32h7xx_it.c). */
 void mk_ads_io_drdy_isr(void);
 
+/* SPI4 인터럽트에서 부른다 — H7 은 EOT 로 완료를 알린다. */
+void mk_ads_io_spi_isr(void);
+
 /* SPI4 DMA 인터럽트에서 부른다. */
 void mk_ads_io_dma_rx_isr(void);
 void mk_ads_io_dma_tx_isr(void);

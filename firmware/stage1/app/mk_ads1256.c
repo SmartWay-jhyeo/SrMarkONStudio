@@ -53,7 +53,19 @@ void mk_ads_configure(MkAds *a, int ch, int enabled, uint16_t period_ms,
         return;
     }
     MkAdsChannel *c = &a->ch[ch];
-    c->enabled = (uint8_t)(enabled && period_ms > 0u);
+    uint8_t want = (uint8_t)(enabled && period_ms > 0u);
+
+    /* 🔴 바뀐 것이 없으면 손대지 않는다.
+     *
+     *    설정은 슈퍼루프가 매 바퀴 이 함수로 밀어 넣는다 — GUI 에서 값을
+     *    바꾼 것을 알아채는 다른 통로가 없기 때문이다. 그때마다
+     *    next_due_ms 를 앞으로 밀면 예정이 영원히 도착하지 않고 채널이
+     *    한 번도 읽히지 않는다. 같은 값이면 그냥 돌아간다. */
+    if (c->enabled == want && c->period_ms == period_ms) {
+        return;
+    }
+
+    c->enabled = want;
     c->period_ms = period_ms;
     /* 지금부터 한 주기 뒤에 처음 읽는다. 0 으로 두면 설정을 바꾼 순간
      * 모든 채널이 한꺼번에 몰린다. */

@@ -65,6 +65,20 @@ static void emit(void *ctx, const char *line, size_t len)
 static MkConfig s_cfg;
 static MkAds    s_ads;
 
+/* 채널별 표본 저장소.
+ *
+ * 🔴 DMA 가 닿을 필요가 없다. 여기에 쓰는 것은 SPI 완료 인터럽트(CPU)이고
+ *    읽는 것은 슈퍼루프(CPU)다. 그래서 DTCM 에 두는 편이 오히려 빠르다 —
+ *    MK_DMA_BUF 를 붙이지 않는 것이 맞다.
+ *
+ * 🔴 붙이는 것을 잊으면 표본이 조용히 사라진다. 실기기에서 그랬다:
+ *    수집은 정상인데 $STAT 의 drops 만 올라갔다(qcount=0, qdrops=32).
+ *    mk_queue 가 저장소 없는 push 도 세어 주기 때문에 원인이 바로 보였다.
+ *
+ * 32칸이면 100 ms 주기에서 3.2초분이다. 슈퍼루프가 그보다 훨씬 자주 돈다. */
+#define SAMPLES_PER_CHANNEL  32
+static MkSample s_samples[MK_ADS_CHANNELS][SAMPLES_PER_CHANNEL];
+
 /* 🔴 크기를 어림으로 잡지 않는다. 실제 항목 수에서 나온다.
  *    Flash 쪽 staging 버퍼를 512 로 어림잡았다가 실기기에서 저장이
  *    ERR,BUSY 로 떨어진 적이 있다 — 45항목 × 24바이트 = 1,080 이었다. */
@@ -84,6 +98,38 @@ static int save_config(void *ctx)
     }
     mk_cfgtable_pack(&s_cfg, s_blob);
     return mk_flash_save(s_blob, n);
+}
+
+/* 설정표의 ain* 항목을 수집기에 반영한다.
+ *
+ * 🔴 핀 번호가 아니라 커넥터 개념으로 다룬다 — 채널 n 은 J(n+3) 이고,
+ *    그 대응은 설정 키 이름에만 있다(설계 원칙 1). */
+static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
+{
+    for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
+        char key[24];
+        int n = 0;
+
+        /* "ain<n>.enabled" / "ain<n>.period_ms" 를 손으로 만든다 —
+         * app/ 과 마찬가지로 여기서도 snprintf 를 부르지 않는다. */
+        key[n++] = 'a'; key[n++] = 'i'; key[n++] = 'n';
+        key[n++] = (char)('0' + ch);
+        const char *suffix = ".enabled";
+        for (const char *p = suffix; *p; p++) { key[n++] = *p; }
+        key[n] = '\0';
+        MkCfgItem *en = mk_cfg_find(cfg, key);
+
+        n = 4;                              /* "ain<n>" 뒤부터 다시 */
+        suffix = ".period_ms";
+        for (const char *p = suffix; *p; p++) { key[n++] = *p; }
+        key[n] = '\0';
+        MkCfgItem *pr = mk_cfg_find(cfg, key);
+
+        if (en == NULL || pr == NULL) {
+            continue;
+        }
+        mk_ads_configure(ads, ch, (int)en->cur.u, (uint16_t)pr->cur.u, now_ms);
+    }
 }
 
 int main(void)
@@ -128,6 +174,9 @@ int main(void)
      *    않는다는 규칙(test_firmware_safety.py)이 있고, 그 규칙을 바꾸는
      *    것은 실물로 확인할 수 있을 때 함께 한다. */
     mk_ads_io_init(&s_ads);
+    for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
+        mk_ads_attach_queue(&s_ads, ch, s_samples[ch], SAMPLES_PER_CHANNEL);
+    }
     mk_hostlink_attach_ads(&link, &s_ads);
 
     char rx[MK_RX_LINE_MAX];
@@ -146,6 +195,19 @@ int main(void)
         }
 
         mk_hostlink_tick(&link, now);
+
+        /* 🔴 설정을 수집기로 밀어 넣는다.
+         *
+         *    이것이 없으면 GUI 에서 채널을 켜도 수집기는 영원히 모른다.
+         *    실기기에서 찾았다 — ain0.enabled 를 true 로 바꿨는데 $STAT 의
+         *    queues 가 계속 빈 배열이었다. 설정과 수집기를 잇는 선이
+         *    아예 없었던 것이다.
+         *
+         *    매 바퀴 미는 이유는 설정이 바뀐 것을 알아챌 다른 통로가
+         *    없기 때문이다. mk_ads_configure 는 같은 값이면 아무것도
+         *    하지 않으므로(그러지 않으면 예정이 영원히 밀린다) 싸다. */
+        sync_channels(&s_ads, &s_cfg, now);
+
         mk_ads_tick(&s_ads, now);
 
         /* 살아 있음 표시. 모드에 따라 주기를 바꿔 눈으로 구분한다.

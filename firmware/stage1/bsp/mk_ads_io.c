@@ -102,6 +102,18 @@ static void spi_init(void)
     __HAL_RCC_SPI4_CLK_ENABLE();
     __HAL_RCC_DMA1_CLK_ENABLE();
 
+    /* 🔴 D2 도메인 SRAM 의 클럭을 켠다.
+     *
+     *    DMA 버퍼가 0x3000_0000(SRAM1)에 있는데, 리셋 직후 AHB2ENR 의
+     *    SRAM1EN·SRAM2EN 은 0 이다. 실기기에서 읽어 확인했다
+     *    (AHB2ENR = 0x00000000, 2026-08-14).
+     *
+     *    DTCM 을 피해 D2 로 옮겨 놓고 클럭을 안 켜면 결국 같은 자리로
+     *    돌아온다 — 전송이 조용히 안 되는 것. 링커·매크로·빌드 검사까지
+     *    다 갖춰 놓고 이 한 줄이 없어서 안 도는 것이 가능하다. */
+    __HAL_RCC_D2SRAM1_CLK_ENABLE();
+    __HAL_RCC_D2SRAM2_CLK_ENABLE();
+
     s_spi.Instance               = SPI4;
     s_spi.Init.Mode              = SPI_MODE_MASTER;
     s_spi.Init.Direction         = SPI_DIRECTION_2LINES;
@@ -152,6 +164,19 @@ static void spi_init(void)
     HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
     HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
+    /* 🔴 SPI4 자신의 인터럽트도 켜야 한다. DMA 인터럽트만으로는 부족하다.
+     *
+     *    STM32H7 의 SPI 는 전송 종료를 **EOT 플래그**로 알린다. HAL 의
+     *    DMA 전송은 그 EOT 인터럽트에서 TxRxCpltCallback 을 부르므로,
+     *    SPI4_IRQn 을 안 켜면 DMA 는 다 옮겨 놓고도 완료 통보가 오지 않는다.
+     *
+     *    실기기에서 이 상태를 봤다 (2026-08-14): SPI4 SR=0x101a 로 EOT 가
+     *    서 있고, DMA 스트림은 EN=0·NDTR=0 으로 이미 끝나 있는데,
+     *    s_spi.State 는 5(BUSY_TX_RX) 그대로였다. 상태머신은 SETUP 에서
+     *    영원히 기다리다 채널마다 타임아웃만 쌓았다. */
+    HAL_NVIC_SetPriority(SPI4_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(SPI4_IRQn);
 }
 
 void mk_ads_io_init(MkAds *a)
@@ -184,6 +209,7 @@ void mk_ads_io_drdy_isr(void)
     }
 }
 
+void mk_ads_io_spi_isr(void)    { HAL_SPI_IRQHandler(&s_spi); }
 void mk_ads_io_dma_rx_isr(void) { HAL_DMA_IRQHandler(&s_hdma_rx); }
 void mk_ads_io_dma_tx_isr(void) { HAL_DMA_IRQHandler(&s_hdma_tx); }
 
