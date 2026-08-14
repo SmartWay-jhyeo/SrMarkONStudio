@@ -21,6 +21,9 @@
 #include "stm32h7xx_hal.h"
 
 #include "mk_cfgtable.h"
+#include "app/mk_ads1256.h"
+#include "bsp/mk_ads_io.h"
+#include "bsp/mk_time.h"
 #include "mk_config.h"
 #include "mk_flash.h"
 #include "mk_hostlink.h"
@@ -60,6 +63,7 @@ static void emit(void *ctx, const char *line, size_t len)
 }
 
 static MkConfig s_cfg;
+static MkAds    s_ads;
 
 /* 🔴 크기를 어림으로 잡지 않는다. 실제 항목 수에서 나온다.
  *    Flash 쪽 staging 버퍼를 512 로 어림잡았다가 실기기에서 저장이
@@ -109,11 +113,30 @@ int main(void)
     mk_hostlink_attach_config(&link, &s_cfg, fields, n_fields,
                               save_config, NULL);
 
+    /* 🔴 수집기를 켠다. 다만 **아직 채널을 하나도 켜지 않는다.**
+     *
+     *    ADS1256 의 아날로그 전원과 기준전압이 5V 레일에 있다
+     *    [넷리스트 확인 2026-08-14]: V5 -> FB1 -> AVDD5 -> U9 pin1(AVDD),
+     *    그리고 같은 AVDD5 -> U10(VIN) -> VREF2V5 -> U9 pin4(VREFP).
+     *    디지털(DVDD pin16)만 V3V3 상시다.
+     *
+     *    그래서 PD10(5V)이 Low 인 지금은 SPI 레지스터가 정상 응답해도
+     *    변환이 되지 않고 DRDY 가 떨어지지 않는다. 채널을 켜 두면 채널마다
+     *    타임아웃만 쌓이고, 그것을 배선 문제로 오해하기 딱 좋다.
+     *
+     *    레일을 켜는 것은 별도 결정이다 — 지금 펌웨어는 레일을 건드리지
+     *    않는다는 규칙(test_firmware_safety.py)이 있고, 그 규칙을 바꾸는
+     *    것은 실물로 확인할 수 있을 때 함께 한다. */
+    mk_ads_io_init(&s_ads);
+    mk_hostlink_attach_ads(&link, &s_ads);
+
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;
 
     for (;;) {
-        int64_t now = (int64_t)HAL_GetTick();
+        /* 🔴 HAL_GetTick() 을 직접 쓰지 않는다. 32비트라 49.7일에 되감기고,
+         *    그 순간 타임스탬프가 과거로 뛴다 (bsp/mk_time.h). */
+        int64_t now = mk_time_ms();
 
         /* 받은 줄을 전부 처리한다. 한 바퀴에 하나만 처리하면 명령이 몰릴 때
          * 뒤로 밀린다. */
@@ -123,6 +146,7 @@ int main(void)
         }
 
         mk_hostlink_tick(&link, now);
+        mk_ads_tick(&s_ads, now);
 
         /* 살아 있음 표시. 모드에 따라 주기를 바꿔 눈으로 구분한다.
          *   RUN    2초에 한 번 (느리게)

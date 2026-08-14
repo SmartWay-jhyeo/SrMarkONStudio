@@ -39,6 +39,8 @@ C_SRC = \
   app/mk_cfgtable.c \
   app/mk_queue.c \
   app/mk_ads1256.c \
+  bsp/mk_time.c \
+  bsp/mk_ads_io.c \
   bsp/mk_flash.c \
   bsp/mk_uart.c \
   bsp/stm32h7xx_it.c \
@@ -53,6 +55,8 @@ C_SRC = \
   $(HAL)/Src/stm32h7xx_hal_uart.c \
   $(HAL)/Src/stm32h7xx_hal_uart_ex.c \
   $(HAL)/Src/stm32h7xx_hal_dma.c \
+  $(HAL)/Src/stm32h7xx_hal_dma_ex.c \
+  $(HAL)/Src/stm32h7xx_hal_spi.c \
   $(HAL)/Src/stm32h7xx_hal_flash.c \
   $(HAL)/Src/stm32h7xx_hal_flash_ex.c
 

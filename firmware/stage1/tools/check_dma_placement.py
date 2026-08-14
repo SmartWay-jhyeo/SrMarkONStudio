@@ -53,7 +53,18 @@ DTCM_END = DTCM_BASE + 128 * 1024
 
 #: 이름만 보고도 DMA 버퍼로 짐작되는 것들. MK_DMA_BUF 를 빠뜨린 심볼을
 #: 잡으려는 그물이지, 이것으로 충분하다는 뜻은 아니다.
+#:
+#: 🔴 Codex 감사(2026-08-14)의 지적대로 이름 규칙은 불완전하다. 실제로
+#:    **양쪽으로** 틀렸다 — 규칙 밖 이름의 버퍼는 놓치고, HAL 핸들
+#:    구조체(DMA_HandleTypeDef)는 헛짚어 빌드를 세웠다. 핸들은 CPU 가
+#:    읽는 것이라 DTCM 에 있어도 아무 문제가 없다.
+#:
+#:    제대로 된 해결은 전송을 거는 지점에서 실제 주소를 보는 것이다.
+#:    그때까지 이 그물은 **보조**로 둔다.
 SUSPECT = re.compile(r"(_dma_|_rx_buf|_tx_buf|_dmabuf)", re.IGNORECASE)
+
+#: 이름이 비슷하지만 DMA 버퍼가 아닌 것. ST 관례상 핸들은 `hdma_` 다.
+NOT_A_BUFFER = re.compile(r"hdma", re.IGNORECASE)
 
 
 #: 입력 구역 한 줄: `.bss.s_ads_rx   0x2000003c   0x8 build/main.o`
@@ -130,6 +141,22 @@ def main(argv: list[str]) -> int:
         return 2
 
     text = path.read_text(encoding="utf-8", errors="replace")
+
+    # 🔴 맵 앞부분의 "Discarded input sections" 를 실제 배치로 읽으면 안 된다.
+    #
+    #    거기 실린 구역은 --gc-sections 가 걷어낸 것들이고 주소가 전부
+    #    0x00000000 으로 찍힌다. 그것을 그대로 믿으면 "DMA 버퍼가 0x0 에
+    #    있다" 는 거짓 경보가 뜬다 — 실제로 이 도구가 처음 그렇게 울렸다.
+    #
+    #    실제 배치는 "Linker script and memory map" 뒤에만 있다.
+    marker = "Linker script and memory map"
+    at = text.find(marker)
+    if at < 0:
+        print(f"맵에서 '{marker}' 를 못 찾았다 ({path}). 형식이 바뀌었을 수 "
+              f"있으므로 통과시키지 않는다", file=sys.stderr)
+        return 2
+    text = text[at:]
+
     syms, regions = _parse_map(text)
 
     # 🔴 파싱이 통째로 실패해도 "문제 없음" 으로 보이면 안 된다.
@@ -155,7 +182,7 @@ def main(argv: list[str]) -> int:
         print("  --   .dma_buffers 구역이 없다 (아직 DMA 버퍼를 쓰지 않는다)")
 
     for name, addr in syms:
-        if not SUSPECT.search(name):
+        if not SUSPECT.search(name) or NOT_A_BUFFER.search(name):
             continue
         if D2_BASE <= addr < D2_END or AXI_BASE <= addr < AXI_END:
             print(f"  ok   {name:28} 0x{addr:08x}  ({_where(addr)})")
