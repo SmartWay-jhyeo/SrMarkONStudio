@@ -25,6 +25,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 🔴 콘솔 코드페이지에 기대지 않는다.
+#
+#    이 도구들은 한글과 `—` 를 찍는다. CP949 콘솔에서 돌면 글자가 깨지고,
+#    환경에 따라서는 UnicodeEncodeError 로 죽는다. 그러면 논리는 멀쩡한데
+#    시험이 실패한 것처럼 보인다 — 거짓 실패는 진짜 실패보다 나쁘다.
+#    아무도 안 믿게 되기 때문이다.
+#
+#    부르는 쪽(run_tests.ps1, Makefile)에서 PYTHONUTF8 을 세우는 방법도
+#    있지만, 그러면 손으로 직접 돌릴 때 다시 깨진다. 도구가 스스로 책임진다.
+#    Codex 감사(2026-08-14 16:15)의 지적.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 sys.path.insert(0, str(REPO))
@@ -67,7 +81,9 @@ STEPS: list[tuple[str, str | None]] = [
 #    붙이면서 C 쪽에 `time_source`·`time_quality` 가 없는 것을 찾았다.
 #
 #    `cfg_item` 의 키는 항목마다 다르다(min·max·unit·note·choices 는 있을 때만
-#    나간다). 그 대조는 실제 45항목 표를 쓰는 crosscheck_cfg.py 가 한다.
+#    나간다). 실제 45항목 표와 시뮬레이터의 대조는 crosscheck_cfgtable.py 가
+#    한다 — crosscheck_cfg.py 가 아니다. 그쪽은 test_cfgwire.c 의 6항목짜리
+#    시험용 표로 parse_catalog 를 확인하는 도구다.
 #    여기서는 봉투만 본다 — 본문이 몇 줄이든 cfg_end 로 닫고 SACK 로 끝나는가.
 #
 #    🔴 명령별로 **짝지어** 확인한다. 응답을 한 통에 모아 놓고 "어딘가에
