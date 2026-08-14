@@ -1,6 +1,7 @@
 #include "mk_hostlink.h"
 
 #include "mk_ads1256.h"
+#include "mk_railctl.h"
 #include "mk_json.h"
 
 #include <string.h>
@@ -221,6 +222,11 @@ void mk_hostlink_attach_ads(MkHostlink *h, struct MkAds *ads)
     h->ads = ads;
 }
 
+void mk_hostlink_attach_rails(MkHostlink *h, struct MkRailCtl *rails)
+{
+    h->rails = rails;
+}
+
 static void on_stat(MkHostlink *h, int64_t now_ms)
 {
     if (h->cfg == NULL) {
@@ -266,15 +272,28 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
      *
      *    이 줄은 $ 프레임이 아니라 NDJSON 이라 MK_LINE_MAX(192)의 제약을
      *    받지 않는다. 그쪽은 명령·SACK 의 payload 한도다(규격 §3). */
+    /* 🔴 설정표가 아니라 레일 제어기에서 읽는다. 설정은 "사용자가 원하는
+     *    것" 이고 이것은 "보드가 낸 것" 이다 — 그 차이가 순차 기동 중에
+     *    드러난다. 예전에는 mk_cfgwire_stat 이 설정표를 읽어서, 부팅 직후
+     *    pwr.5v 기본값(true)이 그대로 나가 핀은 0 인데 5V ON 이라고 했다
+     *    (실기기 확인 2026-08-14). */
+    MkRailState rs = {0, 0, 0};
+    if (h->rails != NULL) {
+        rs.v24   = (uint8_t)mk_railctl_is_on(h->rails, MK_RAIL_24V);
+        rs.v14v9 = (uint8_t)mk_railctl_is_on(h->rails, MK_RAIL_14V9);
+        rs.v5    = (uint8_t)mk_railctl_is_on(h->rails, MK_RAIL_5V);
+    }
+
     char body[768];
     int n = mk_cfgwire_stat(
-        h->cfg, now_ms,
+        now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
         h->fw, h->board_rev, (uint32_t)now_ms,
         /* 🔴 1단계에는 GNSS 도 PPS 도 없다. `t` 는 부팅 후 경과 ms 이고
          *    UTC 가 아니다 — 호스트가 이것을 시각으로 저장하면 안 된다.
          *    3단계에서 시간 소스가 붙으면 여기가 바뀐다. */
         "device_clock", 0u,
+        &rs,
         n_q > 0 ? qs : NULL, n_q, body, sizeof body);
 
     if (!emit_json(h, body, sizeof body, n)) {

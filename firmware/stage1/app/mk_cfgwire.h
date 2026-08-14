@@ -44,6 +44,17 @@ void mk_cfgwire_list(const MkConfig *cfg,
  *    들어오면 이것이 유일한 진단 창구가 된다 — 유실이 나는데 어디서
  *    나는지 모르면 고칠 수 없다. 아직 큐가 없으므로 지금은 0 이다.
  */
+/* 레일의 **명령 상태**. 실측이 아니다 — 피드백 회로가 없다.
+ *
+ * 🔴 설정표에서 만들지 않는다. 설정은 "원하는 것" 이고 이것은 "낸 것" 이다.
+ *    둘 사이에 순차 기동 간격이 있어서, 설정을 그대로 보고하면 아직 안
+ *    올린 레일을 켜졌다고 말하게 된다. */
+typedef struct {
+    uint8_t v24;
+    uint8_t v14v9;
+    uint8_t v5;
+} MkRailState;
+
 /* 🔴 `ch` 를 구조체가 들고 있다. 배열 첨자를 채널 번호로 쓰면, 꺼진 채널을
  *    건너뛴 순간 3번 채널의 유실이 1번 채널의 것으로 보고된다. 유실을
  *    찾으려고 보는 창구가 채널을 헷갈리면 없느니만 못하다. */
@@ -59,10 +70,14 @@ typedef struct {
  *    하고 부팅 후 경과 ms 이기도 한데, 명령 응답에는 필드 마스크가 없어
  *    텔레메트리처럼 실어 보낼 자리가 없다. $STAT 이 그 답을 주는 유일한
  *    곳이다 — 호스트는 연결 직후 한 번 물어보면 된다. */
-int mk_cfgwire_stat(const MkConfig *cfg, int64_t now_ms,
+/* 🔴 설정표를 받지 않는다. 예전에는 여기서 pwr.* 를 읽어 rails 를 만들었는데,
+ *    그것이 설계 원칙 4 위반이었다 — 설정은 사용자가 원하는 것이지 보드가
+ *    낸 것이 아니다. 이제 rails 를 인자로 받는다. */
+int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
+                    const MkRailState *rails,
                     const MkQueueStat *queues, size_t n_queues,
                     char *out, size_t cap);
 

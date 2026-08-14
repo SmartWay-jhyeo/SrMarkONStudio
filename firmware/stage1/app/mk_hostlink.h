@@ -57,6 +57,10 @@ typedef struct {
      *    유실을 찾으려고 이 창구를 보는 사람에게는 그 차이가 전부다. */
     struct MkAds     *ads;
 
+    /* 레일 제어기. 붙어 있으면 $STAT 의 rails 가 **실제 명령 상태**를
+     * 싣는다. 없으면 전부 false 다 — 설정표를 대신 읽지 않는다. */
+    struct MkRailCtl *rails;
+
     int64_t     last_hb_rx_ms;   /* 검증을 통과한 $HB 를 마지막으로 받은 시각 */
     int64_t     last_hb_tx_ms;   /* 우리가 $HB 를 마지막으로 보낸 시각 */
     int         hb_seen;         /* 아직 한 번도 못 받았으면 0 */
@@ -80,6 +84,9 @@ void mk_hostlink_attach_config(MkHostlink *h, MkConfig *cfg,
  *    시험하는 일이 어려워진다. 지금 시험들이 전부 그렇게 돌고 있다. */
 struct MkAds;
 void mk_hostlink_attach_ads(MkHostlink *h, struct MkAds *ads);
+
+struct MkRailCtl;
+void mk_hostlink_attach_rails(MkHostlink *h, struct MkRailCtl *rails);
 
 /* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
  *

@@ -133,20 +133,11 @@ void mk_cfgwire_list(const MkConfig *cfg,
     }
 }
 
-/* 레일의 현재 명령 상태를 설정에서 읽는다. 없으면 꺼진 것으로 본다.
- *
- * 🔴 없는 것을 켜진 것으로 보지 않는다. 설정에서 항목이 사라지는 것은
- *    실수이고, 실수했을 때 24V 가 켜져 있다고 말하면 안 된다. */
-static int rail_of(const MkConfig *cfg, const char *key)
-{
-    const MkCfgItem *it = mk_cfg_find((MkConfig *)cfg, key);
-    return (it != NULL && it->vtype == MK_VT_BOOL && it->cur.u) ? 1 : 0;
-}
-
-int mk_cfgwire_stat(const MkConfig *cfg, int64_t now_ms,
+int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
+                    const MkRailState *rails,
                     const MkQueueStat *queues, size_t n_queues,
                     char *out, size_t cap)
 {
@@ -160,11 +151,21 @@ int mk_cfgwire_stat(const MkConfig *cfg, int64_t now_ms,
     mk_json_u32(&j, "time_quality", time_quality);
     mk_json_u32(&j, "uptime_ms", uptime_ms);
 
-    /* 🔴 명령 상태이지 실측이 아니다. 호스트가 `ON 명령됨` 으로 표시한다. */
+    /* 🔴 **실제로 핀에 낸 것**을 싣는다. 설정표를 읽으면 안 된다.
+     *
+     *    설정표는 "사용자가 원하는 것" 이고, 그것이 핀에 나가기까지는
+     *    순차 기동 간격이 있다. 설정을 그대로 보고하면 아직 안 올린 레일을
+     *    켜졌다고 말하게 된다 — 실제로 그 상태였다. 부팅 직후 pwr.5v 의
+     *    기본값이 true 라 $STAT 이 5V ON 이라고 했는데 PD10 은 0 이었다
+     *    (실기기 확인 2026-08-14).
+     *
+     *    그래도 이것은 **명령 상태**이지 실측이 아니다. 피드백 회로가
+     *    없으므로 호스트는 `정상 ON` 이 아니라 `ON 명령됨` 으로 표시한다
+     *    (설계 원칙 4). */
     mk_json_object_begin(&j, "rails");
-    mk_json_bool(&j, "v24", rail_of(cfg, "pwr.24v"));
-    mk_json_bool(&j, "v14v9", rail_of(cfg, "pwr.14v9"));
-    mk_json_bool(&j, "v5", rail_of(cfg, "pwr.5v"));
+    mk_json_bool(&j, "v24", rails != NULL ? rails->v24 : 0);
+    mk_json_bool(&j, "v14v9", rails != NULL ? rails->v14v9 : 0);
+    mk_json_bool(&j, "v5", rails != NULL ? rails->v5 : 0);
     mk_json_object_end(&j);
 
     mk_json_array_begin(&j, "queues");

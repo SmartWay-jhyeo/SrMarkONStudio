@@ -55,48 +55,98 @@ def test_sources_exist():
     assert (FW / "main.c").exists()
 
 
-@pytest.mark.parametrize("path", _sources(), ids=lambda p: p.name)
-def test_no_rail_pin_is_touched(path: Path):
-    """🔴 1단계 펌웨어는 전원 레일을 켜지 않는다.
+#: 🔴 GPIOD 를 만져도 되는 유일한 파일.
+#:
+#:    레일이 거기 있으므로 한 군데로 묶는다. 여러 파일로 흩어지면 아래
+#:    검사들이 하나를 놓친다. 이전에는 `main.c` 였는데, 레일 제어를
+#:    구현하면서 전용 파일로 옮겼다 — main.c 는 응용 흐름이고, 레일은
+#:    하드웨어 불변조건이 걸린 곳이라 섞지 않는다.
+RAIL_OWNER = "mk_rails.c"
 
-    `$ID` 와 `$HB` 에 24V 가 필요 없다. 센서도 붙어 있지 않고 J30/J1 상태도
-    모르는 상황에서 불필요한 인가를 하지 않는다.
+
+def test_only_one_file_touches_gpiod():
+    touching = [p.name for p in _sources()
+                if "GPIOD" in _strip_comments(p.read_text(encoding="utf-8"))]
+    assert touching == [RAIL_OWNER], (
+        f"GPIOD 를 건드리는 파일: {touching} — {RAIL_OWNER} 하나여야 한다"
+    )
+
+
+@pytest.mark.parametrize("path", _sources(), ids=lambda p: p.name)
+def test_rail_pins_only_appear_in_the_owner(path: Path):
+    """레일 핀 상수가 소유 파일 밖에 나타나지 않는지.
 
     GPIOD 에 여러 핀을 OR 로 묶어 넣는 습관 때문에 실수하기 쉬운 자리다 —
     `GPIO_PIN_11 | GPIO_PIN_10` 한 글자가 5V 레일을 켠다.
 
     🔴 핀 번호만으로는 판정할 수 없다. `GPIO_PIN_10` 은 GPIOD 에서는 5V
-       레일이지만 GPIOB 에서는 USART3 TX 다. 포트가 무엇인지가 전부다.
-       그래서 **GPIOD 를 건드리는 파일에서만** 레일 핀을 금지한다.
+       레일이지만 GPIOB 에서는 USART3 TX 이고, GPIOE 에서는 ADS1256 의
+       RESET 이다. 포트가 무엇인지가 전부다. 그래서 **GPIOD 를 건드리는
+       파일에서만** 본다.
     """
+    if path.name == RAIL_OWNER:
+        pytest.skip("레일을 소유한 파일 — 아래 전용 검사가 따로 본다")
     code = _strip_comments(path.read_text(encoding="utf-8"))
     if "GPIOD" not in code:
         pytest.skip("GPIOD 를 건드리지 않는다 — 레일과 무관하다")
     for pin, what in RAIL_PINS.items():
-        hits = re.findall(rf"\b{pin}\b", code)
-        assert not hits, (
+        assert not re.findall(rf"\b{pin}\b", code), (
             f"{path.name} 이 GPIOD 를 쓰면서 {pin} ({what}) 을 언급한다. "
-            f"1단계는 전원 레일을 켜지 않는다."
+            f"레일은 {RAIL_OWNER} 만 만진다."
         )
 
 
-def test_only_main_touches_gpiod():
-    """GPIOD 를 건드리는 파일이 `main.c` 하나뿐인지.
+def test_five_volt_rail_is_never_driven_low():
+    """🔴 PD10(5V)을 내리는 코드가 없는지.
 
-    레일이 거기 있으므로, 건드리는 곳을 한 군데로 묶어 두면 위 검사가
-    빠짐없이 돈다. 여러 파일로 흩어지면 하나를 놓친다.
+    쿨링 팬(J34)이 5V 레일에 직결이고 상시 동작이 요구사항이다
+    (CLAUDE.md §4). 저전력 모드·에러 처리·레일 재시작 루틴에서 실수로
+    내리는 것이 문서가 경고하는 상황이고, 여기가 그것을 잡는 자리다.
+
+    🔴 이 검사는 이전 규칙("레일을 아예 안 건드린다")보다 **촘촘하다.**
+       이전에는 PD10 을 내리는 코드를 막을 방법이 아예 없었다 — 안 건드리는
+       동안에는 검사할 것이 없었기 때문이다. 이제 레일을 제어하므로
+       올리는 것과 내리는 것을 나눠서 본다.
+
+    소유 파일이 PIN_5V 를 쓰는 자리는 두 곳뿐이어야 한다:
+      - init 에서 전부 Low 로 두는 곳 (리셋 직후 상태 유지)
+      - set 에서 `on` 일 때만 내보내는 곳
     """
-    touching = [p.name for p in _sources()
-                if "GPIOD" in _strip_comments(p.read_text(encoding="utf-8"))]
-    assert touching == ["main.c"], f"GPIOD 를 건드리는 파일: {touching}"
+    code = _strip_comments((FW / "bsp" / RAIL_OWNER).read_text(encoding="utf-8"))
+
+    # `on ? SET : RESET` 삼항 밖에서 PIN_5V 와 RESET 이 같은 문장에 있으면
+    # 조건 없이 내리는 코드다. init 의 일괄 Low 만 예외로 둔다.
+    for stmt in code.split(";"):
+        if "PIN_5V" not in stmt or "GPIO_PIN_RESET" not in stmt:
+            continue
+        # init 의 일괄 초기화: 네 핀을 모두 묶어 Low 로 두는 문장
+        if "PIN_24V" in stmt and "PIN_14V9" in stmt and "PIN_LED" in stmt:
+            continue
+        # 삼항으로 on 일 때만 SET 하는 문장
+        if "GPIO_PIN_SET" in stmt and "?" in stmt:
+            continue
+        raise AssertionError(
+            f"{RAIL_OWNER} 에 5V 를 조건 없이 내리는 코드가 있다:\n"
+            f"  {' '.join(stmt.split())[:160]}"
+        )
 
 
-def test_led_pin_is_the_only_gpiod_pin():
-    """GPIOD 에서 쓰는 핀이 PD11(상태 LED) 하나뿐인지."""
-    code = _strip_comments((FW / "main.c").read_text(encoding="utf-8"))
-    pins = set(re.findall(r"\bGPIO_PIN_(\d+)\b", code))
-    # PB10/PB11 은 UART 라 bsp/mk_uart.c 에 있고 main.c 에는 없다.
-    assert pins == {"11"}, f"main.c 가 쓰는 핀: {sorted(pins)} (11 만 있어야 한다)"
+def test_rail_controller_refuses_to_lower_five_volts():
+    """순서 로직(app/mk_railctl.c)도 5V 내리기를 거부하는지.
+
+    bsp 한 겹만으로는 부족하다 — 이 층이 상태를 들고 있고, 여기서 막지
+    않으면 `on[]` 이 꺼진 것으로 바뀌어 `$STAT` 이 거짓을 보고한다.
+    """
+    code = _strip_comments((FW / "app" / "mk_railctl.c").read_text(encoding="utf-8"))
+    assert "MK_RAIL_5V" in code and "return" in code, (
+        "mk_railctl.c 에 5V 내리기를 막는 코드가 안 보인다"
+    )
+    # 실제 동작은 C 시험(test_railctl.c)이 확인한다. 여기서는 그 시험이
+    # 존재하는지까지 본다 — 지워지면 이 불변조건이 조용히 사라진다.
+    t = (FW / "tests" / "test_railctl.c").read_text(encoding="utf-8")
+    assert "test_five_volts_can_never_be_turned_off" in t, (
+        "5V 금지 시험이 사라졌다"
+    )
 
 
 def test_uart_uses_only_usart3_pins():

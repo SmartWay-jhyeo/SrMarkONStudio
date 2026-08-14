@@ -31,6 +31,9 @@ static const uint32_t DRATE[] = {2, 5, 10, 15, 25, 30, 50, 60, 100, 500,
 static MkCfgItem ITEMS[6];
 static MkConfig CFG;
 
+/* 레일 명령 상태. 이제 설정표가 아니라 이것이 실린다. */
+static MkRailState RS = { 1, 0, 1 };
+
 static const MkFieldBit FIELDS[] = {
     { 0, "device_id",   0, "보드 식별자" },
     { 1, "time_source", 1, "시간 소스" },
@@ -252,8 +255,8 @@ static void test_stat_shape(void)
     ITEMS[5].cur.u = 1;                     /* pwr.24v 를 켠 것으로 */
 
     MkQueueStat q[2] = { {0, 3, 9, 0}, {1, 0, 1, 7} };
-    int n = mk_cfgwire_stat(&CFG, 1772200855875LL, "CONFIG", "0.1.0", "2.0",
-                            123456u, "device_clock", 0u, q, 2, buf, sizeof buf);
+    int n = mk_cfgwire_stat(1772200855875LL, "CONFIG", "0.1.0", "2.0",
+                            123456u, "device_clock", 0u, &RS, q, 2, buf, sizeof buf);
     CHECK(n > 0, "stat 을 만든다");
     CHECK_HAS(buf, "\"type\":\"stat\"", "type");
     CHECK_HAS(buf, "\"mode\":\"CONFIG\"", "mode");
@@ -274,8 +277,8 @@ static void test_stat_with_no_queues(void)
      *    빈 배열이라야 호스트가 "채널이 없다" 를 정확히 읽는다. */
     char buf[400];
     setup();
-    int n = mk_cfgwire_stat(&CFG, 0, "RUN", "0.1.0", "2.0", 0,
-                            "device_clock", 0u, NULL, 0, buf, sizeof buf);
+    int n = mk_cfgwire_stat(0, "RUN", "0.1.0", "2.0", 0,
+                            "device_clock", 0u, &RS, NULL, 0, buf, sizeof buf);
     CHECK(n > 0, "큐가 없어도 만든다");
     CHECK_HAS(buf, "\"queues\":[]", "빈 배열");
 }
@@ -288,8 +291,8 @@ static void test_queue_channel_comes_from_the_struct(void)
     char buf[400];
     setup();
     MkQueueStat q[2] = { {2, 0, 0, 0}, {6, 0, 0, 41} };
-    mk_cfgwire_stat(&CFG, 0, "RUN", "0.1.0", "2.0", 0,
-                    "device_clock", 0u, q, 2, buf, sizeof buf);
+    mk_cfgwire_stat(0, "RUN", "0.1.0", "2.0", 0,
+                    "device_clock", 0u, &RS, q, 2, buf, sizeof buf);
     CHECK_HAS(buf,
               "\"queues\":[{\"ch\":2,\"depth\":0,\"peak\":0,\"drops\":0},"
               "{\"ch\":6,\"depth\":0,\"peak\":0,\"drops\":41}]",
@@ -298,23 +301,35 @@ static void test_queue_channel_comes_from_the_struct(void)
 
 static void test_missing_rail_reads_as_off(void)
 {
-    /* 🔴 없는 것을 켜진 것으로 보지 않는다. 설정에서 항목이 사라지는 것은
-     *    실수이고, 실수했을 때 24V 가 켜져 있다고 말하면 안 된다. */
+    /* 🔴 레일 제어기가 없으면 전부 꺼진 것으로 보고한다. 설정표를 대신
+     *    읽지 않는다.
+     *
+     *    예전에는 이 함수가 설정표에서 pwr.* 를 읽었다. 그래서 부팅 직후
+     *    pwr.5v 의 기본값(true)이 그대로 나가, 핀은 0 인데 $STAT 이
+     *    "5V ON" 이라고 말했다 — 실기기에서 확인했다(2026-08-14).
+     *    설정은 "원하는 것", rails 는 "낸 것" 이다. */
     char buf[400];
     setup();
-    CFG.count = 1;                          /* 레일 항목이 전부 사라진 상태 */
-    mk_cfgwire_stat(&CFG, 0, "RUN", "0.1.0", "2.0", 0, "device_clock", 0u,
-                    NULL, 0, buf, sizeof buf);
+    mk_cfgwire_stat(0, "RUN", "0.1.0", "2.0", 0, "device_clock", 0u,
+                    NULL, NULL, 0, buf, sizeof buf);
     CHECK_HAS(buf, "\"rails\":{\"v24\":false,\"v14v9\":false,\"v5\":false}",
-              "없는 레일은 꺼진 것으로");
+              "제어기가 없으면 전부 꺼진 것으로");
+
+    /* 설정표가 5V 를 켜라고 해도, 아직 안 냈으면 꺼진 것으로 나간다. */
+    MkCfgItem *v5 = mk_cfg_find(&CFG, "pwr.5v");
+    if (v5 != NULL) { v5->cur.u = 1; }
+    mk_cfgwire_stat(0, "RUN", "0.1.0", "2.0", 0, "device_clock", 0u,
+                    NULL, NULL, 0, buf, sizeof buf);
+    CHECK_HAS(buf, "\"v5\":false",
+              "설정이 ON 이어도 아직 안 냈으면 false — 설정표를 안 읽는다");
 }
 
 static void test_stat_rejects_small_buffer(void)
 {
     char tiny[24];
     setup();
-    CHECK(mk_cfgwire_stat(&CFG, 0, "RUN", "0.1.0", "2.0", 0, "device_clock",
-                          0u, NULL, 0, tiny, sizeof tiny) < 0,
+    CHECK(mk_cfgwire_stat(0, "RUN", "0.1.0", "2.0", 0, "device_clock",
+                          0u, &RS, NULL, 0, tiny, sizeof tiny) < 0,
           "버퍼가 작으면 실패하고 잘린 줄을 내지 않는다");
 }
 

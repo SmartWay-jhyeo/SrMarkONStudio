@@ -24,6 +24,8 @@
 #include "app/mk_ads1256.h"
 #include "bsp/mk_ads_io.h"
 #include "bsp/mk_time.h"
+#include "app/mk_railctl.h"
+#include "bsp/mk_rails.h"
 #include "mk_config.h"
 #include "mk_flash.h"
 #include "mk_hostlink.h"
@@ -47,13 +49,12 @@
  * 허용 오차(보통 2~3%) 안이다. */
 #define UART_BAUD    921600u
 
-/* 상태 LED. PD11 = LED5 — 참고 펌웨어와 같은 핀이다.
- * 🔴 PD8/PD9/PD10 은 건드리지 않는다. 그것들이 전원 레일이다. */
-#define LED_PORT     GPIOD
-#define LED_PIN      GPIO_PIN_11
+/* 🔴 상태 LED(PD11)와 전원 레일(PD8·PD9·PD10)은 같은 포트에 있다.
+ *    그래서 GPIOD 를 만지는 파일을 bsp/mk_rails.c 하나로 묶었다 —
+ *    안전 검사(test_firmware_safety.py)가 빠짐없이 돌게 하기 위해서다.
+ *    여기서는 mk_rails_led() 를 부르기만 한다. */
 
 static void SystemClock_Config(void);
-static void led_init(void);
 
 /* mk_hostlink 가 줄을 내보낼 때 부른다. */
 static void emit(void *ctx, const char *line, size_t len)
@@ -64,6 +65,8 @@ static void emit(void *ctx, const char *line, size_t len)
 
 static MkConfig s_cfg;
 static MkAds    s_ads;
+static MkRailCtl s_rails;
+static int      s_led_on;
 
 /* 채널별 표본 저장소.
  *
@@ -104,6 +107,24 @@ static int save_config(void *ctx)
  *
  * 🔴 핀 번호가 아니라 커넥터 개념으로 다룬다 — 채널 n 은 J(n+3) 이고,
  *    그 대응은 설정 키 이름에만 있다(설계 원칙 1). */
+/* 설정표의 pwr.* 를 레일 제어기에 반영한다.
+ *
+ * 🔴 5V 는 인자로 넘기지 않는다. mk_railctl 이 늘 켜기 때문이다 —
+ *    쿨링 팬이 직결이라 설정으로 끌 수 있으면 안 된다. 설정표에서도
+ *    pwr.5v 는 인터록이라 사용자가 못 바꾼다. */
+static void sync_rails(MkRailCtl *rc, MkConfig *cfg, int64_t now_ms)
+{
+    MkCfgItem *v14 = mk_cfg_find(cfg, "pwr.14v9");
+    MkCfgItem *v24 = mk_cfg_find(cfg, "pwr.24v");
+    MkCfgItem *dly = mk_cfg_find(cfg, "pwr.seq_delay_ms");
+
+    mk_railctl_tick(rc,
+                    v14 != NULL && v14->cur.u,
+                    v24 != NULL && v24->cur.u,
+                    dly != NULL ? (uint16_t)dly->cur.u : 500u,
+                    now_ms);
+}
+
 static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
 {
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
@@ -136,7 +157,7 @@ int main(void)
 {
     HAL_Init();
     SystemClock_Config();
-    led_init();
+    mk_rails_init();
     mk_uart_init(UART_BAUD);
 
     /* 🔴 설정을 먼저 세운 뒤 저장본을 덮어씌운다. 저장이 없거나 깨졌으면
@@ -159,25 +180,26 @@ int main(void)
     mk_hostlink_attach_config(&link, &s_cfg, fields, n_fields,
                               save_config, NULL);
 
-    /* 🔴 수집기를 켠다. 다만 **아직 채널을 하나도 켜지 않는다.**
+    /* 🔴 레일 제어. 설정표의 pwr.* 를 실제 핀으로 옮긴다.
      *
-     *    ADS1256 의 아날로그 전원과 기준전압이 5V 레일에 있다
-     *    [넷리스트 확인 2026-08-14]: V5 -> FB1 -> AVDD5 -> U9 pin1(AVDD),
-     *    그리고 같은 AVDD5 -> U10(VIN) -> VREF2V5 -> U9 pin4(VREFP).
-     *    디지털(DVDD pin16)만 V3V3 상시다.
+     *    이것이 없으면 GUI 에서 24V 를 켜도 설정표의 숫자만 바뀐다.
+     *    실제로 그 상태였다 — $STAT 이 5V 를 ON 이라고 보고하는데 PD10 은
+     *    0 이었다(실기기 확인 2026-08-14). 설정값을 명령 상태인 척
+     *    내보내고 있었던 것이다.
      *
-     *    그래서 PD10(5V)이 Low 인 지금은 SPI 레지스터가 정상 응답해도
-     *    변환이 되지 않고 DRDY 가 떨어지지 않는다. 채널을 켜 두면 채널마다
-     *    타임아웃만 쌓이고, 그것을 배선 문제로 오해하기 딱 좋다.
-     *
-     *    레일을 켜는 것은 별도 결정이다 — 지금 펌웨어는 레일을 건드리지
-     *    않는다는 규칙(test_firmware_safety.py)이 있고, 그 규칙을 바꾸는
-     *    것은 실물로 확인할 수 있을 때 함께 한다. */
+     *    5V 가 올라가야 ADS1256 이 변환한다. 아날로그 전원과 기준전압이
+     *    그 레일에 있다 [넷리스트 확인]: V5 -> FB1 -> AVDD5 -> U9 pin1
+     *    (AVDD), 그리고 같은 AVDD5 -> U10(VIN) -> VREF2V5 -> U9 pin4
+     *    (VREFP). 디지털(DVDD pin16)만 V3V3 상시다. WS2812(J21~J24)도
+     *    같은 레일이다. */
+    mk_railctl_init(&s_rails, mk_rails_set, NULL);
+
     mk_ads_io_init(&s_ads);
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
         mk_ads_attach_queue(&s_ads, ch, s_samples[ch], SAMPLES_PER_CHANNEL);
     }
     mk_hostlink_attach_ads(&link, &s_ads);
+    mk_hostlink_attach_rails(&link, &s_rails);
 
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;
@@ -207,6 +229,7 @@ int main(void)
          *    없기 때문이다. mk_ads_configure 는 같은 값이면 아무것도
          *    하지 않으므로(그러지 않으면 예정이 영원히 밀린다) 싸다. */
         sync_channels(&s_ads, &s_cfg, now);
+        sync_rails(&s_rails, &s_cfg, now);
 
         mk_ads_tick(&s_ads, now);
 
@@ -221,25 +244,10 @@ int main(void)
         uint32_t tick = HAL_GetTick();
         if (tick - last_blink >= period) {
             last_blink = tick;
-            HAL_GPIO_TogglePin(LED_PORT, LED_PIN);
+            s_led_on = !s_led_on;
+            mk_rails_led(s_led_on);
         }
     }
-}
-
-static void led_init(void)
-{
-    __HAL_RCC_GPIOD_CLK_ENABLE();
-
-    /* 🔴 PD11 하나만 건드린다. PD8·PD9·PD10 은 전원 레일이라 초기화
-     *    대상에 넣지 않는다. GPIO_InitTypeDef 에 여러 핀을 OR 로 묶어
-     *    넣는 습관 때문에 실수하기 쉬운 자리다. */
-    GPIO_InitTypeDef g = {0};
-    g.Pin   = LED_PIN;
-    g.Mode  = GPIO_MODE_OUTPUT_PP;
-    g.Pull  = GPIO_NOPULL;
-    g.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(LED_PORT, &g);
-    HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_RESET);
 }
 
 /* 참고 펌웨어(h723_sensor_read)에서 그대로 가져왔다. 이 보드에서 실증된
