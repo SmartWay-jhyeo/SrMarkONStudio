@@ -20,6 +20,29 @@ def _force(store, key, value):
     store.items[key].current = value
 
 
+#: 경계 시험이 쓸 DRATE. 여기서 7채널×10ms(=700 SPS)가 가용을 넘고
+#: 한 채널 적으면 들어간다 — 경계가 채널 하나 폭으로 걸린다.
+_EDGE_DRATE = 1000
+
+
+def _channels_that_fit(drate, period_ms):
+    """이 조건에서 가용 안에 들어가는 최대 채널 수.
+
+    🔴 숫자를 시험에 박지 않는다. 처음에는 "DRATE 2000 기준 가용 약 533
+       SPS" 를 주석과 조건에 박아 두었는데, 그 533 은 정착시간을 1.0 ms 로
+       **어림잡았을 때**의 값이었다. 데이터시트(ADS1256.pdf p.20 Table 13)로
+       0.18 ms 를 확정하자 가용이 1176 SPS 로 뛰었고, 초과를 기대한 시험
+       네 개가 한꺼번에 통과해 버렸다.
+
+       시험이 확인해야 할 것은 "700 이 533 보다 크다" 가 아니라 **넘으면
+       거부하고 안 넘으면 통과한다** 는 규칙이다. 그러니 경계는 계산해서
+       가져오고, 시험은 그 양쪽을 짚는다.
+    """
+    available = available_sps(drate) * SAFETY_MARGIN
+    per_channel = 1000.0 / period_ms
+    return int(available // per_channel)
+
+
 def _load_channels(store, *, count, period_ms):
     """count 개 채널을 period_ms 주기로 켠 상태를 검증 없이 구성한다.
 
@@ -69,33 +92,67 @@ def test_default_config_is_within_capacity():
     check_capacity(default_store())            # 예외가 없어야 한다
 
 
-def test_seven_channels_at_10ms_exceeds_capacity():
-    """DRATE 2000 SPS 기준 가용 약 533 SPS 인데 7채널×100 SPS = 700 SPS."""
+def test_the_edge_drate_really_puts_the_boundary_between_6_and_7():
+    """아래 경계 시험들이 딛고 서는 전제를 먼저 못박는다.
+
+    🔴 이 시험이 없으면, 정착시간이 다시 바뀌어 경계가 채널 하나 폭을
+       벗어났을 때 아래 시험들이 조용히 무의미해진다 — 전부 통과하지만
+       아무것도 확인하지 않는 상태가 된다. 실제로 그렇게 됐었다.
+    """
+    assert _channels_that_fit(_EDGE_DRATE, 10) == 6, (
+        "경계가 6채널과 7채널 사이에 있어야 한다. 정착시간이나 안전여유가 "
+        "바뀌었으면 _EDGE_DRATE 를 다시 고른다"
+    )
+
+
+def test_channels_just_over_the_edge_exceed_capacity():
     store = default_store()
-    _force(store, "adc.drate", 2000)
-    _load_channels(store, count=7, period_ms=10)
+    _force(store, "adc.drate", _EDGE_DRATE)
+    _load_channels(store, count=_channels_that_fit(_EDGE_DRATE, 10) + 1,
+                   period_ms=10)
     with pytest.raises(ConfigError) as exc:
         check_capacity(store)
     assert exc.value.reason == Reason.CAPACITY
 
 
-def test_five_channels_at_10ms_is_within_capacity():
-    """같은 조건에서 5채널 = 500 SPS 는 가용 안이다. 경계가 실제로 있다."""
+def test_channels_just_under_the_edge_are_within_capacity():
+    """경계가 실제로 있다 — 한 채널 차이로 갈린다."""
     store = default_store()
-    _force(store, "adc.drate", 2000)
-    _load_channels(store, count=5, period_ms=10)
+    _force(store, "adc.drate", _EDGE_DRATE)
+    _load_channels(store, count=_channels_that_fit(_EDGE_DRATE, 10),
+                   period_ms=10)
     check_capacity(store)                      # 예외가 없어야 한다
 
 
 def test_capacity_error_reports_required_and_available():
     """사용자가 무엇을 줄여야 하는지 알아야 하므로 두 값을 모두 담는다."""
     store = default_store()
-    _force(store, "adc.drate", 2000)
-    _load_channels(store, count=7, period_ms=10)
+    _force(store, "adc.drate", _EDGE_DRATE)
+    _load_channels(store, count=_channels_that_fit(_EDGE_DRATE, 10) + 1,
+                   period_ms=10)
     with pytest.raises(ConfigError) as exc:
         check_capacity(store)
     assert "요구" in exc.value.detail
     assert "가용" in exc.value.detail
+
+
+def test_settling_time_matches_the_datasheet_table():
+    """🔴 ADS1256.pdf, p.20, Table 13 "Settling Time vs Data Rate".
+
+    표 전체가 `t18 = 1/DRATE + 0.18 ms` 에 맞고, available_sps() 가 계산하는
+    것이 바로 그 t18 의 역수다. 이 값이 용량 판정 전체의 바닥이므로,
+    누가 SETTLING_MS 를 다시 어림값으로 되돌리면 여기서 걸린다.
+    """
+    table_ms = {
+        30000: 0.21, 15000: 0.25, 7500: 0.31, 3750: 0.44, 2000: 0.68,
+        1000: 1.18, 500: 2.18, 100: 10.18, 60: 16.84, 50: 20.18,
+        30: 33.51, 25: 40.18, 15: 66.84, 10: 100.18, 5: 200.18,
+    }
+    for drate, t18_ms in table_ms.items():
+        got_ms = 1000.0 / available_sps(drate)
+        assert got_ms == pytest.approx(t18_ms, abs=0.01), (
+            f"DRATE {drate}: 데이터시트 {t18_ms} ms, 계산 {got_ms:.3f} ms"
+        )
 
 
 def test_safety_margin_is_applied():
@@ -107,29 +164,33 @@ def test_safety_margin_is_applied():
 def test_store_set_rejects_change_that_breaks_capacity():
     """저장소가 스스로 막는다. 개별 값은 범위 안이어도 조합이 불가하면 거부.
 
-    5채널×10ms = 500 SPS 로 가용(약 533) 안에 있는 상태에서, 6번째 채널을
-    10ms 로 올리면 600 SPS 가 되어 초과한다.
+    가용에 꽉 차게 채운 상태에서 다음 채널을 10 ms 로 올리면 초과한다.
+    채널을 켜는 것(+10 SPS, 주기 100 ms)까지는 아직 들어간다.
     """
     store = default_store()
-    _force(store, "adc.drate", 2000)
-    _load_channels(store, count=5, period_ms=10)
+    _force(store, "adc.drate", _EDGE_DRATE)
+    fits = _channels_that_fit(_EDGE_DRATE, 10)
+    _load_channels(store, count=fits, period_ms=10)
 
-    store.set("ain5.enabled", "true")          # +10 SPS (주기 100ms) — 통과
+    nxt = f"ain{fits}"
+    store.set(f"{nxt}.enabled", "true")        # +10 SPS (주기 100ms) — 통과
     with pytest.raises(ConfigError) as exc:
-        store.set("ain5.period_ms", "10")      # +90 SPS — 초과
+        store.set(f"{nxt}.period_ms", "10")    # +90 SPS — 초과
     assert exc.value.reason == Reason.CAPACITY
 
 
 def test_rejected_change_is_rolled_back():
     """거부된 설정이 저장소에 남으면 안 된다."""
     store = default_store()
-    _force(store, "adc.drate", 2000)
-    _load_channels(store, count=5, period_ms=10)
-    store.set("ain5.enabled", "true")
+    _force(store, "adc.drate", _EDGE_DRATE)
+    fits = _channels_that_fit(_EDGE_DRATE, 10)
+    _load_channels(store, count=fits, period_ms=10)
+    nxt = f"ain{fits}"
+    store.set(f"{nxt}.enabled", "true")
 
     with pytest.raises(ConfigError):
-        store.set("ain5.period_ms", "10")
-    assert store.get("ain5.period_ms") == 100  # 이전 값 그대로
+        store.set(f"{nxt}.period_ms", "10")
+    assert store.get(f"{nxt}.period_ms") == 100  # 이전 값 그대로
 
 
 def test_lowering_drate_cannot_bypass_the_capacity_check():

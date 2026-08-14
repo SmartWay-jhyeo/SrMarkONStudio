@@ -12,9 +12,24 @@ MUX 갱신 → SYNC → WAKEUP → 변환 완료 대기가 필요하므로, 선�
 
 from host.core.errors import ConfigError, Reason
 
-#: 채널 전환 정착시간 (ms). 🔴 잠정값 — 실기기 실측으로 확정해야 한다.
-#: 설계 §14 열린 항목 5번.
-SETTLING_MS = 1.0
+#: 채널 전환 정착시간 (ms) — 데이터시트로 확정. 더는 잠정값이 아니다.
+#:
+#: ADS1256.pdf, p.20, Table 13 "Settling Time vs Data Rate":
+#:     DATA RATE 60 SPS -> SETTLING TIME (t18) 16.84 ms
+#:
+#: 🔴 표 16행이 전부 `t18 = 1/DRATE + 0.18 ms` 에 맞는다. 확인:
+#:     30000 -> 0.21   1000 -> 1.18    60 -> 16.84    10 -> 100.18
+#:     15000 -> 0.25    500 -> 2.18    50 -> 20.18     5 -> 200.18
+#:      7500 -> 0.31    100 -> 10.18   30 -> 33.51   2.5 -> 400.18
+#:      3750 -> 0.44                   25 -> 40.18
+#:      2000 -> 0.68                   15 -> 66.84
+#: 따라서 아래 available_sps() 의 `1/DRATE + SETTLING_MS` 는 t18 그 자체다.
+#:
+#: 처음에 1.0 ms 로 어림잡았던 것을 0.18 로 내린다 — 5.5배 비관적이었다.
+#: 같은 문서 p.20: "The ADS1255/6 settles in a single cycle - there is no
+#: need to ignore or discard data after synchronization." 즉 MUX 를 바꾼
+#: 뒤 버려야 하는 변환이 없고, 정착은 한 주기 안에 끝난다.
+SETTLING_MS = 0.18
 
 #: 계산값과 실제 사이의 여유. 1.0 = 여유 없음.
 SAFETY_MARGIN = 0.8
