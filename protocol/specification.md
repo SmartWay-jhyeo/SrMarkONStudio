@@ -321,13 +321,23 @@ H723은 USB 연결을 감지할 수 없다(VBUS가 MCU에 배선되지 않음). 
 
 ```json
 {"schema_ver":3,"seq":0,"t":1772200855875,"type":"stat","mode":"CONFIG",
- "fw":"0.1.0","board_rev":"2.0","uptime_ms":123456,
+ "fw":"0.1.0","board_rev":"2.0","time_source":"device_clock","time_quality":0,
+ "uptime_ms":123456,
  "rails":{"v24":false,"v14v9":false,"v5":true},
  "queues":[{"ch":0,"depth":0,"peak":3,"drops":0}]}
 ```
 
 `rails` 값은 **명령 상태**이지 실측이 아니다. 피드백 회로가 없으므로 호스트는
 `정상 ON`이 아니라 `ON 명령됨`으로 표시해야 한다.
+
+`time_source`·`time_quality`는 §7.2의 같은 이름 필드와 같은 뜻이다. 여기 두는
+이유는 **`t`의 기준점을 알려 줄 곳이 여기뿐**이기 때문이다. §7.1.2대로 `t`는
+시간 소스에 따라 UTC epoch이기도 하고 부팅 후 경과 ms이기도 한데, 텔레메트리는
+필드 마스크로 실어 보낼 수 있지만 명령 응답에는 그 자리가 없다. 호스트는 연결
+직후 `$STAT`을 한 번 물어 그 답을 얻는다.
+
+`queues[].ch`는 **채널 번호**이지 배열 첨자가 아니다. 꺼진 채널은 목록에서
+빠지므로 둘은 일치하지 않는다.
 
 ## 8. 호환성
 

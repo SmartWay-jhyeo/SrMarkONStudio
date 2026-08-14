@@ -35,6 +35,37 @@ void mk_cfgwire_list(const MkConfig *cfg,
                      const MkFieldBit *fields, size_t n_fields,
                      int64_t now_ms, MkCfgEmit emit, void *ctx);
 
+/* `$STAT` 응답 본문 (규격 §7.4).
+ *
+ * 🔴 `rails` 는 **명령 상태**다. 피드백 회로가 없으므로 실측이 아니고,
+ *    호스트는 이것을 `정상 ON` 이 아니라 `ON 명령됨` 으로 표시해야 한다.
+ *
+ * 🔴 `queues` 는 채널별 큐 깊이·최고치·유실이다. 3단계에서 ADS1256 이
+ *    들어오면 이것이 유일한 진단 창구가 된다 — 유실이 나는데 어디서
+ *    나는지 모르면 고칠 수 없다. 아직 큐가 없으므로 지금은 0 이다.
+ */
+/* 🔴 `ch` 를 구조체가 들고 있다. 배열 첨자를 채널 번호로 쓰면, 꺼진 채널을
+ *    건너뛴 순간 3번 채널의 유실이 1번 채널의 것으로 보고된다. 유실을
+ *    찾으려고 보는 창구가 채널을 헷갈리면 없느니만 못하다. */
+typedef struct {
+    uint8_t  ch;
+    uint16_t depth;
+    uint16_t peak;
+    uint32_t drops;
+} MkQueueStat;
+
+/* 🔴 `time_source`·`time_quality` 는 규격 §7.4 예시에는 없지만 시뮬레이터와
+ *    함께 낸다. 규격 §7.1.2 대로 `t` 는 시간 소스에 따라 UTC epoch 이기도
+ *    하고 부팅 후 경과 ms 이기도 한데, 명령 응답에는 필드 마스크가 없어
+ *    텔레메트리처럼 실어 보낼 자리가 없다. $STAT 이 그 답을 주는 유일한
+ *    곳이다 — 호스트는 연결 직후 한 번 물어보면 된다. */
+int mk_cfgwire_stat(const MkConfig *cfg, int64_t now_ms,
+                    const char *mode, const char *fw, const char *board_rev,
+                    uint32_t uptime_ms,
+                    const char *time_source, uint32_t time_quality,
+                    const MkQueueStat *queues, size_t n_queues,
+                    char *out, size_t cap);
+
 /* `$CFG,GET` 응답 본문 한 줄. 반환은 길이, 실패면 음수.
  *
  * `cur` 의 JSON 타입은 항목의 vtype 을 따른다 — bool 은 참/거짓,

@@ -243,6 +243,81 @@ static void test_cfg_value_rejects_small_buffer(void)
           "버퍼가 작으면 실패하고 잘린 줄을 내지 않는다");
 }
 
+/* ---- $STAT (규격 §7.4) -------------------------------------------------- */
+
+static void test_stat_shape(void)
+{
+    char buf[400];
+    setup();
+    ITEMS[5].cur.u = 1;                     /* pwr.24v 를 켠 것으로 */
+
+    MkQueueStat q[2] = { {0, 3, 9, 0}, {1, 0, 1, 7} };
+    int n = mk_cfgwire_stat(&CFG, 1772200855875LL, "CONFIG", "0.1.0", "2.0",
+                            123456u, "device_clock", 0u, q, 2, buf, sizeof buf);
+    CHECK(n > 0, "stat 을 만든다");
+    CHECK_HAS(buf, "\"type\":\"stat\"", "type");
+    CHECK_HAS(buf, "\"mode\":\"CONFIG\"", "mode");
+    CHECK_HAS(buf, "\"time_source\":\"device_clock\"", "시간 소스");
+    CHECK_HAS(buf, "\"time_quality\":0", "시간 품질");
+    CHECK_HAS(buf, "\"uptime_ms\":123456", "uptime");
+    CHECK_HAS(buf, "\"rails\":{\"v24\":true,\"v14v9\":false,\"v5\":true}",
+              "rails 는 중첩 객체");
+    CHECK_HAS(buf,
+              "\"queues\":[{\"ch\":0,\"depth\":3,\"peak\":9,\"drops\":0},"
+              "{\"ch\":1,\"depth\":0,\"peak\":1,\"drops\":7}]",
+              "queues 는 객체 배열");
+}
+
+static void test_stat_with_no_queues(void)
+{
+    /* 🔴 3단계 전에는 큐가 없다. 없는 것을 있는 척하지 않는다 —
+     *    빈 배열이라야 호스트가 "채널이 없다" 를 정확히 읽는다. */
+    char buf[400];
+    setup();
+    int n = mk_cfgwire_stat(&CFG, 0, "RUN", "0.1.0", "2.0", 0,
+                            "device_clock", 0u, NULL, 0, buf, sizeof buf);
+    CHECK(n > 0, "큐가 없어도 만든다");
+    CHECK_HAS(buf, "\"queues\":[]", "빈 배열");
+}
+
+static void test_queue_channel_comes_from_the_struct(void)
+{
+    /* 🔴 꺼진 채널은 목록에서 빠진다. 그때 배열 첨자를 채널 번호로 쓰면
+     *    6번 채널의 유실이 0번 것으로 보고된다. 유실을 찾으려고 보는
+     *    창구가 채널을 헷갈리면 없느니만 못하다. */
+    char buf[400];
+    setup();
+    MkQueueStat q[2] = { {2, 0, 0, 0}, {6, 0, 0, 41} };
+    mk_cfgwire_stat(&CFG, 0, "RUN", "0.1.0", "2.0", 0,
+                    "device_clock", 0u, q, 2, buf, sizeof buf);
+    CHECK_HAS(buf,
+              "\"queues\":[{\"ch\":2,\"depth\":0,\"peak\":0,\"drops\":0},"
+              "{\"ch\":6,\"depth\":0,\"peak\":0,\"drops\":41}]",
+              "채널 번호는 첨자가 아니라 구조체가 말한다");
+}
+
+static void test_missing_rail_reads_as_off(void)
+{
+    /* 🔴 없는 것을 켜진 것으로 보지 않는다. 설정에서 항목이 사라지는 것은
+     *    실수이고, 실수했을 때 24V 가 켜져 있다고 말하면 안 된다. */
+    char buf[400];
+    setup();
+    CFG.count = 1;                          /* 레일 항목이 전부 사라진 상태 */
+    mk_cfgwire_stat(&CFG, 0, "RUN", "0.1.0", "2.0", 0, "device_clock", 0u,
+                    NULL, 0, buf, sizeof buf);
+    CHECK_HAS(buf, "\"rails\":{\"v24\":false,\"v14v9\":false,\"v5\":false}",
+              "없는 레일은 꺼진 것으로");
+}
+
+static void test_stat_rejects_small_buffer(void)
+{
+    char tiny[24];
+    setup();
+    CHECK(mk_cfgwire_stat(&CFG, 0, "RUN", "0.1.0", "2.0", 0, "device_clock",
+                          0u, NULL, 0, tiny, sizeof tiny) < 0,
+          "버퍼가 작으면 실패하고 잘린 줄을 내지 않는다");
+}
+
 /* ---- 카탈로그 덤프 ------------------------------------------------------ */
 
 static void dump_catalog(void)
@@ -269,6 +344,11 @@ int main(int argc, char **argv)
     test_range_only_when_it_exists();
     test_unit_and_label();
     test_field_bits();
+    test_stat_shape();
+    test_stat_with_no_queues();
+    test_queue_channel_comes_from_the_struct();
+    test_missing_rail_reads_as_off();
+    test_stat_rejects_small_buffer();
     test_cfg_value();
     test_cfg_value_rejects_small_buffer();
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);

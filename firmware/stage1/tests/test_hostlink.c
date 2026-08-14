@@ -249,7 +249,11 @@ static void test_id_works_in_run_mode(void)
 static void test_unimplemented_command_is_unsupported(void)
 {
     /* 규격 §5 — 조용히 버리면 죽은 링크와 구분되지 않는다.
-     * 1단계 펌웨어는 $CFG 도 $STAT 도 아직 없다. */
+     *
+     * $CFG·$STAT 은 구현돼 있지만 **설정 저장소가 붙어 있을 때만** 답할 수
+     * 있다. 저장소 없이 `setup()` 만 한 상태가 그 경계다 — 부팅 중 flash 를
+     * 아직 못 읽었거나 저장소가 깨진 경우가 여기 해당한다. 그때 죽거나
+     * 침묵하지 않고 UNSUPPORTED 를 돌려준다. */
     MkHostlink h; Sink s;
 
     setup(&h, &s);
@@ -593,6 +597,47 @@ static void test_cfg_reset(void)
     CHECK(mk_cfg_dirty(&CFG_STORE), "초기화도 저장이 필요하다");
 }
 
+static void test_stat_emits_record_then_sack(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0], "\"type\":\"stat\"") != NULL, "stat 레코드");
+        CHECK(strstr(s.lines[0], "\"rails\"") != NULL, "rails 가 있다");
+        CHECK(strstr(s.lines[0], "\"queues\":[]") != NULL,
+              "큐가 아직 없으므로 빈 배열");
+        CHECK_EQ(s.lines[1], expect_line("SACK,STAT,OK"), "SACK,STAT,OK");
+    }
+}
+
+static void test_stat_works_in_run_mode(void)
+{
+    /* 🔴 CONFIG 전용이 아니다 (규격 §4). RUN 에서 상태를 못 보면 진단할
+     *    수 없다 — 유실이 나는 것은 대개 RUN 일 때다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    CHECK(mk_hostlink_mode(&h, 0) == MK_MODE_RUN, "지금 RUN");
+    sink_reset(&s);
+    feed(&h, "STAT", 0);
+    CHECK(s.n == 2, "RUN 에서도 답한다");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0], "\"mode\":\"RUN\"") != NULL, "모드도 RUN");
+    }
+}
+
+static void test_stat_unsupported_without_a_store(void)
+{
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,STAT,ERR,UNSUPPORTED"),
+             "저장소가 없으면 UNSUPPORTED");
+}
+
 static void test_cfg_unknown_subcommand(void)
 {
     MkHostlink h; Sink s;
@@ -661,9 +706,10 @@ static const Step SCENARIO[] = {
     { "AT",   "6000" },   { "RAW",  "$*00\\r\\n" },
     { "AT",   "6000" },   { "RAW",  "$A\\tB*00\\r\\n" },
     { "AT",   "6000" },   { "FEED", "NOPE" },
-    /* 여기부터는 1단계가 아직 구현하지 않은 명령이라 양쪽 응답이 다르다.
-     * 표식을 찍어 대조 도구가 문자열 추측 없이 나눌 수 있게 한다. */
-    { "MARK", "GAPS" },
+    /* 여기부터는 NDJSON 본문을 내는 명령이다. 값은 양쪽 설정표가 달라
+     * 같을 수 없으므로 대조 도구가 **모양**으로 비교한다. 표식을 찍어
+     * 문자열 추측 없이 나눌 수 있게 한다. */
+    { "MARK", "SHAPES" },
     /* 🔴 명령별로 짝지어 확인하려면 어느 명령의 응답인지 남아야 한다.
      *    한 통에 모아 두면 STAT 응답과 CFG 응답이 뒤바뀌어도 통과한다. */
     { "CMD",  "STAT" },     { "AT", "6000" },   { "FEED", "STAT" },
@@ -676,7 +722,10 @@ static void run_scenario(void)
     Sink s;
     int64_t now = 0;
 
-    setup(&h, &s);
+    /* 🔴 설정 저장소를 붙인 채로 돈다. 안 붙이면 $CFG·$STAT 이 전부
+     *    UNSUPPORTED 로 나가고, 대조 도구는 "아직 구현 안 됐다" 를
+     *    확인하며 통과한다 — 구현한 뒤에도 그대로 통과한다. */
+    setup_cfg(&h, &s);
     for (size_t i = 0; i < sizeof SCENARIO / sizeof *SCENARIO; i++) {
         const Step *st = &SCENARIO[i];
         sink_reset(&s);
@@ -748,6 +797,9 @@ int main(int argc, char **argv)
     test_cfg_save_failure_is_reported();
     test_cfg_save_requires_config_mode();
     test_cfg_reset();
+    test_stat_emits_record_then_sack();
+    test_stat_works_in_run_mode();
+    test_stat_unsupported_without_a_store();
     test_cfg_unknown_subcommand();
     test_tick_emits_hb_at_1hz();
     test_tick_does_not_depend_on_mode();

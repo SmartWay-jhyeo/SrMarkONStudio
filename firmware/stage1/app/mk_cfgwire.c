@@ -133,6 +133,54 @@ void mk_cfgwire_list(const MkConfig *cfg,
     }
 }
 
+/* 레일의 현재 명령 상태를 설정에서 읽는다. 없으면 꺼진 것으로 본다.
+ *
+ * 🔴 없는 것을 켜진 것으로 보지 않는다. 설정에서 항목이 사라지는 것은
+ *    실수이고, 실수했을 때 24V 가 켜져 있다고 말하면 안 된다. */
+static int rail_of(const MkConfig *cfg, const char *key)
+{
+    const MkCfgItem *it = mk_cfg_find((MkConfig *)cfg, key);
+    return (it != NULL && it->vtype == MK_VT_BOOL && it->cur.u) ? 1 : 0;
+}
+
+int mk_cfgwire_stat(const MkConfig *cfg, int64_t now_ms,
+                    const char *mode, const char *fw, const char *board_rev,
+                    uint32_t uptime_ms,
+                    const char *time_source, uint32_t time_quality,
+                    const MkQueueStat *queues, size_t n_queues,
+                    char *out, size_t cap)
+{
+    MkJson j;
+    mk_json_begin(&j, out, cap);
+    common(&j, now_ms, "stat");
+    mk_json_str(&j, "mode", mode);
+    mk_json_str(&j, "fw", fw);
+    mk_json_str(&j, "board_rev", board_rev);
+    mk_json_str(&j, "time_source", time_source);
+    mk_json_u32(&j, "time_quality", time_quality);
+    mk_json_u32(&j, "uptime_ms", uptime_ms);
+
+    /* 🔴 명령 상태이지 실측이 아니다. 호스트가 `ON 명령됨` 으로 표시한다. */
+    mk_json_object_begin(&j, "rails");
+    mk_json_bool(&j, "v24", rail_of(cfg, "pwr.24v"));
+    mk_json_bool(&j, "v14v9", rail_of(cfg, "pwr.14v9"));
+    mk_json_bool(&j, "v5", rail_of(cfg, "pwr.5v"));
+    mk_json_object_end(&j);
+
+    mk_json_array_begin(&j, "queues");
+    for (size_t i = 0; i < n_queues; i++) {
+        mk_json_array_object_begin(&j);
+        mk_json_u32(&j, "ch", queues[i].ch);
+        mk_json_u32(&j, "depth", queues[i].depth);
+        mk_json_u32(&j, "peak", queues[i].peak);
+        mk_json_u32(&j, "drops", queues[i].drops);
+        mk_json_array_object_end(&j);
+    }
+    mk_json_array_end(&j);
+
+    return mk_json_end(&j);
+}
+
 int mk_cfgwire_value(const MkCfgItem *item, int64_t now_ms,
                      char *out, size_t cap)
 {

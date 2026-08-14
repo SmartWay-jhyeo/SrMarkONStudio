@@ -72,6 +72,26 @@ void mk_json_u32_array(MkJson *j, const char *key,
  *    이미 유한하지 않은 값을 "값 없음" 으로 표시하도록 되어 있다. */
 void mk_json_f32(MkJson *j, const char *key, float val, int digits);
 
+/* 중첩 객체와 배열.
+ *
+ * 규격 §7.4 의 `stat` 레코드가 이 둘을 쓴다.
+ *
+ *   "rails":{"v24":false,...}          객체
+ *   "queues":[{"ch":0,...},...]        객체 배열
+ *
+ * 🔴 여는 함수와 닫는 함수가 짝이다. 짝이 맞지 않으면 JSON 이 깨지는데,
+ *    `put` 이 경계만 보고 괄호는 세지 않으므로 **여기서는 못 잡는다.**
+ *    호출 쪽이 지켜야 하고, 시험이 그것을 확인한다.
+ */
+void mk_json_object_begin(MkJson *j, const char *key);
+void mk_json_object_end(MkJson *j);
+
+void mk_json_array_begin(MkJson *j, const char *key);
+/* 배열 안의 객체 하나를 연다. 키가 없다. */
+void mk_json_array_object_begin(MkJson *j);
+void mk_json_array_object_end(MkJson *j);
+void mk_json_array_end(MkJson *j);
+
 /* `}` 를 닫는다. 줄끝(`\n`)은 붙이지 않는다 — 전송 계층이 붙인다.
  * 반환: NUL 을 뺀 길이. 넘쳤으면 음수. */
 int mk_json_end(MkJson *j);

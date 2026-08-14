@@ -233,6 +233,53 @@ void mk_json_f32(MkJson *j, const char *key, float val, int digits)
     }
 }
 
+/* 중첩 — `nfield` 를 "이 층에 이미 뭔가 썼나" 로만 쓴다.
+ *
+ * 🔴 스택을 두지 않는다. 층을 열 때 0 으로 놓고 닫을 때 1 로 되돌리면,
+ *    바깥 층은 "적어도 하나 있다" 를 알게 되어 다음 키 앞에 쉼표를 찍는다.
+ *    깊이 1 까지만 필요하고(규격 §7.4 의 rails·queues), 그 안에서는 이
+ *    규칙이 정확하다. 더 깊어지면 스택이 필요하다 — 그때 고친다. */
+void mk_json_object_begin(MkJson *j, const char *key)
+{
+    put_key(j, key);
+    put(j, '{');
+    j->nfield = 0;
+}
+
+void mk_json_object_end(MkJson *j)
+{
+    put(j, '}');
+    j->nfield = 1;
+}
+
+void mk_json_array_begin(MkJson *j, const char *key)
+{
+    put_key(j, key);
+    put(j, '[');
+    j->nfield = 0;
+}
+
+void mk_json_array_object_begin(MkJson *j)
+{
+    if (j->nfield > 0) {
+        put(j, ',');
+    }
+    put(j, '{');
+    j->nfield = 0;
+}
+
+void mk_json_array_object_end(MkJson *j)
+{
+    put(j, '}');
+    j->nfield = 1;
+}
+
+void mk_json_array_end(MkJson *j)
+{
+    put(j, ']');
+    j->nfield = 1;
+}
+
 int mk_json_end(MkJson *j)
 {
     put(j, '}');

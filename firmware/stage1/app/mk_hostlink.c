@@ -211,6 +211,37 @@ static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
     emit_sack_err(h, "CFG", "UNSUPPORTED");
 }
 
+/* 규격 §7.4 — `$STAT` 은 stat 레코드 한 줄 뒤에 $SACK 를 보낸다.
+ *
+ * 🔴 CONFIG 전용이 아니다 (규격 §4). RUN 에서 상태를 못 보면 진단할 수
+ *    없다 — 유실이 나는 것은 대개 RUN 일 때다. */
+static void on_stat(MkHostlink *h, int64_t now_ms)
+{
+    if (h->cfg == NULL) {
+        emit_sack_err(h, "STAT", "UNSUPPORTED");
+        return;
+    }
+
+    char body[400];
+    /* 🔴 큐는 3단계에서 들어온다. 지금 없는 것을 있는 척하지 않는다 —
+     *    빈 배열을 보내면 호스트가 "채널이 없다" 를 정확히 읽는다. */
+    int n = mk_cfgwire_stat(
+        h->cfg, now_ms,
+        mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
+        h->fw, h->board_rev, (uint32_t)now_ms,
+        /* 🔴 1단계에는 GNSS 도 PPS 도 없다. `t` 는 부팅 후 경과 ms 이고
+         *    UTC 가 아니다 — 호스트가 이것을 시각으로 저장하면 안 된다.
+         *    3단계에서 시간 소스가 붙으면 여기가 바뀐다. */
+        "device_clock", 0u,
+        NULL, 0, body, sizeof body);
+
+    if (!emit_json(h, body, sizeof body, n)) {
+        emit_sack_err(h, "STAT", "BUSY");
+        return;
+    }
+    emit_sack_ok(h, "STAT");
+}
+
 void mk_hostlink_attach_config(MkHostlink *h, MkConfig *cfg,
                                const MkFieldBit *fields, size_t n_fields,
                                MkCfgSave save, void *save_ctx)
@@ -280,6 +311,11 @@ void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
 
     if (strcmp(c.verb, "CFG") == 0) {
         on_cfg(h, &c, now_ms);
+        return;
+    }
+
+    if (strcmp(c.verb, "STAT") == 0) {
+        on_stat(h, now_ms);
         return;
     }
 

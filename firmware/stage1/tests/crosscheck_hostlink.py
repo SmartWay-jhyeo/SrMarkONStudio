@@ -19,6 +19,8 @@ C 쪽 시나리오는 test_hostlink.c 의 `SCENARIO` 배열에 있고 아래 `ST
 """
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -45,41 +47,55 @@ STEPS: list[tuple[str, str | None]] = [
     ("AT", "6000"), ("RAW", "$*00\\r\\n"),
     ("AT", "6000"), ("RAW", "$A\\tB*00\\r\\n"),
     ("AT", "6000"), ("FEED", "NOPE"),
-    # 여기부터는 1단계가 아직 구현하지 않은 명령이라 양쪽 응답이 다르다.
-    ("MARK", "GAPS"),
+    # 여기부터는 NDJSON 본문을 내는 명령이다. 값은 양쪽 설정표가 달라 같을 수
+    # 없으므로 아래에서 **모양**으로 비교한다.
+    ("MARK", "SHAPES"),
     ("CMD", "STAT"), ("AT", "6000"), ("FEED", "STAT"),
     ("CMD", "CFG,LIST"), ("AT", "6000"), ("FEED", "CFG,LIST"),
 ]
 
-# 🔴 1단계 펌웨어가 아직 구현하지 않은 명령. 시뮬레이터는 전체 프로토콜을
-#    구현하므로 여기서 갈리는 것은 결함이 아니라 진행 상황이다.
+# 🔴 NDJSON 본문을 내는 명령은 **값**이 같을 수 없다. C 쪽 시나리오는 시험용
+#    작은 설정표를 쓰고 시뮬레이터는 45항목짜리 실제 표를 쓰기 때문이다.
+#    그래서 여기서는 모양을 비교한다.
 #
-#    건너뛰지 않는다. **양쪽이 각각 무엇을 내야 하는지** 를 못박는다 —
-#    어느 한쪽이라도 달라지면 실패한다. 2단계에서 $CFG 를 구현하면 이
-#    항목을 지워야 하고, 지우지 않으면 시험이 알려 준다.
-#    각 항목: 입력 -> (C 가 내야 할 줄들, Python 이 내야 할 줄들의 조건)
+#      - 레코드 `type` 의 나열 순서 (본문 → $SACK)
+#      - $SACK payload (양쪽이 정확히 같아야 한다)
+#      - `keys` 가 있으면 그 레코드의 **키 집합**을 양쪽 사이에서 대조
+#
+#    키 집합 대조가 요점이다. `stat` 은 모양이 고정된 레코드라 한쪽이 필드를
+#    빠뜨리면 GUI 가 시뮬레이터에서만 동작하게 된다 — 실제로 이 대조를
+#    붙이면서 C 쪽에 `time_source`·`time_quality` 가 없는 것을 찾았다.
+#
+#    `cfg_item` 의 키는 항목마다 다르다(min·max·unit·note·choices 는 있을 때만
+#    나간다). 그 대조는 실제 45항목 표를 쓰는 crosscheck_cfg.py 가 한다.
+#    여기서는 봉투만 본다 — 본문이 몇 줄이든 cfg_end 로 닫고 SACK 로 끝나는가.
 #
 #    🔴 명령별로 **짝지어** 확인한다. 응답을 한 통에 모아 놓고 "어딘가에
 #       있다" 로 확인하면, STAT 의 응답과 CFG 의 응답이 뒤바뀌어도 통과한다.
 #       처음에 그렇게 짜 두었다가 리뷰에서 지적받았다.
-#    C 쪽 기대값은 payload 로 적는다 — 체크섬을 손으로 적으면 어긋난다.
-#    Python 쪽은 응답에 반드시 들어 있어야 할 조각들로 적는다.
 #
-#    🔴 조각을 압축 형식(`"type":"stat"`)으로 적는 것이 요점 중 하나다.
-#       처음 대조했을 때 시뮬레이터의 카탈로그만 공백 있는 JSON 을 내고
-#       있었고, 이 대조가 그것을 잡았다. 대역폭이 94.8% 인 링크에서 공백은
-#       공짜가 아니고, 펌웨어의 mk_json 은 압축 형식만 낸다.
-STAGE1_GAPS: dict[str, tuple[list[str], str, list[str]]] = {
-    "STAT": (
-        ["SACK,STAT,ERR,UNSUPPORTED"],
-        "stat 레코드 1줄 + $SACK,STAT,OK",
-        ['"type":"stat"', "SACK,STAT,OK"],
-    ),
-    "CFG,LIST": (
-        ["SACK,CFG,ERR,UNSUPPORTED"],
-        "cfg_item·cfg_field 여러 줄 + cfg_end + $SACK,CFG,OK",
-        ['"type":"cfg_item"', '"type":"cfg_end"', "SACK,CFG,OK"],
-    ),
+#    🔴 압축 형식인지도 함께 본다. 처음 대조했을 때 시뮬레이터의 카탈로그만
+#       공백 있는 JSON 을 내고 있었고, 이 대조가 그것을 잡았다. 대역폭이
+#       94.8% 인 링크에서 공백은 공짜가 아니고, mk_json 은 압축만 낸다.
+
+
+class Shape:
+    """한 명령의 응답 모양.
+
+    types  레코드 type 의 나열. `+` 접미사는 1회 이상 반복.
+    sack   $SACK payload — 양쪽이 정확히 같아야 한다.
+    keys   키 집합을 양쪽 사이에서 대조할 레코드 type 들.
+    """
+
+    def __init__(self, types: list[str], sack: str, keys: tuple[str, ...] = ()):
+        self.types = types
+        self.sack = sack
+        self.keys = keys
+
+
+SHAPES: dict[str, Shape] = {
+    "STAT": Shape(["stat"], "SACK,STAT,OK", keys=("stat",)),
+    "CFG,LIST": Shape(["cfg_item+", "cfg_field+", "cfg_end"], "SACK,CFG,OK"),
 }
 
 
@@ -134,7 +150,7 @@ def _find_binary() -> Path:
 def _c_trace() -> list[tuple[str, str]]:
     out = subprocess.run(
         [str(_find_binary()), "--scenario"],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, encoding="utf-8",
     ).stdout
     rows = []
     for ln in out.splitlines():
@@ -172,8 +188,49 @@ def _py_trace() -> list[tuple[str, str]]:
     return rows
 
 
-def _gap_inputs() -> list[str]:
-    return list(STAGE1_GAPS)
+# JSON 문자열 리터럴. 이스케이프된 따옴표를 건너뛴다.
+_STRINGS = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def _split_body(lines: list[str], side: str, cmd: str) -> tuple[list[dict], str]:
+    """응답 줄들을 NDJSON 본문과 마지막 $SACK 로 나눈다."""
+    body: list[dict] = []
+    sack = ""
+    for ln in lines:
+        if ln.startswith("$"):
+            sack = _payload_of(ln)
+            continue
+        # 🔴 압축 형식인지 여기서 본다. json.loads 는 공백을 그냥 먹으므로,
+        #    파싱 전에 원문을 보지 않으면 공백 있는 JSON 이 통과한다.
+        #
+        #    문자열 안의 공백은 정상이다 — 라벨이 "전송 주기" 다. 문자열을
+        #    먼저 지우고 남은 자리에 공백이 있는지 본다.
+        if " " in _STRINGS.sub('""', ln):
+            raise SystemExit(
+                f"{side} 쪽 {cmd} 응답에 공백이 있다 — 압축 형식이어야 한다\n  {ln[:80]}")
+        body.append(json.loads(ln))
+    return body, sack
+
+
+def _match_types(got: list[str], want: list[str]) -> str | None:
+    """레코드 type 나열을 패턴과 맞춘다. `+` 는 1회 이상."""
+    i = 0
+    for pat in want:
+        if pat.endswith("+"):
+            name = pat[:-1]
+            n = 0
+            while i < len(got) and got[i] == name:
+                i += 1
+                n += 1
+            if n == 0:
+                return f"{name} 레코드가 하나도 없다 (받음: {got})"
+        else:
+            if i >= len(got) or got[i] != pat:
+                return f"{i}번째가 {pat} 이어야 하는데 {got[i:i + 1] or '없음'} 이다"
+            i += 1
+    if i != len(got):
+        return f"기대한 것보다 줄이 많다 — 남은 것: {got[i:]}"
+    return None
 
 
 def main() -> int:
@@ -201,42 +258,56 @@ def main() -> int:
         else:
             print(f"  ok   {a[0]:4} {a[1]}")
 
-    # 1단계 공백 — 양쪽이 각각 무엇을 내는지 명령별로 짝지어 못박는다.
-    print("\n  -- 1단계가 아직 구현하지 않은 명령 --")
+    # NDJSON 본문을 내는 명령 — 값은 다를 수밖에 없으므로 모양을 대조한다.
+    print("\n  -- 본문을 내는 명령 (모양 대조) --")
     c_by_cmd = _group_by_command(c_gap, "C")
     py_by_cmd = _group_by_command(py_gap, "py")
 
-    for cmd, (want_c, note_py, py_needles) in STAGE1_GAPS.items():
-        got_c_raw = c_by_cmd.get(cmd)
-        # payload 만 비교한다. 체크섬은 프레이밍 계층(crosscheck.py)이 이미
-        # 지키고 있고, 여기서 손으로 적으면 어긋난다.
-        got_c = ([_payload_of(ln) for ln in got_c_raw]
-                 if got_c_raw is not None else None)
-        if got_c is None:
-            mismatches.append(f"  {cmd}: C 쪽 기록에 이 명령 구간이 없다")
-        elif got_c != want_c:
-            mismatches.append(f"  {cmd}: C 응답이 다르다\n"
-                              f"    기대: {want_c}\n    받음: {got_c}")
+    for cmd, shape in SHAPES.items():
+        c_lines = c_by_cmd.get(cmd)
+        py_lines = py_by_cmd.get(cmd)
+        if c_lines is None or py_lines is None:
+            side = "C" if c_lines is None else "Python"
+            mismatches.append(f"  {cmd}: {side} 쪽 기록에 이 명령 구간이 없다")
+            continue
 
-        got_py = py_by_cmd.get(cmd)
-        if got_py is None:
-            mismatches.append(f"  {cmd}: Python 쪽 기록에 이 명령 구간이 없다")
-        else:
-            joined = "\n".join(got_py)
-            missing = [n for n in py_needles if n not in joined]
-            if missing:
+        c_body, c_sack = _split_body(c_lines, "C", cmd)
+        py_body, py_sack = _split_body(py_lines, "py", cmd)
+
+        bad = False
+        for side, body in (("C", c_body), ("py", py_body)):
+            err = _match_types([r.get("type", "?") for r in body], shape.types)
+            if err:
+                mismatches.append(f"  {cmd}: {side} 본문 순서가 다르다 — {err}")
+                bad = True
+
+        if c_sack != shape.sack or py_sack != shape.sack:
+            mismatches.append(f"  {cmd}: $SACK 이 다르다\n"
+                              f"    기대: {shape.sack}\n"
+                              f"    C : {c_sack}\n    py: {py_sack}")
+            bad = True
+
+        # 🔴 모양이 고정된 레코드는 키 집합까지 맞춘다. 한쪽이 필드를
+        #    빠뜨리면 GUI 가 시뮬레이터에서만 동작한다.
+        for want_type in shape.keys:
+            c_keys = {k for r in c_body if r.get("type") == want_type for k in r}
+            py_keys = {k for r in py_body if r.get("type") == want_type for k in r}
+            if c_keys != py_keys:
                 mismatches.append(
-                    f"  {cmd}: Python 응답에 있어야 할 것이 없다 {missing}\n"
-                    f"    받음 {len(got_py)}줄: {got_py[:2]}...")
+                    f"  {cmd}: {want_type} 레코드의 필드가 다르다\n"
+                    f"    C 에만: {sorted(c_keys - py_keys) or '없음'}\n"
+                    f"    py 에만: {sorted(py_keys - c_keys) or '없음'}")
+                bad = True
 
-        if got_c == want_c and got_py is not None and not missing:
-            print(f"  ok   {cmd:9} C={want_c[0]}  py={note_py}")
+        if not bad:
+            print(f"  ok   {cmd:9} {' '.join(shape.types)} + ${shape.sack}"
+                  + (f"  (필드 {len(c_keys)}개 일치)" if shape.keys else ""))
 
     if mismatches:
         print("\n두 구현이 어긋난다:", file=sys.stderr)
         print("\n".join(mismatches), file=sys.stderr)
         return 1
-    print(f"\nMATCH ({len(c_common)} steps, {len(STAGE1_GAPS)} known gaps)")
+    print(f"\nMATCH ({len(c_common)} steps, {len(SHAPES)} shapes)")
     return 0
 
 
