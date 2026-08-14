@@ -93,14 +93,24 @@ void mk_cfgtable_init(MkConfig *cfg)
     i++;
 
     s_items[i] = (MkCfgItem){ .key = "tx.fields", .group = "tx",
-                              .vtype = MK_VT_U32, .min = 0, .max = 1023,
+                              .vtype = MK_VT_U32, .min = 0,
                               .has_min = 1, .has_max = 1,
                               .label = "NDJSON 필드 마스크" };
-    /* 기본 마스크 = FIELDS 의 def 가 1 인 비트들. 손으로 적으면 어긋난다. */
-    for (size_t f = 0; f < sizeof FIELDS / sizeof *FIELDS; f++) {
-        if (FIELDS[f].def) {
-            s_items[i].def.u |= (1u << FIELDS[f].bit);
+    /* 기본 마스크 = FIELDS 의 def 가 1 인 비트들.
+     * 최대 = FIELDS 에 있는 **모든** 비트.
+     *
+     * 🔴 둘 다 손으로 적지 않는다. 최대를 1023 으로 박아 두었더니 비트를
+     *    하나 더 붙이는 순간 새 비트를 켤 수 없게 되는데, 그 사실이
+     *    코드 어디에도 드러나지 않는다. 표에서 끌어내면 못 어긋난다. */
+    {
+        uint32_t all = 0u;
+        for (size_t f = 0; f < sizeof FIELDS / sizeof *FIELDS; f++) {
+            all |= (1u << FIELDS[f].bit);
+            if (FIELDS[f].def) {
+                s_items[i].def.u |= (1u << FIELDS[f].bit);
+            }
         }
+        s_items[i].max = (float)all;
     }
     i++;
 
@@ -111,8 +121,11 @@ void mk_cfgtable_init(MkConfig *cfg)
     s_items[i].def.u = 100;
     i++;
 
+    /* 🔴 최소가 2 다. 0 을 허용하면 4~20 mA 값이 정수로 잘려 분해능이
+     *    1 mA 가 된다 — 24비트 ADC 를 쓰는 이유가 사라진다. 대역폭을
+     *    아끼려면 자릿수보다 필드 마스크나 주기를 줄이는 편이 낫다. */
     s_items[i] = (MkCfgItem){ .key = "tx.float_digits", .group = "tx",
-                              .vtype = MK_VT_U8, .min = 0, .max = 6,
+                              .vtype = MK_VT_U8, .min = 2, .max = 6,
                               .has_min = 1, .has_max = 1,
                               .label = "실수 자릿수" };
     s_items[i].def.u = 4;
@@ -159,15 +172,28 @@ void mk_cfgtable_init(MkConfig *cfg)
 
         make_key(s_keys[k], sizeof s_keys[k], ch, ".enabled");
         make_label(s_labels[k], sizeof s_labels[k], ch, "사용");
+        /* 🔴 기본으로 켜지는 것은 J3 하나뿐이다.
+         *
+         *    처음에는 일곱 개를 전부 켜 두었는데, 그 조합이 보드 자신의
+         *    용량 검사에 걸린다 — 100 ms × 7채널 = 70 SPS 인데 DRATE 60 에
+         *    정착시간을 반영한 가용은 45.3 SPS 다. $CFG,RESET 을 누르면
+         *    보드가 스스로 거부하는 설정으로 돌아가는 셈이었다.
+         *
+         *    설계 원칙 3 과도 맞다 — 센서 미연결은 정상 상태이므로, 빈
+         *    보드가 일곱 개의 끊긴 루프를 빨갛게 띄우게 두지 않는다.
+         *    쓸 채널은 사용자가 GUI 에서 켠다. */
         s_items[i] = (MkCfgItem){ .key = s_keys[k], .group = "ain",
                                   .vtype = MK_VT_BOOL, .label = s_labels[k] };
-        s_items[i].def.u = 1;
+        s_items[i].def.u = (ch == 0) ? 1u : 0u;
         i++;
 
         make_key(s_keys[k + 1], sizeof s_keys[k + 1], ch, ".period_ms");
         make_label(s_labels[k + 1], sizeof s_labels[k + 1], ch, "수집 주기");
+        /* 🔴 최대가 60초다. tx.period_ms(전송 주기)의 10초를 따라 적었던
+         *    것인데 둘은 다른 것이다. 느린 센서를 1분에 한 번만 읽는 것은
+         *    정상이고, 오히려 링크 부하를 줄인다. */
         s_items[i] = (MkCfgItem){ .key = s_keys[k + 1], .group = "ain",
-                                  .vtype = MK_VT_U16, .min = 10, .max = 10000,
+                                  .vtype = MK_VT_U16, .min = 10, .max = 60000,
                                   .has_min = 1, .has_max = 1, .unit = "ms",
                                   .label = s_labels[k + 1] };
         s_items[i].def.u = 100;

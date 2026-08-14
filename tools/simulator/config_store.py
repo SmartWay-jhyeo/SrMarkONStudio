@@ -384,6 +384,20 @@ def _default_field_mask() -> int:
     return mask
 
 
+def _all_field_mask() -> int:
+    """정의된 **모든** 비트. `tx.fields` 의 상한이다.
+
+    🔴 0xFFFFFFFF 를 상한으로 두면 호스트가 뜻 없는 비트를 켤 수 있고,
+       보드는 그것을 수락한 뒤 무시한다 — 화면에는 켜진 것으로 남는다.
+       그렇다고 손으로 1023 을 적으면 비트를 하나 더 붙이는 순간 새 비트를
+       켤 수 없게 되는데, 그 사실이 코드 어디에도 드러나지 않는다.
+    """
+    mask = 0
+    for bit, _name, _default, _label in FIELD_BITS:
+        mask |= 1 << bit
+    return mask
+
+
 def _margin_of(store: "ConfigStore", previous_value: object,
                item: SimConfigItem) -> float:
     """변경 직전의 실현 가능성 여유(요구 − 가용)를 계산한다.
@@ -409,7 +423,8 @@ def default_store(path: Path | None = None) -> ConfigStore:
         SimConfigItem("dev.id", "dev", "str", "1", "1", maximum=15,
                       label="장치 ID"),
         SimConfigItem("tx.fields", "tx", "u32", mask, mask,
-                      minimum=0, maximum=0xFFFFFFFF, label="NDJSON 필드 마스크"),
+                      minimum=0, maximum=_all_field_mask(),
+                      label="NDJSON 필드 마스크"),
         SimConfigItem("tx.period_ms", "tx", "u16", 100, 100,
                       minimum=10, maximum=10000, unit="ms", label="전송 주기"),
         SimConfigItem("tx.float_digits", "tx", "u8", 4, 4,
@@ -443,7 +458,13 @@ def default_store(path: Path | None = None) -> ConfigStore:
             SimConfigItem(f"ain{ch}.period_ms", "ain", "u16", 100, 100,
                           minimum=10, maximum=60000, unit="ms",
                           label=f"J{connector} 수집 주기"),
+            # 🔴 영점은 mA 값이므로 0~25 mA 밖은 물리적으로 뜻이 없다.
+            #    이 앞단은 120 Ω 션트에 4~20 mA 루프다 — 25 mA 는 과전류
+            #    여유까지 본 상한이고, 음수는 전류 방향이 반대라는 뜻이라
+            #    이 회로에서는 나올 수 없다. 범위가 없으면 화면의 입력칸이
+            #    아무 수나 받고, 잘못 넣으면 모든 측정이 조용히 어긋난다.
             SimConfigItem(f"ain{ch}.zero", "ain", "f32", 4.0, 4.0,
+                          minimum=0.0, maximum=25.0,
                           unit="mA", label=f"J{connector} 영점"),
             SimConfigItem(f"ain{ch}.scale", "ain", "f32", 1.0, 1.0,
                           label=f"J{connector} 스케일"),

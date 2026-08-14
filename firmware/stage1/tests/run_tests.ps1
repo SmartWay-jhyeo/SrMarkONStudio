@@ -20,7 +20,8 @@ $suites = @(
     @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c ..\app\mk_config.c ..\app\mk_cfgwire.c" },
     @{ exe = "test_config.exe";   src = "test_config.c ..\app\mk_config.c" },
     @{ exe = "test_cfgwire.exe";  src = "test_cfgwire.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
-    @{ exe = "test_crc.exe";      src = "test_crc.c ..\app\mk_crc.c" }
+    @{ exe = "test_crc.exe";      src = "test_crc.c ..\app\mk_crc.c" },
+    @{ exe = "test_cfgtable.exe"; src = "test_cfgtable.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" }
 )
 
 # 빌드와 실행을 나눈다. 한 사슬로 묶으면 컴파일 실패와 시험 실패가 같은
@@ -40,5 +41,25 @@ foreach ($s in $suites) {
     cmd /c "chcp 65001 >nul && .\$($s.exe)"
     if ($LASTEXITCODE -ne 0) { $failed = 1 }
     Write-Output ""
+}
+
+# 🔴 C 와 Python 시뮬레이터 대조. 여기서 돌리지 않으면 아무도 돌리지 않는다.
+#
+#    실제로 그랬다. 대조 도구는 "$CFG 는 1단계 미구현" 이라고 적힌 채로
+#    $CFG 가 구현된 뒤에도 한참을 통과했다 — 손으로만 돌렸기 때문이다.
+#    빌드된 시험 바이너리가 필요하므로 자리는 여기다.
+#
+#    시험이 깨졌으면 대조는 건너뛴다. 깨진 바이너리로 대조해 봐야
+#    무엇이 원인인지 흐려질 뿐이다.
+if ($failed -eq 0) {
+    $checks = @("crosscheck.py", "crosscheck_json.py", "crosscheck_crc.py",
+                "crosscheck_cfg.py", "crosscheck_cfgtable.py",
+                "crosscheck_hostlink.py")
+    foreach ($c in $checks) {
+        Write-Output "-- $c"
+        cmd /c "chcp 65001 >nul && python $c"
+        if ($LASTEXITCODE -ne 0) { $failed = 1 }
+        Write-Output ""
+    }
 }
 exit $failed
