@@ -183,6 +183,98 @@ def test_revert_restores_the_screen(app, form):
     assert not page._apply.isEnabled()
 
 
+# ------------------------------------------------------------ 루프 게이지
+
+def test_gauge_never_draws_a_bar_for_a_fault(app):
+    """🔴 고장을 정상처럼 그릴 수 없어야 한다.
+
+    `read_loop` 이 단선·비유한값에 `fraction=None`, `bar_fraction=0` 을
+    주므로, 위젯이 순진하게 그려도 바가 생기지 않는다. 그 구조를 여기서
+    못박는다 — 나중에 누가 `ma` 를 직접 그리도록 바꾸면 실패한다.
+    """
+    from host.gui.qt.gauge import LoopGauge
+    from host.gui.widgets.loop_gauge import read_loop
+
+    for ma in (0.0, 3.99, float("nan"), float("-inf")):
+        r = read_loop(ma)
+        assert r.fraction is None, ma
+        assert r.bar_fraction == 0.0, ma
+
+    g = LoopGauge("J3")
+    g.set_reading(0.2, level=Level.FAULT, verification=Verification.VERIFIED)
+    g.resize(140, 170)
+    g.grab()                     # 그리다 죽지 않는다
+
+
+def test_gauge_shows_words_not_numbers_when_broken(app):
+    """단선이면 숫자 대신 말로 쓴다 — 숫자를 보여주면 측정값으로 읽힌다."""
+    from host.gui.widgets.loop_gauge import read_loop
+
+    assert read_loop(0.3).label == "루프 단선"
+    assert read_loop(25.0).label == "과입력"
+    assert read_loop(float("nan")).label == "값 없음"
+    assert read_loop(12.0).label == "12.00 mA"
+
+
+def test_gauge_over_range_fills_but_has_no_fraction(app):
+    """과입력은 바를 채우되 `fraction` 은 비운다.
+
+    정상 만재(20.00 mA)와 데이터 형태가 같으면 안 된다.
+    """
+    from host.gui.widgets.loop_gauge import read_loop
+
+    over = read_loop(22.0)
+    full = read_loop(20.0)
+    assert over.bar_fraction == 1.0 and over.fraction is None
+    assert full.bar_fraction == 1.0 and full.fraction == 1.0
+
+
+def test_gauge_with_no_reading_draws_nothing(app):
+    from host.gui.qt.gauge import LoopGauge
+
+    g = LoopGauge("J3")
+    g.resize(140, 170)
+    g.grab()                     # ma 가 None 이어도 죽지 않는다
+
+
+# ------------------------------------------------------------ 대시보드
+
+def test_dashboard_has_one_gauge_per_connector(app):
+    """보드 위 J3~J9 순서 그대로 늘어놓는다.
+
+    사용자가 보드를 보면서 화면을 보기 때문이다.
+    """
+    from host.gui.qt.dashboard import AIN_COUNT, CONNECTOR_OFFSET, Dashboard
+
+    d = Dashboard()
+    assert len(d._gauges) == AIN_COUNT
+    assert d._gauges[0]._connector == f"J{CONNECTOR_OFFSET}"
+    assert d._gauges[-1]._connector == f"J{CONNECTOR_OFFSET + AIN_COUNT - 1}"
+
+
+def test_dashboard_channel_update_is_isolated(app):
+    """🔴 채널 장애 격리 — 한 채널이 이상해도 나머지는 그대로다."""
+    from host.gui.qt.dashboard import Dashboard
+
+    d = Dashboard()
+    d.update_channel(0, 12.0, level=Level.OK,
+                     verification=Verification.VERIFIED)
+    d.update_channel(3, 0.1, level=Level.FAULT,
+                     verification=Verification.VERIFIED)
+    assert d._gauges[0]._ma == 12.0
+    assert d._gauges[3]._ma == 0.1
+    assert d._gauges[1]._ma is None      # 오지 않은 채널은 건드리지 않는다
+
+
+def test_dashboard_out_of_range_channel_is_ignored(app):
+    """모르는 커넥터 번호가 와도 죽지 않는다."""
+    from host.gui.qt.dashboard import Dashboard
+
+    d = Dashboard()
+    d.update_channel(99, 12.0)
+    d.update_channel(-1, 12.0)
+
+
 def test_stylesheet_applies(app):
     assert "background" in stylesheet()
     assert app.styleSheet()

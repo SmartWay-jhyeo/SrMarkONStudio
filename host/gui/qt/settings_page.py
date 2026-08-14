@@ -38,23 +38,26 @@ class RowWidget(QWidget):
         self._editor: QWidget
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(Space.SM)
+        lay.setContentsMargins(0, 3, 0, 3)
+        lay.setSpacing(Space.MD)
 
         label = QLabel(row.label)
-        label.setMinimumWidth(200)
+        label.setFixedWidth(190)
+        if not row.editable:
+            label.setStyleSheet(f"color: {Color.INK_DIM};")
         lay.addWidget(label)
 
         self._editor = self._make_editor(row)
         self._editor.setEnabled(row.editable)
-        lay.addWidget(self._editor, 1)
+        self._editor.setFixedWidth(150)
+        lay.addWidget(self._editor)
 
-        if row.unit:
-            unit = QLabel(row.unit)
-            unit.setObjectName("dim")
-            unit.setMinimumWidth(40)
-            lay.addWidget(unit)
+        unit = QLabel(row.unit)
+        unit.setObjectName("dim")
+        unit.setFixedWidth(44)
+        lay.addWidget(unit)
 
+        # 사유·오류가 들어가는 자리. 항상 같은 위치라 눈이 찾기 쉽다.
         self._note = QLabel()
         self._note.setObjectName("dim")
         self._note.setWordWrap(True)
@@ -62,7 +65,7 @@ class RowWidget(QWidget):
 
         if not row.editable and row.reason:
             # 🔴 보드가 준 이유를 그대로 띄운다. "읽기 전용" 이라고만 쓰면
-            #    왜 못 바꾸는지가 사라진다 — 쿨링 팬이 5V 레일 직결이라는
+            #    왜 못 바꾸는지가 사라진다 — 쿨링 팬이 5V 전원에 직결이라는
             #    하드웨어 사실이 곧 사용자가 알아야 할 내용이다.
             self._note.setText(row.reason)
             self.setToolTip(row.reason)
@@ -175,8 +178,17 @@ class SettingsPage(QWidget):
             grid.setSpacing(Space.SM)
 
             title = QLabel(group_label(group.name))
-            title.setStyleSheet("font-weight: 600;")
+            title.setStyleSheet(
+                f"color: {Color.INK_DIM}; font-size: 10pt; font-weight: 700;"
+                f" letter-spacing: 1px;"
+            )
             grid.addWidget(title)
+            rule = QFrame()
+            rule.setFrameShape(QFrame.Shape.HLine)
+            rule.setStyleSheet(f"color: {Color.LINE};")
+            rule.setFixedHeight(1)
+            grid.addWidget(rule)
+            grid.addSpacing(Space.XS)
 
             for row in group.rows:
                 w = RowWidget(row)

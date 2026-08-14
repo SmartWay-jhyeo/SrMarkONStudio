@@ -87,6 +87,33 @@ QWidget {{
     font-family: {Font.UI};
     font-size: {Font.SIZE_MD}pt;
 }}
+QScrollBar:vertical {{
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {Color.LINE};
+    border-radius: 5px;
+    min-height: 30px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {Color.UNKNOWN}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+    background: transparent;
+}}
+QCheckBox::indicator {{
+    width: 17px;
+    height: 17px;
+    border: 1.5px solid {Color.LINE};
+    border-radius: 4px;
+    background: {Color.SURFACE};
+}}
+QCheckBox::indicator:checked {{
+    background: {Color.PROBING};
+    border-color: {Color.PROBING};
+}}
+QCheckBox::indicator:disabled {{ background: {Color.GROUND}; }}
 QFrame#card {{
     background: {Color.SURFACE};
     border: 1px solid {Color.LINE};

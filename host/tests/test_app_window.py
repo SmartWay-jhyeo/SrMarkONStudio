@@ -15,7 +15,8 @@ pytest.importorskip("PyQt6", reason="PyQt6 가 없으면 건너뛴다")
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from host.gui.app import Dashboard, MainWindow, make_service  # noqa: E402
+from host.gui.app import MainWindow, make_service  # noqa: E402
+from host.gui.qt.dashboard import AIN_COUNT, Dashboard  # noqa: E402
 from host.gui.theme import stylesheet  # noqa: E402
 from host.gui.widgets.status_chip import Level, Verification  # noqa: E402
 from host.gui.worker_loop import StepResult  # noqa: E402
@@ -75,9 +76,9 @@ def test_rails_are_never_verified(app):
 def test_rail_label_says_commanded(app):
     dash = Dashboard()
     dash.update_rails({"pwr.24v": True}, reachable=True, now_s=100.0)
-    card = dash._cards["pwr.24v"]
-    assert "명령됨" in card._value.text()
-    assert "정상 ON" not in card._value.text()
+    pill = dash._rails["pwr.24v"]
+    assert "명령됨" in pill._state.text()
+    assert "정상 ON" not in pill._state.text()
 
 
 def test_losing_contact_keeps_what_we_last_knew(app):
@@ -85,26 +86,26 @@ def test_losing_contact_keeps_what_we_last_knew(app):
     dash = Dashboard()
     dash.update_rails({"pwr.24v": True}, reachable=True, now_s=0.0)
     dash.update_rails({}, reachable=False, now_s=12.0)
-    card = dash._cards["pwr.24v"]
-    assert "마지막" in card._last.text()
+    pill = dash._rails["pwr.24v"]
+    assert "마지막" in pill._last.text()
 
 
 def test_never_known_shows_nothing_extra(app):
     dash = Dashboard()
     dash.update_rails({}, reachable=False, now_s=0.0)
-    assert dash._cards["pwr.24v"]._last.text() == ""
+    assert dash._rails["pwr.24v"]._last.text() == ""
 
 
 # ------------------------------------------------------------ 워커 결과
 
 def test_step_result_updates_mode(window):
     window._on_step(StepResult(mode="CONFIG"))
-    assert window._mode.text() == "CONFIG"
+    assert window._top._mode.text() == "CONFIG"
 
 
 def test_communication_error_is_visible(window):
     window._on_step(StepResult(pump_error="포트 없음"))
-    assert "통신 오류" in window._dashboard._link.text()
+    assert "통신 오류" in window._top._link.text()
 
 
 def test_rejection_reaches_the_settings_page(window):
