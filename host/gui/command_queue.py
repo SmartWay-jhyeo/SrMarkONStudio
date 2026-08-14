@@ -24,7 +24,15 @@ _counter = itertools.count(1)
 class Command:
     verb: str
     args: tuple[str, ...]
+    #: 화면에서 합칠 때 쓰는 열쇠. 같은 항목이면 여러 번 보내도 같다.
     tag: str
+    #: 이 **전송 한 번**의 고유 번호.
+    #:
+    #: 🔴 태그와 분리해야 한다. 같은 항목을 응답 전에 두 번 보내면 태그는
+    #:    같지만 전송은 둘이다. 태그로 in-flight 를 세면 첫 응답 하나에
+    #:    둘 다 끝난 것으로 처리되고, **두 번째(최신) 결과가 사라진다.**
+    #:    두 번째가 거부였다면 화면은 첫 번째 성공만 보고 끝난다.
+    send_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,9 @@ class Result:
     payload: dict | None = None
     #: 보드에 닿지 못한 경우. 거부와는 다른 사실이다.
     error: str | None = None
+    #: 어느 전송에 대한 결과인가. 같은 태그를 여러 번 보냈을 때 순서를
+    #: 가리는 데 쓴다 — 큰 번호가 나중에 보낸 것이다.
+    send_id: int = 0
 
 
 class CommandQueue:
@@ -46,8 +57,10 @@ class CommandQueue:
         self._lock = threading.Lock()
         #: 태그 → 아직 안 보낸 명령. dict 라 같은 태그가 덮어써진다.
         self._pending: dict[str, Command] = {}
-        self._in_flight: set[str] = set()
+        #: 전송 번호 → 태그. 🔴 태그 집합이 아니라 전송별로 센다.
+        self._in_flight: dict[int, str] = {}
         self._results: list[Result] = []
+        self._next_send_id = 1
 
     # ------------------------------------------------------------- GUI 쪽
     def submit(self, verb: str, *args: str, tag: str | None = None) -> str:
@@ -105,21 +118,35 @@ class CommandQueue:
             keys = list(self._pending)
             if limit is not None:
                 keys = keys[:limit]
-            cmds = [self._pending.pop(k) for k in keys]
-            self._in_flight.update(k for k in keys)
+            cmds = []
+            for k in keys:
+                cmd = self._pending.pop(k)
+                # 🔴 전송 번호는 **꺼낼 때** 붙인다. 제출 때 붙이면 합쳐진
+                #    명령들이 번호를 낭비하고, 무엇보다 실제로 나간 것과
+                #    번호가 어긋난다.
+                sid = self._next_send_id
+                self._next_send_id += 1
+                cmd = Command(verb=cmd.verb, args=cmd.args, tag=cmd.tag,
+                              send_id=sid)
+                self._in_flight[sid] = cmd.tag
+                cmds.append(cmd)
         return cmds
 
-    def complete(self, tag: str, *, ok: bool, reason: str | None = None,
+    def complete(self, send_id: int, *, ok: bool, reason: str | None = None,
                  payload: dict | None = None, error: str | None = None) -> None:
-        """명령 하나의 결과를 되돌려 놓는다.
+        """전송 하나의 결과를 되돌려 놓는다.
 
-        모르는 태그는 조용히 무시한다 — 워커가 늦게 끝난 명령을 보고해도
-        큐가 깨지면 안 된다.
+        🔴 태그가 아니라 **전송 번호**로 받는다. 같은 항목을 응답 전에 두 번
+           보내면 태그는 같지만 전송은 둘이고, 결과도 둘이어야 한다.
+
+        모르는 번호는 조용히 무시한다 — 워커가 늦게 끝난 명령을 보고하거나
+        같은 번호를 두 번 보고해도 큐가 깨지면 안 된다.
         """
         with self._lock:
-            if tag not in self._in_flight:
+            tag = self._in_flight.pop(send_id, None)
+            if tag is None:
                 return
-            self._in_flight.discard(tag)
             self._results.append(
-                Result(tag=tag, ok=ok, reason=reason, payload=payload, error=error)
+                Result(tag=tag, ok=ok, reason=reason, payload=payload,
+                       error=error, send_id=send_id)
             )

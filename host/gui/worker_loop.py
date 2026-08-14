@@ -155,7 +155,7 @@ class WorkerLoop:
         try:
             ack = self.service.send(cmd.verb, *cmd.args)
         except Exception as exc:                          # noqa: BLE001
-            self.queue.complete(cmd.tag, ok=False, error=str(exc))
+            self.queue.complete(cmd.send_id, ok=False, error=str(exc))
             return
 
         # 🔴 **성공을 적극적으로 확인한다.** 실패를 찾아내는 방식이면
@@ -167,9 +167,10 @@ class WorkerLoop:
         # 설정 쓰기의 조용한 거짓 성공은 이 시스템 최악의 실패 방식이다.
         if not ack.args or ack.args[-1] != "OK":
             reason = ack.args[-1] if ack.args else "MALFORMED"
-            self.queue.complete(cmd.tag, ok=False, reason=reason)
+            self.queue.complete(cmd.send_id, ok=False, reason=reason)
             return
 
         self.queue.complete(
-            cmd.tag, ok=True, payload=getattr(self.service, "last_payload", None)
+            cmd.send_id, ok=True,
+            payload=getattr(self.service, "last_payload", None),
         )

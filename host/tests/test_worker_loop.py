@@ -41,9 +41,13 @@ class FakeService:
         pass
 
 
-def _rig():
-    svc = FakeService()
-    return svc, CommandQueue(), WorkerLoop(svc, CommandQueue())
+#: 🔴 `_rig()` 헬퍼가 있었으나 지웠다.
+#:
+#:    `CommandQueue()` 를 두 번 만들어 시험이 명령을 넣는 큐와 워커가
+#:    꺼내 쓰는 큐가 서로 다른 결함이 있었는데, **아무 시험도 그것을 쓰지
+#:    않고 있었다.** 고치려다 호출자가 하나도 없다는 것을 알았다.
+#:
+#:    죽은 헬퍼는 남겨 두면 언젠가 누가 쓴다. 그때 그 결함이 되살아난다.
 
 
 def test_heartbeat_is_sent_on_the_first_step():

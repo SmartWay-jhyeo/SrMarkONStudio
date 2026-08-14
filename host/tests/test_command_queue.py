@@ -22,8 +22,8 @@ def test_drain_pending_hands_commands_to_the_worker():
 def test_results_are_not_visible_until_taken():
     q = CommandQueue()
     tag = q.submit("STAT")
-    q.drain_pending()
-    q.complete(tag, ok=True, payload={"mode": "RUN"})
+    sent = q.drain_pending()
+    q.complete(sent[0].send_id, ok=True, payload={"mode": "RUN"})
     assert q.take_results()[0].payload == {"mode": "RUN"}
     assert q.take_results() == []           # 한 번만 걷힌다
 
@@ -31,9 +31,9 @@ def test_results_are_not_visible_until_taken():
 def test_in_flight_drops_when_a_command_completes():
     q = CommandQueue()
     tag = q.submit("STAT")
-    q.drain_pending()
+    sent = q.drain_pending()
     assert q.in_flight == 1
-    q.complete(tag, ok=True)
+    q.complete(sent[0].send_id, ok=True)
     assert q.in_flight == 0
 
 
@@ -45,8 +45,8 @@ def test_rejection_carries_the_reason_verbatim():
     """
     q = CommandQueue()
     tag = q.submit("CFG", "SET", "pwr.5v", "false")
-    q.drain_pending()
-    q.complete(tag, ok=False, reason="INTERLOCK")
+    sent = q.drain_pending()
+    q.complete(sent[0].send_id, ok=False, reason="INTERLOCK")
     r = q.take_results()[0]
     assert r.ok is False
     assert r.reason == "INTERLOCK"
@@ -56,8 +56,8 @@ def test_transport_error_is_distinct_from_a_rejection():
     """보드가 거부한 것과 보드에 못 닿은 것은 다른 사실이다."""
     q = CommandQueue()
     tag = q.submit("STAT")
-    q.drain_pending()
-    q.complete(tag, ok=False, error="응답 없음")
+    sent = q.drain_pending()
+    q.complete(sent[0].send_id, ok=False, error="응답 없음")
     r = q.take_results()[0]
     assert r.reason is None
     assert r.error == "응답 없음"
@@ -66,7 +66,7 @@ def test_transport_error_is_distinct_from_a_rejection():
 def test_completing_an_unknown_tag_is_ignored():
     """워커가 늦게 끝난 명령을 보고해도 큐가 깨지지 않는다."""
     q = CommandQueue()
-    q.complete("nope", ok=True)
+    q.complete(9999, ok=True)
     assert q.take_results() == []
     assert q.in_flight == 0
 
@@ -83,8 +83,8 @@ def test_caller_supplied_tag_is_preserved():
     q = CommandQueue()
     tag = q.submit("CFG", "SET", "tx.period_ms", "250", tag="spin:tx.period_ms")
     assert tag == "spin:tx.period_ms"
-    q.drain_pending()
-    q.complete(tag, ok=True)
+    sent = q.drain_pending()
+    q.complete(sent[0].send_id, ok=True)
     assert q.take_results()[0].tag == "spin:tx.period_ms"
 
 
@@ -117,14 +117,75 @@ def test_untagged_commands_are_never_merged():
     assert len(q.drain_pending()) == 3
 
 
+def test_two_sends_of_the_same_tag_each_get_a_result():
+    """🔴 회귀 시험 — 같은 항목을 응답 전에 두 번 보내면 결과도 둘이다.
+
+    이전 판은 in-flight 를 **태그 집합**으로 셌다. 그래서 같은 태그의 두
+    전송이 하나로 세어지고, 첫 응답 하나에 둘 다 끝난 것으로 처리됐다.
+    **두 번째(최신) 결과가 사라진다.**
+
+    사용자 시나리오로 옮기면: 250 을 넣고 응답을 기다리는 동안 500 으로
+    고쳐 다시 보냈는데, 보드가 500 을 거부했다. 화면은 250 성공만 보고
+    끝나고, 사용자는 500 이 적용된 줄 안다. 실제 보드 값은 250 이다.
+
+    Codex 감사가 짚었고 재현으로 확인했다.
+    """
+    q = CommandQueue()
+    q.submit("CFG", "SET", "tx.period_ms", "250", tag="set:tx.period_ms")
+    first = q.drain_pending()
+    q.submit("CFG", "SET", "tx.period_ms", "500", tag="set:tx.period_ms")
+    second = q.drain_pending()
+
+    assert q.in_flight == 2
+    assert first[0].send_id != second[0].send_id
+
+    q.complete(first[0].send_id, ok=True)
+    assert q.in_flight == 1, "응답 하나에 둘 다 끝나면 안 된다"
+
+    q.complete(second[0].send_id, ok=False, reason="RANGE")
+    assert q.in_flight == 0
+
+    results = q.take_results()
+    assert len(results) == 2, "두 전송에 두 결과"
+    assert [r.ok for r in results] == [True, False]
+    assert results[1].reason == "RANGE"
+    # 🔴 순서를 가릴 수 있어야 한다 — 큰 번호가 나중에 보낸 것이다.
+    assert results[0].send_id < results[1].send_id
+
+
+def test_send_id_is_assigned_at_drain_not_at_submit():
+    """합쳐진 명령이 번호를 낭비하지 않는다.
+
+    제출 때 번호를 붙이면 스핀박스를 2000번 돌렸을 때 2000개가 소모되고,
+    실제로 나간 것과 번호가 어긋난다.
+    """
+    q = CommandQueue()
+    for value in ("100", "200", "300"):
+        q.submit("CFG", "SET", "tx.period_ms", value, tag="spin")
+    sent = q.drain_pending()
+    assert len(sent) == 1
+    assert sent[0].args[-1] == "300"
+    assert sent[0].send_id == 1
+
+
+def test_completing_the_same_send_id_twice_is_ignored():
+    """워커가 같은 결과를 두 번 보고해도 결과가 겹치지 않는다."""
+    q = CommandQueue()
+    q.submit("STAT")
+    sent = q.drain_pending()
+    q.complete(sent[0].send_id, ok=True)
+    q.complete(sent[0].send_id, ok=True)
+    assert len(q.take_results()) == 1
+
+
 def test_merging_only_affects_commands_not_yet_sent():
     """이미 보낸 명령은 덮어쓰지 않는다 — 결과가 돌아와야 한다."""
     q = CommandQueue()
     first = q.submit("CFG", "SET", "tx.period_ms", "100", tag="spin")
-    q.drain_pending()                       # 워커가 가져갔다
+    sent = q.drain_pending()                # 워커가 가져갔다
     q.submit("CFG", "SET", "tx.period_ms", "200", tag="spin")
     assert q.in_flight == 2                 # 보낸 것 + 대기 중인 것
-    q.complete(first, ok=True)
+    q.complete(sent[0].send_id, ok=True)
     assert q.take_results()[0].tag == "spin"
 
 
