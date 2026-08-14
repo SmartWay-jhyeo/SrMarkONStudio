@@ -358,6 +358,257 @@ static void test_tick_does_not_depend_on_mode(void)
     CHECK(s.n == 1, "RUN 에서도 HB 를 보낸다");
 }
 
+/* ---- $CFG (2단계) ------------------------------------------------------ */
+
+static MkCfgItem CFG_ITEMS[3];
+static MkConfig  CFG_STORE;
+static int       saves;
+static int       save_fails;
+
+static const MkFieldBit CFG_FIELDS[] = {
+    { 0, "device_id", 0, "보드 식별자" },
+    { 3, "raw",       1, "ADS1256 원시 카운트" },
+};
+
+static int fake_save(void *ctx)
+{
+    (void)ctx;
+    saves++;
+    return save_fails ? -1 : 0;
+}
+
+static void setup_cfg(MkHostlink *h, Sink *s)
+{
+    setup(h, s);
+    saves = 0;
+    save_fails = 0;
+    memset(CFG_ITEMS, 0, sizeof CFG_ITEMS);
+
+    CFG_ITEMS[0] = (MkCfgItem){ .key = "tx.period_ms", .group = "tx",
+                                .vtype = MK_VT_U16, .min = 10, .max = 10000,
+                                .has_min = 1, .has_max = 1,
+                                .unit = "ms", .label = "전송 주기" };
+    CFG_ITEMS[0].def.u = 100;
+    CFG_ITEMS[0].cur.u = 100;
+
+    CFG_ITEMS[1] = (MkCfgItem){ .key = "pwr.5v", .group = "pwr",
+                                .vtype = MK_VT_BOOL, .readonly = 1,
+                                .interlocked = 1, .label = "5V 전원",
+                                .note = "쿨링 팬이 5V 전원에 직결이라 끌 수 없다" };
+    CFG_ITEMS[1].def.u = 1;
+    CFG_ITEMS[1].cur.u = 1;
+
+    CFG_ITEMS[2] = (MkCfgItem){ .key = "dev.id", .group = "dev",
+                                .vtype = MK_VT_STR, .max = 15, .has_max = 1,
+                                .label = "장치 ID" };
+    CFG_ITEMS[2].def.s[0] = '1';
+    CFG_ITEMS[2].cur.s[0] = '1';
+
+    CFG_STORE.items = CFG_ITEMS;
+    CFG_STORE.count = 3;
+    CFG_STORE.dirty = 0;
+
+    mk_hostlink_attach_config(h, &CFG_STORE, CFG_FIELDS, 2, fake_save, NULL);
+}
+
+static const char *sack_of(Sink *s)
+{
+    for (int i = s->n - 1; i >= 0; i--) {
+        if (s->lines[i][0] == '$') return s->lines[i];
+    }
+    return "";
+}
+
+static void test_cfg_unsupported_without_a_store(void)
+{
+    /* 1단계 펌웨어가 이 상태였다. 설정 저장소가 없으면 UNSUPPORTED 다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "CFG,LIST", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,UNSUPPORTED"),
+             "저장소가 없으면 UNSUPPORTED");
+}
+
+static void test_cfg_list_emits_catalog_then_sack(void)
+{
+    /* 규격 §5.2 — 본문을 먼저 보내고 $SACK 로 끝낸다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "CFG,LIST", 1000);
+    CHECK(s.n == 3 + 2 + 1 + 1, "item 3 + field 2 + end 1 + SACK 1");
+    CHECK(s.lines[0][0] == '{', "첫 줄은 NDJSON");
+    CHECK(strstr(s.lines[0], "\"type\":\"cfg_item\"") != NULL, "cfg_item");
+    CHECK(strstr(s.lines[5], "\"count\":5") != NULL, "cfg_end 의 합계");
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "마지막은 SACK,CFG,OK");
+}
+
+static void test_cfg_list_works_in_run_mode(void)
+{
+    /* 규격 §4 — $CFG,LIST 는 CONFIG 전용이 아니다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    CHECK(mk_hostlink_mode(&h, 0) == MK_MODE_RUN, "지금 RUN 이다");
+    sink_reset(&s);
+    feed(&h, "CFG,LIST", 0);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "RUN 에서도 목록은 준다");
+}
+
+static void test_cfg_get(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "CFG,GET,tx.period_ms", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    CHECK(strstr(s.lines[0], "\"type\":\"cfg_value\"") != NULL, "cfg_value");
+    CHECK(strstr(s.lines[0], "\"cur\":100") != NULL, "현재값");
+
+    sink_reset(&s);
+    feed(&h, "CFG,GET,없는키", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,UNKNOWN_KEY"),
+             "모르는 키");
+    CHECK(s.n == 1, "거부에는 본문이 없다");
+}
+
+static void test_cfg_set_requires_config_mode(void)
+{
+    /* 규격 §4 — $CFG,SET 은 CONFIG 전용이다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    CHECK(mk_hostlink_mode(&h, 0) == MK_MODE_RUN, "지금 RUN 이다");
+    sink_reset(&s);
+    feed(&h, "CFG,SET,tx.period_ms,250", 0);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,MODE"), "RUN 이면 MODE");
+    CHECK(CFG_ITEMS[0].cur.u == 100u, "값이 바뀌지 않았다");
+}
+
+static void test_mode_is_checked_before_the_key(void)
+{
+    /* 🔴 RUN 모드에서 온 요청은 키가 맞든 틀리든 받지 않는다. 키를 먼저
+     *    보면 없는 키에 UNKNOWN_KEY 를 돌려주게 되고, 사용자는 키 이름을
+     *    고치려 든다 — 진짜 문제는 GUI 가 하트비트를 못 보내고 있다는 것이다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "CFG,SET,없는키,1", 0);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,MODE"),
+             "RUN 에서는 없는 키라도 MODE 가 먼저");
+}
+
+static void test_cfg_set_in_config_mode(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "CFG,SET,tx.period_ms,250", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "CONFIG 면 받는다");
+    CHECK(CFG_ITEMS[0].cur.u == 250u, "값이 바뀌었다");
+}
+
+static void test_cfg_set_reasons_reach_the_host(void)
+{
+    /* 규격 §5.2 의 사유가 그대로 전달되는지. 사용자가 왜 안 되는지를
+     * 알아야 한다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+
+    sink_reset(&s);
+    feed(&h, "CFG,SET,tx.period_ms,999999", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,RANGE"), "범위 밖");
+
+    sink_reset(&s);
+    feed(&h, "CFG,SET,pwr.5v,false", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,INTERLOCK"),
+             "인터록이 읽기 전용을 이긴다");
+
+    sink_reset(&s);
+    feed(&h, "CFG,SET,없는키,1", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,UNKNOWN_KEY"), "모르는 키");
+}
+
+static void test_cfg_save(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+
+    /* 🔴 바뀐 것이 없으면 Flash 를 쓰지 않는다. 지웠다 쓰는 것은 수명을
+     *    깎는 일이고, 아무것도 안 바뀐 저장은 순수한 손해다. */
+    sink_reset(&s);
+    feed(&h, "CFG,SAVE", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "바뀐 것 없어도 OK");
+    CHECK(saves == 0, "바뀐 것이 없으면 쓰지 않는다");
+
+    feed(&h, "CFG,SET,tx.period_ms,250", 1000);
+    sink_reset(&s);
+    feed(&h, "CFG,SAVE", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "저장 성공");
+    CHECK(saves == 1, "한 번 썼다");
+
+    sink_reset(&s);
+    feed(&h, "CFG,SAVE", 1000);
+    CHECK(saves == 1, "이미 저장했으면 다시 쓰지 않는다");
+}
+
+static void test_cfg_save_failure_is_reported(void)
+{
+    /* 🔴 저장이 실패했는데 OK 를 보내면 사용자는 저장된 줄 안다.
+     *    전원을 뺐다 꽂으면 설정이 사라져 있다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "CFG,SET,tx.period_ms,250", 1000);
+    save_fails = 1;
+    sink_reset(&s);
+    feed(&h, "CFG,SAVE", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,BUSY"), "실패를 알린다");
+    CHECK(mk_cfg_dirty(&CFG_STORE), "실패했으면 여전히 저장이 필요하다");
+}
+
+static void test_cfg_save_requires_config_mode(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "CFG,SAVE", 0);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,MODE"), "RUN 이면 MODE");
+    CHECK(saves == 0, "쓰지 않았다");
+}
+
+static void test_cfg_reset(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "CFG,SET,tx.period_ms,250", 1000);
+    sink_reset(&s);
+    feed(&h, "CFG,RESET", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "초기화");
+    CHECK(CFG_ITEMS[0].cur.u == 100u, "기본값으로 돌아갔다");
+    CHECK(mk_cfg_dirty(&CFG_STORE), "초기화도 저장이 필요하다");
+}
+
+static void test_cfg_unknown_subcommand(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "CFG,NOPE", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,UNSUPPORTED"),
+             "모르는 하위 명령");
+
+    sink_reset(&s);
+    feed(&h, "CFG", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,UNKNOWN_KEY"),
+             "하위 명령이 아예 없으면");
+}
+
 /* ---- Python 시뮬레이터와 대조할 시나리오 ------------------------------ */
 
 /* 🔴 이 대조가 이 계층에서 가장 값지다. GUI 는 시뮬레이터를 상대로 개발되고
@@ -485,6 +736,19 @@ int main(int argc, char **argv)
     test_bad_checksum_on_real_command_gets_sack();
     test_malformed_line_is_silent();
     test_unsendable_verb_is_dropped();
+    test_cfg_unsupported_without_a_store();
+    test_cfg_list_emits_catalog_then_sack();
+    test_cfg_list_works_in_run_mode();
+    test_cfg_get();
+    test_cfg_set_requires_config_mode();
+    test_mode_is_checked_before_the_key();
+    test_cfg_set_in_config_mode();
+    test_cfg_set_reasons_reach_the_host();
+    test_cfg_save();
+    test_cfg_save_failure_is_reported();
+    test_cfg_save_requires_config_mode();
+    test_cfg_reset();
+    test_cfg_unknown_subcommand();
     test_tick_emits_hb_at_1hz();
     test_tick_does_not_depend_on_mode();
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);

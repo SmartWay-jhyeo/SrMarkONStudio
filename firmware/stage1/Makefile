@@ -35,6 +35,9 @@ C_SRC = \
   app/mk_hostlink.c \
   app/mk_config.c \
   app/mk_cfgwire.c \
+  app/mk_crc.c \
+  app/mk_cfgtable.c \
+  bsp/mk_flash.c \
   bsp/mk_uart.c \
   bsp/stm32h7xx_it.c \
   $(DEV)/Source/Templates/system_stm32h7xx.c \
@@ -47,7 +50,9 @@ C_SRC = \
   $(HAL)/Src/stm32h7xx_hal_pwr_ex.c \
   $(HAL)/Src/stm32h7xx_hal_uart.c \
   $(HAL)/Src/stm32h7xx_hal_uart_ex.c \
-  $(HAL)/Src/stm32h7xx_hal_dma.c
+  $(HAL)/Src/stm32h7xx_hal_dma.c \
+  $(HAL)/Src/stm32h7xx_hal_flash.c \
+  $(HAL)/Src/stm32h7xx_hal_flash_ex.c
 
 ASM_SRC  = $(DEV)/Source/Templates/gcc/startup_stm32h723xx.s
 

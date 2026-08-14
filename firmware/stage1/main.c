@@ -20,10 +20,14 @@
 
 #include "stm32h7xx_hal.h"
 
+#include "mk_cfgtable.h"
+#include "mk_config.h"
+#include "mk_flash.h"
 #include "mk_hostlink.h"
 #include "mk_uart.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #define FW_VERSION   "0.1.0"
 #define BOARD_REV    "2.0"
@@ -55,6 +59,29 @@ static void emit(void *ctx, const char *line, size_t len)
     mk_uart_write(line, len);
 }
 
+static MkConfig s_cfg;
+
+/* 🔴 크기를 어림으로 잡지 않는다. 실제 항목 수에서 나온다.
+ *    Flash 쪽 staging 버퍼를 512 로 어림잡았다가 실기기에서 저장이
+ *    ERR,BUSY 로 떨어진 적이 있다 — 45항목 × 24바이트 = 1,080 이었다. */
+static uint8_t  s_blob[sizeof(MkValue) * MK_CFG_MAX_ITEMS];
+
+/* $CFG,SAVE 가 부른다. 값만 모아 Flash 에 남긴다.
+ *
+ * 🔴 구조체를 통째로 쓰지 않는다. key·label·note 가 포인터라서, 펌웨어를
+ *    다시 구우면 그 주소가 달라진다. 옛 주소로 되살리면 어디를 가리킬지
+ *    알 수 없다. */
+static int save_config(void *ctx)
+{
+    (void)ctx;
+    size_t n = mk_cfgtable_blob_size();
+    if (n > sizeof s_blob) {
+        return -1;
+    }
+    mk_cfgtable_pack(&s_cfg, s_blob);
+    return mk_flash_save(s_blob, n);
+}
+
 int main(void)
 {
     HAL_Init();
@@ -62,8 +89,25 @@ int main(void)
     led_init();
     mk_uart_init(UART_BAUD);
 
+    /* 🔴 설정을 먼저 세운 뒤 저장본을 덮어씌운다. 저장이 없거나 깨졌으면
+     *    기본값 그대로 간다 — 기본값은 전원 레일이 전부 꺼진 상태다.
+     *    깨진 저장을 짐작으로 받아들이면 24V 가 켜진 채로 부팅할 수 있다. */
+    mk_cfgtable_init(&s_cfg);
+    {
+        size_t n = mk_cfgtable_blob_size();
+        if (n <= sizeof s_blob && mk_flash_load(s_blob, n) == 0) {
+            mk_cfgtable_unpack(&s_cfg, s_blob);
+        }
+    }
+    mk_cfg_mark_saved(&s_cfg);   /* 방금 읽은 것과 같으니 저장할 것이 없다 */
+
     MkHostlink link;
     mk_hostlink_init(&link, emit, NULL, DEVICE_ID, FW_VERSION, BOARD_REV);
+
+    size_t n_fields = 0;
+    const MkFieldBit *fields = mk_cfgtable_fields(&n_fields);
+    mk_hostlink_attach_config(&link, &s_cfg, fields, n_fields,
+                              save_config, NULL);
 
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;

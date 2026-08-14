@@ -14,6 +14,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "mk_cfgwire.h"
+#include "mk_config.h"
 #include "mk_framing.h"
 
 /* 규격 §6.2 */
@@ -28,6 +30,10 @@ typedef enum {
 /* 한 줄을 내보낸다. 줄끝(`\r\n` 또는 `\n`)은 이미 붙어 있다. */
 typedef void (*MkEmit)(void *ctx, const char *line, size_t len);
 
+/* 설정을 영구 저장한다. 없으면(NULL) $CFG,SAVE 가 BUSY 를 돌려준다.
+ * 반환: 성공이면 0. Flash 를 다루는 것은 bsp 쪽이다. */
+typedef int (*MkCfgSave)(void *ctx);
+
 typedef struct {
     MkEmit      emit;
     void       *ctx;
@@ -35,6 +41,14 @@ typedef struct {
     const char *device_id;
     const char *fw;
     const char *board_rev;
+
+    /* 설정 저장소. NULL 이면 $CFG 명령이 전부 UNSUPPORTED 다 —
+     * 1단계 펌웨어가 그 상태였다. */
+    MkConfig        *cfg;
+    const MkFieldBit *fields;
+    size_t            n_fields;
+    MkCfgSave         save;
+    void             *save_ctx;
 
     int64_t     last_hb_rx_ms;   /* 검증을 통과한 $HB 를 마지막으로 받은 시각 */
     int64_t     last_hb_tx_ms;   /* 우리가 $HB 를 마지막으로 보낸 시각 */
@@ -46,6 +60,11 @@ typedef struct {
 void mk_hostlink_init(MkHostlink *h, MkEmit emit, void *ctx,
                       const char *device_id, const char *fw,
                       const char *board_rev);
+
+/* 설정 저장소를 붙인다. 부르지 않으면 $CFG 는 UNSUPPORTED 다. */
+void mk_hostlink_attach_config(MkHostlink *h, MkConfig *cfg,
+                               const MkFieldBit *fields, size_t n_fields,
+                               MkCfgSave save, void *save_ctx);
 
 /* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
  *

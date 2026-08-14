@@ -17,9 +17,10 @@ Set-Location $PSScriptRoot
 $suites = @(
     @{ exe = "test_framing.exe";  src = "test_framing.c ..\app\mk_framing.c" },
     @{ exe = "test_json.exe";     src = "test_json.c ..\app\mk_json.c" },
-    @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c" },
+    @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c ..\app\mk_config.c ..\app\mk_cfgwire.c" },
     @{ exe = "test_config.exe";   src = "test_config.c ..\app\mk_config.c" },
-    @{ exe = "test_cfgwire.exe";  src = "test_cfgwire.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" }
+    @{ exe = "test_cfgwire.exe";  src = "test_cfgwire.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
+    @{ exe = "test_crc.exe";      src = "test_crc.c ..\app\mk_crc.c" }
 )
 
 # 빌드와 실행을 나눈다. 한 사슬로 묶으면 컴파일 실패와 시험 실패가 같은

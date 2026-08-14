@@ -77,6 +77,151 @@ static int emit_id_record(MkHostlink *h, int64_t now_ms)
     return 1;
 }
 
+/* NDJSON 한 줄을 내보낸다. 줄바꿈을 붙일 자리가 없으면 보내지 않는다. */
+static int emit_json(MkHostlink *h, char *body, size_t cap, int n)
+{
+    if (n <= 0 || h->emit == NULL) {
+        return 0;
+    }
+    if ((size_t)n + 2u > cap) {
+        return 0;
+    }
+    body[n]     = '\n';
+    body[n + 1] = '\0';
+    h->emit(h->ctx, body, (size_t)n + 1u);
+    return 1;
+}
+
+/* mk_cfgwire 가 카탈로그 한 줄을 만들 때마다 부른다. */
+static void catalog_sink(void *ctx, const char *line, size_t len)
+{
+    MkHostlink *h = (MkHostlink *)ctx;
+    char body[400];
+
+    if (h->emit == NULL || len + 2u > sizeof body) {
+        return;
+    }
+    memcpy(body, line, len);
+    body[len]     = '\n';
+    body[len + 1] = '\0';
+    h->emit(h->ctx, body, len + 1u);
+}
+
+/* MkCfgResult 를 SACK 사유로. */
+static void sack_cfg(MkHostlink *h, MkCfgResult r)
+{
+    if (r == MK_CFG_OK) {
+        emit_sack_ok(h, "CFG");
+    } else {
+        emit_sack_err(h, "CFG", mk_cfg_reason_text(r));
+    }
+}
+
+static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
+{
+    if (h->cfg == NULL) {
+        emit_sack_err(h, "CFG", "UNSUPPORTED");
+        return;
+    }
+    if (c->argc < 1) {
+        emit_sack_err(h, "CFG", "UNKNOWN_KEY");
+        return;
+    }
+
+    const char *sub = c->args[0];
+
+    if (strcmp(sub, "LIST") == 0) {
+        /* 규격 §5.2 — 본문을 먼저 보내고 $SACK 로 끝낸다. */
+        mk_cfgwire_list(h->cfg, h->fields, h->n_fields, now_ms,
+                        catalog_sink, h);
+        emit_sack_ok(h, "CFG");
+        return;
+    }
+
+    if (strcmp(sub, "GET") == 0) {
+        if (c->argc < 2) {
+            emit_sack_err(h, "CFG", "UNKNOWN_KEY");
+            return;
+        }
+        MkCfgItem *item = mk_cfg_find(h->cfg, c->args[1]);
+        if (item == NULL) {
+            emit_sack_err(h, "CFG", "UNKNOWN_KEY");
+            return;
+        }
+        char body[256];
+        int n = mk_cfgwire_value(item, now_ms, body, sizeof body);
+        /* 🔴 본문을 못 만들었으면 OK 라고 하지 않는다. 거짓 OK 는 무응답보다
+         *    나쁘다 — 호스트가 값을 받았다고 믿고 넘어간다. */
+        if (!emit_json(h, body, sizeof body, n)) {
+            emit_sack_err(h, "CFG", "BUSY");
+            return;
+        }
+        emit_sack_ok(h, "CFG");
+        return;
+    }
+
+    /* 아래는 전부 CONFIG 전용이다 (규격 §4).
+     *
+     * 🔴 모드 검사를 키 존재보다 **먼저** 한다. RUN 모드에서 온 요청은
+     *    키가 맞든 틀리든 받지 않으므로, 키를 먼저 보면 없는 키에 대해
+     *    UNKNOWN_KEY 를 돌려주게 된다 — 사용자는 키 이름을 고치려 들지만
+     *    진짜 문제는 GUI 가 하트비트를 못 보내고 있다는 것이다. */
+    if (mk_hostlink_mode(h, now_ms) != MK_MODE_CONFIG) {
+        emit_sack_err(h, "CFG", "MODE");
+        return;
+    }
+
+    if (strcmp(sub, "SET") == 0) {
+        if (c->argc < 3) {
+            emit_sack_err(h, "CFG", "UNKNOWN_KEY");
+            return;
+        }
+        sack_cfg(h, mk_cfg_set(h->cfg, c->args[1], c->args[2]));
+        return;
+    }
+
+    if (strcmp(sub, "SAVE") == 0) {
+        if (h->save == NULL) {
+            emit_sack_err(h, "CFG", "BUSY");
+            return;
+        }
+        /* 🔴 바뀐 것이 없으면 쓰지 않는다. Flash 를 지웠다 쓰는 것은
+         *    수명을 깎는 일이고, 아무것도 안 바뀐 저장은 순수한 손해다.
+         *    사용자에게는 성공으로 보인다 — 실제로 저장된 상태와 같으므로
+         *    거짓말이 아니다. */
+        if (!mk_cfg_dirty(h->cfg)) {
+            emit_sack_ok(h, "CFG");
+            return;
+        }
+        if (h->save(h->save_ctx) != 0) {
+            emit_sack_err(h, "CFG", "BUSY");
+            return;
+        }
+        mk_cfg_mark_saved(h->cfg);
+        emit_sack_ok(h, "CFG");
+        return;
+    }
+
+    if (strcmp(sub, "RESET") == 0) {
+        mk_cfg_reset(h->cfg);
+        emit_sack_ok(h, "CFG");
+        return;
+    }
+
+    emit_sack_err(h, "CFG", "UNSUPPORTED");
+}
+
+void mk_hostlink_attach_config(MkHostlink *h, MkConfig *cfg,
+                               const MkFieldBit *fields, size_t n_fields,
+                               MkCfgSave save, void *save_ctx)
+{
+    h->cfg = cfg;
+    h->fields = fields;
+    h->n_fields = n_fields;
+    h->save = save;
+    h->save_ctx = save_ctx;
+}
+
 void mk_hostlink_init(MkHostlink *h, MkEmit emit, void *ctx,
                       const char *device_id, const char *fw,
                       const char *board_rev)
@@ -130,6 +275,11 @@ void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
         if (emit_id_record(h, now_ms)) {
             emit_sack_ok(h, "ID");
         }
+        return;
+    }
+
+    if (strcmp(c.verb, "CFG") == 0) {
+        on_cfg(h, &c, now_ms);
         return;
     }
 
