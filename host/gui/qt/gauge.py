@@ -52,7 +52,10 @@ class LoopGauge(QWidget):
         self._unit = ""
         self._value: float | None = None
         self._note = ""
-        self.setMinimumSize(132, 168)
+        # 🔴 카드 안에 들어가므로 높이를 확보한다. 게이지 30 + 눈금 15 +
+        #    값 영역이 들어갈 자리다.
+        # 게이지 30 + 눈금 15 + 값 34 + 물리량 18 + 여백
+        self.setMinimumSize(150, 146)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Fixed)
 
@@ -132,15 +135,18 @@ class LoopGauge(QWidget):
                        | Qt.AlignmentFlag.AlignVCenter, "mA")
 
         # ── 게이지 ────────────────────────────────────────────────
-        top = 66
-        h = 22
+        # 🔴 높이를 22 에서 키웠다. 얇으면 **진행 막대**로 읽힌다 — 진행
+        #    막대는 0 에서 100 으로 가는 것이고, 이것은 4 에서 20 사이의
+        #    측정값이다. 눈금을 넣을 자리도 필요하다.
+        top = 72
+        h = 30
         track = QRectF(0.5, top + 0.5, w - 1.0, h)
         brk_w = track.width() * BREAK_ZONE_RATIO
         brk = QRectF(track.left(), track.top(), brk_w, track.height())
         live = QRectF(track.left() + brk_w, track.top(),
                       track.width() - brk_w, track.height())
 
-        p.setBrush(QColor(Color.GROUND))
+        p.setBrush(QColor(Color.WELL))
         p.setPen(QPen(QColor(Color.LINE), 1))
         p.drawRect(track)
 
@@ -173,32 +179,52 @@ class LoopGauge(QWidget):
             p.setBrush(accent)
             p.drawRect(bar)
 
+        # 🔴 중간 눈금. 4 와 20 만 있으면 눈이 값을 가늠할 기준이 없다 —
+        #    바가 어디쯤인지는 보이는데 그것이 몇 mA 인지 읽히지 않는다.
+        #    계기는 값을 **읽게** 해야 하고, 그러려면 사이에 짚을 데가
+        #    있어야 한다. 안쪽으로만 그어 바를 가리지 않는다.
+        p.setPen(QPen(QColor(Color.INK_FAINT), 1))
+        for ma in (8, 12, 16):
+            x = live.left() + live.width() * (ma - LOOP_MIN_MA) / (
+                LOOP_MAX_MA - LOOP_MIN_MA)
+            p.drawLine(int(x), int(track.top() + 1),
+                       int(x), int(track.top() + 5))
+            p.drawLine(int(x), int(track.bottom() - 5),
+                       int(x), int(track.bottom() - 1))
+
         # 살아 있는 0 점 표시 — 해칭과 실측 구간의 경계
         p.setPen(QPen(QColor(Color.INK_DIM), 1.4))
         p.drawLine(int(live.left()), int(track.top() - 3),
                    int(live.left()), int(track.bottom() + 3))
 
-        # 눈금
+        # 눈금 숫자
         small = QFont(Font.UI.split(",")[0])
         small.setPointSize(Font.SIZE_SM)
         p.setFont(small)
-        p.setPen(QColor(Color.INK_DIM))
-        p.drawText(int(live.left()) - 12, int(track.bottom() + 4), 24, 16,
+        p.setPen(QColor(Color.INK_FAINT))
+        p.drawText(int(live.left()) - 12, int(track.bottom() + 3), 24, 15,
                    Qt.AlignmentFlag.AlignHCenter, "4")
-        p.drawText(w - 30, int(track.bottom() + 4), 30, 16,
-                   Qt.AlignmentFlag.AlignRight, "20")
+        for ma in (8, 12, 16):
+            x = live.left() + live.width() * (ma - LOOP_MIN_MA) / (
+                LOOP_MAX_MA - LOOP_MIN_MA)
+            p.drawText(int(x) - 12, int(track.bottom() + 3), 24, 15,
+                       Qt.AlignmentFlag.AlignHCenter, str(ma))
+        # 🔴 오른쪽 끝은 잘리기 쉽다. 폭을 넉넉히 주고 끝에 붙인다 —
+        #    처음에 34px 만 줬더니 "20 mA" 가 "!0 mA" 로 잘렸다.
+        p.drawText(w - 56, int(track.bottom() + 3), 56, 15,
+                   Qt.AlignmentFlag.AlignRight, "20 mA")
 
         # ── 물리량 / 곁들임 ───────────────────────────────────────
         p.setPen(QColor(Color.INK_DIM))
         if self._note:
             p.setPen(QColor(Color.WARN))
-            p.drawText(0, int(track.bottom() + 22), w, 18,
+            p.drawText(0, int(track.bottom() + 20), w, 18,
                        Qt.AlignmentFlag.AlignLeft, self._note)
         elif self._value is not None and reading and reading.fraction is not None:
             text = f"{self._value:.3f}"
             if self._unit:
                 text += f" {self._unit}"
-            p.drawText(0, int(track.bottom() + 22), w, 18,
+            p.drawText(0, int(track.bottom() + 20), w, 18,
                        Qt.AlignmentFlag.AlignLeft, text)
 
         p.end()

@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from host.gui.screen import ScreenState
 from host.gui.theme import Color, Font, Space
 
 
@@ -149,3 +150,24 @@ class TopBar(QWidget):
             f"color: {Color.FAULT if bad else Color.INK_DIM};"
             f" font-size: {Font.SIZE_SM}pt;"
         )
+
+
+    # ------------------------------------------------------------- 그리기
+
+    def render(self, state: ScreenState) -> None:
+        """`ScreenState` 만 받는다 — 뷰 계약(qt/view.py).
+
+        🔴 `set_mode` · `set_link` 도 남겨 둔다. 명령 결과(저장 성공/실패)는
+           워커 주기가 아니라 사건이라, 상태에 담기보다 그때 바로 띄우는
+           편이 맞다. 뷰 계약은 "state 만으로 그릴 수 있어야 한다" 이지
+           "다른 입구가 있으면 안 된다" 가 아니다.
+        """
+        self.set_mode(state.mode)
+        self.set_link(state.link.text, bad=state.link.bad)
+        if state.identity.device_id or state.identity.fw:
+            self.set_identity(
+                state.identity.port or self._port,
+                state.identity.device_id,
+                state.identity.fw,
+                state.identity.board_rev,
+            )

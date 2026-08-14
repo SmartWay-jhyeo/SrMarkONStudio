@@ -373,32 +373,36 @@ def test_dashboard_has_one_gauge_per_connector(app):
     from host.gui.qt.dashboard import AIN_COUNT, CONNECTOR_OFFSET, Dashboard
 
     d = Dashboard()
-    assert len(d._gauges) == AIN_COUNT
-    assert d._gauges[0]._connector == f"J{CONNECTOR_OFFSET}"
-    assert d._gauges[-1]._connector == f"J{CONNECTOR_OFFSET + AIN_COUNT - 1}"
+    assert len(d._cards) == AIN_COUNT
+    assert d._cards[0].gauge._connector == f"J{CONNECTOR_OFFSET}"
+    assert d._cards[-1].gauge._connector == f"J{CONNECTOR_OFFSET + AIN_COUNT - 1}"
 
 
-def test_dashboard_channel_update_is_isolated(app):
-    """🔴 채널 장애 격리 — 한 채널이 이상해도 나머지는 그대로다."""
+def test_dashboard_renders_screen_state(app):
+    """뷰는 `ScreenState` 만 받아 그린다 — 뷰 계약(qt/view.py).
+
+    🔴 채널 장애 격리·범위 밖 커넥터 같은 **판정**은 이제 Qt 없이
+       host/gui/screen.py 에서 시험한다(test_screen.py). 여기서 보는 것은
+       배선뿐이다 — 상태가 위젯에 실제로 닿는가.
+    """
     from host.gui.qt.dashboard import Dashboard
+    from host.gui.screen import ChannelState, ScreenState
 
     d = Dashboard()
-    d.update_channel(0, 12.0, level=Level.OK,
-                     verification=Verification.VERIFIED)
-    d.update_channel(3, 0.1, level=Level.FAULT,
-                     verification=Verification.VERIFIED)
-    assert d._gauges[0]._ma == 12.0
-    assert d._gauges[3]._ma == 0.1
-    assert d._gauges[1]._ma is None      # 오지 않은 채널은 건드리지 않는다
-
-
-def test_dashboard_out_of_range_channel_is_ignored(app):
-    """모르는 커넥터 번호가 와도 죽지 않는다."""
-    from host.gui.qt.dashboard import Dashboard
-
-    d = Dashboard()
-    d.update_channel(99, 12.0)
-    d.update_channel(-1, 12.0)
+    d.render(ScreenState(
+        reachable=True,
+        channels=(
+            ChannelState(0, "J3", ma=12.0, level=Level.OK,
+                         verification=Verification.VERIFIED),
+            ChannelState(3, "J6", ma=0.1, level=Level.FAULT,
+                         verification=Verification.VERIFIED),
+            # 범위 밖 — 조용히 무시돼야 한다
+            ChannelState(99, "J102", ma=8.0),
+        ),
+    ))
+    assert d._cards[0].gauge._ma == 12.0
+    assert d._cards[3].gauge._ma == 0.1
+    assert d._cards[1].gauge._ma is None
 
 
 def test_stylesheet_applies(app):

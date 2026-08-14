@@ -16,11 +16,30 @@ class Color:
     SURFACE = "#FFFFFF"
     #: 경계선. 그림자 대신 이것으로 층을 나눈다.
     LINE = "#E2E6E9"
+    #: 카드 안쪽의 한 겹 더 들어간 면 (게이지 트랙 등)
+    WELL = "#EEF1F3"
 
     #: 본문. 순검정이 아니다 — 흰 바탕에서 대비가 과해 눈이 피로하다.
     INK = "#1C2024"
     #: 보조 라벨
     INK_DIM = "#5F6A73"
+    #: 아주 흐린 보조 — 눈금 숫자처럼 있어야 하지만 읽을 일이 드문 것
+    INK_FAINT = "#98A2AA"
+
+    # ── 어두운 면 ─────────────────────────────────────────────
+    # 🔴 화면에 **무게중심**이 필요하다. 전부 흰 바탕에 얇은 선이면 눈이
+    #    앉을 데가 없고, 어디부터 읽어야 할지 알 수 없다. 정체성 바와
+    #    좌측 레일을 어둡게 깔아 나머지를 그 위에 얹는다.
+    #
+    #    순검정이 아니라 청록이 도는 먹빛이다 — 계기 패널의 실크스크린
+    #    색이고, 아래의 신호 초록과 같은 계열이라 화면이 하나로 묶인다.
+    SHELL = "#16202A"
+    #: 어두운 면 위의 글자
+    SHELL_INK = "#E8EDF0"
+    #: 어두운 면 위의 보조 글자
+    SHELL_DIM = "#8A9AA6"
+    #: 어두운 면 안의 구획선
+    SHELL_LINE = "#2A3945"
 
     # ── 상태색 ────────────────────────────────────────────────
     # 스펙 §8.3. 흰 바탕에서 읽히는 톤으로 조정했다.
@@ -118,6 +137,52 @@ QFrame#card {{
     background: {Color.SURFACE};
     border: 1px solid {Color.LINE};
     border-radius: 6px;
+}}
+
+/* ── 어두운 면 ─────────────────────────────────────────────
+ *
+ * 🔴 전역 `QWidget {{ background: GROUND }}` 이 **모든** 위젯에 걸린다.
+ *    그래서 어두운 면 위의 자식들은 배경을 명시적으로 투명하게 돌려놓지
+ *    않으면 각자 흰 상자로 찍힌다. 실제로 그랬다 — 레일의 5V·14.9V·24V
+ *    글자와 구획 제목이 밝은 네모에 가려 안 보였다.
+ *
+ *    자손 선택자(공백)를 쓴다. `>` 는 직계 자식만이라 레이아웃 안에
+ *    한 겹 더 들어간 라벨을 놓친다. */
+QFrame#shell {{
+    background: {Color.SHELL};
+    border: none;
+    border-right: 1px solid {Color.SHELL_LINE};
+}}
+QFrame#shell QWidget {{ background: transparent; }}
+QFrame#shell QLabel {{
+    background: transparent;
+    color: {Color.SHELL_INK};
+}}
+QLabel#shellDim {{
+    background: transparent;
+    color: {Color.SHELL_DIM};
+    font-size: {Font.SIZE_SM}pt;
+}}
+QLabel#shellMono {{
+    background: transparent;
+    color: {Color.SHELL_DIM};
+    font-family: {Font.MONO};
+    font-size: {Font.SIZE_SM}pt;
+}}
+/* 레일 안의 구획 제목 */
+QLabel#shellSection {{
+    background: transparent;
+    color: {Color.SHELL_DIM};
+    font-size: {Font.SIZE_SM}pt;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+}}
+/* 명령 상태 꼬리표. 채운 알약이 아니라 글자만 — 어두운 면에서 상자는
+ * 무거워지고, 여기서 중요한 것은 상태이지 상자가 아니다. */
+QLabel#shellState {{
+    background: transparent;
+    color: {Color.SHELL_DIM};
+    font-size: {Font.SIZE_SM}pt;
 }}
 QLabel#h1 {{
     font-size: {Font.SIZE_XL}pt;

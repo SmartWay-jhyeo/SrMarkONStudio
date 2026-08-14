@@ -24,7 +24,8 @@ from PyQt6.QtWidgets import (
 )
 
 from host.gui.last_known import StateHistory, build_chip_state
-from host.gui.qt.gauge import LoopGauge
+from host.gui.qt.channel_card import ChannelCard
+from host.gui.screen import AIN_COUNT, CONNECTOR_OFFSET, RAILS, ScreenState
 from host.gui.theme import Color, Font, Space
 from host.gui.widgets.status_chip import (
     Level,
@@ -33,9 +34,9 @@ from host.gui.widgets.status_chip import (
     rail_label,
 )
 
-#: AIN0 이 J3 이다 (데이터시트 §5.3).
-CONNECTOR_OFFSET = 3
-AIN_COUNT = 7
+# 🔴 커넥터 오프셋·채널 수·레일 목록은 host/gui/screen.py 가 유일한
+#    출처다. 여기서 다시 정의하면 두 곳이 갈릴 수 있고, 그때 화면과
+#    상태가 서로 다른 채널을 가리킨다.
 
 
 class SectionTitle(QWidget):
@@ -138,86 +139,71 @@ class RailPill(QFrame):
 
 
 class Dashboard(QWidget):
-    RAILS = (("pwr.24v", "24V"), ("pwr.14v9", "14.9V"), ("pwr.5v", "5V"))
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._history = StateHistory()
         self._rails: dict[str, RailPill] = {}
-        self._gauges: list[LoopGauge] = []
+        self._cards: list[ChannelCard] = []
 
         # ── 채널 (시그니처) ──────────────────────────────────────
+        #
+        # 🔴 한 줄에 셋. 예전에는 넷이었는데, 1936px 화면에서 카드 하나가
+        #    450px 가 되면서 게이지만 길쭉해지고 값은 왼쪽 구석에 몰렸다.
+        #    셋이면 카드가 계기 비율에 가까워지고, 7채널이 3+3+1 이 아니라
+        #    3+3+1 로 떨어져 마지막 줄에 여백이 남는다 — 그 여백은 J9 가
+        #    보드에서도 줄 끝이라는 사실과 맞는다.
         self._ch_title = SectionTitle("아날로그 입력")
         grid = QGridLayout()
         grid.setHorizontalSpacing(Space.MD)
         grid.setVerticalSpacing(Space.MD)
+        cols = 3
         for ch in range(AIN_COUNT):
-            g = LoopGauge(f"J{ch + CONNECTOR_OFFSET}")
-            self._gauges.append(g)
-            grid.addWidget(g, ch // 4, ch % 4)
-        # 마지막 줄의 빈 칸을 채워 게이지가 늘어나지 않게 한다.
-        for c in range(AIN_COUNT % 4, 4):
-            if AIN_COUNT % 4:
-                grid.addWidget(QWidget(), 1, c)
+            card = ChannelCard(f"J{ch + CONNECTOR_OFFSET}")
+            self._cards.append(card)
+            grid.addWidget(card, ch // cols, ch % cols)
+        # 마지막 줄의 빈 칸을 채워 카드가 늘어나지 않게 한다.
+        for c in range(AIN_COUNT % cols, cols):
+            grid.addWidget(QWidget(), AIN_COUNT // cols, c)
+        for c in range(cols):
+            grid.setColumnStretch(c, 1)
 
-        # ── 전원 ─────────────────────────────────────────────────
-        self._pwr_title = SectionTitle("전원")
-        pwr = QHBoxLayout()
-        pwr.setSpacing(Space.SM)
-        for key, label in self.RAILS:
-            pill = RailPill(label)
-            self._rails[key] = pill
-            pwr.addWidget(pill)
-        pwr.addStretch(1)
-
-        self._hint = QLabel(
-            "전원 레일에는 피드백 회로가 없다 — 화면은 명령한 상태를 말한다"
-        )
-        self._hint.setStyleSheet(
-            f"color: {Color.INK_DIM}; font-size: {Font.SIZE_SM}pt;"
-        )
-
+        # 🔴 전원 레일은 이제 좌측 레일(qt/rail.py)에 있다. 여기서는 그리지
+        #    않는다 — 5V 가 없으면 채널이 하나도 안 도는 관계라, 채널 아래에
+        #    두는 것보다 늘 보이는 자리에 있는 편이 맞다.
         col = QVBoxLayout(self)
-        col.setContentsMargins(Space.XL, Space.LG, Space.XL, Space.LG)
+        col.setContentsMargins(Space.LG, Space.LG, Space.LG, Space.LG)
         col.setSpacing(Space.SM)
         col.addWidget(self._ch_title)
         col.addSpacing(Space.XS)
         col.addLayout(grid)
         col.addStretch(1)
-        col.addWidget(self._pwr_title)
-        col.addSpacing(Space.XS)
-        col.addLayout(pwr)
-        col.addWidget(self._hint)
 
     # ------------------------------------------------------------- 갱신
 
-    def update_rails(self, values: dict[str, bool], *, reachable: bool,
-                     now_s: float | None = None) -> None:
-        now = time.monotonic() if now_s is None else now_s
-        for key, label in self.RAILS:
-            on = bool(values.get(key, False))
-            if reachable:
-                verification = Verification.COMMANDED
-                level = Level.OK if on else Level.IDLE
-            else:
-                verification = Verification.UNKNOWN
-                level = Level.IDLE
-            state = build_chip_state(
-                self._history, key, label, level, verification, now,
-                detail=rail_label(on, verification),
-            )
-            self._rails[key].apply(state)
+    def render(self, state: ScreenState) -> None:
+        """`ScreenState` 만 받는다 — 뷰 계약(qt/view.py).
 
-    def update_channel(self, ch: int, ma: float | None, *,
-                       level: Level = Level.OK,
-                       verification: Verification = Verification.VERIFIED,
-                       value: float | None = None, unit: str = "",
-                       note: str = "") -> None:
-        if 0 <= ch < len(self._gauges):
-            self._gauges[ch].set_reading(
-                ma, level=level, verification=verification,
-                value=value, unit=unit, note=note,
+        🔴 예전에는 채널마다 `update_channel(ch, ma, level=..., ...)` 를
+           불러야 했고, 그 인자를 만드는 코드가 MainWindow 에 있었다.
+           배치를 바꾸면 그 변환 코드까지 따라다녔다.
+        """
+        for ch in state.channels:
+            if not (0 <= ch.index < len(self._cards)):
+                continue
+            card = self._cards[ch.index]
+            card.gauge.set_reading(
+                ch.ma, level=ch.level, verification=ch.verification,
+                value=ch.value, unit=ch.unit, note=ch.note,
             )
+            # 🔴 카드 띠와 게이지가 **같은** 판정을 쓴다. 따로 계산하면
+            #    언젠가 갈리고, 그때 어느 쪽을 믿어야 할지 알 수 없다.
+            card.set_state(ch.level, ch.verification)
+
+        self._ch_title.set_aside(
+            f"{AIN_COUNT}채널 · 4–20 mA" if state.reachable else "확인 불가",
+            Color.FAULT if not state.reachable else None,
+        )
 
     def set_link(self, text: str, bad: bool = False) -> None:
         self._ch_title.set_aside(text, Color.FAULT if bad else None)

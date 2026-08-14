@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from host.gui.app import MainWindow, make_service  # noqa: E402
 from host.gui.qt.dashboard import AIN_COUNT, Dashboard  # noqa: E402
+from host.gui.qt.rail import RailRow  # noqa: E402
 from host.gui.theme import stylesheet  # noqa: E402
 from host.gui.widgets.status_chip import Level, Verification  # noqa: E402
 from host.gui.worker_loop import StepResult  # noqa: E402
@@ -57,44 +58,10 @@ def test_switching_pages(window):
     assert window._pages.currentIndex() == 1
 
 
-# ------------------------------------------------------------ 전원 레일
-
-def test_rails_are_never_verified(app):
-    """🔴 전원 레일은 영원히 COMMANDED 다.
-
-    피드백 회로가 없으므로 GPIO 를 올렸다는 것과 실제로 24V 가 나온다는
-    것은 다른 사실이고, 보드는 후자를 모른다. 화면이 둘을 같은 초록 점으로
-    그리면 사용자는 확인된 것으로 읽는다.
-    """
-    dash = Dashboard()
-    dash.update_rails({"pwr.24v": True}, reachable=True, now_s=100.0)
-    state = dash._history._last["pwr.24v"]
-    assert state.verification is Verification.COMMANDED
-    assert state.verification is not Verification.VERIFIED
-
-
-def test_rail_label_says_commanded(app):
-    dash = Dashboard()
-    dash.update_rails({"pwr.24v": True}, reachable=True, now_s=100.0)
-    pill = dash._rails["pwr.24v"]
-    assert "명령됨" in pill._state.text()
-    assert "정상 ON" not in pill._state.text()
-
-
-def test_losing_contact_keeps_what_we_last_knew(app):
-    """🔴 확인이 끊겼다고 문제가 사라지지 않는다."""
-    dash = Dashboard()
-    dash.update_rails({"pwr.24v": True}, reachable=True, now_s=0.0)
-    dash.update_rails({}, reachable=False, now_s=12.0)
-    pill = dash._rails["pwr.24v"]
-    assert "마지막" in pill._last.text()
-
-
-def test_never_known_shows_nothing_extra(app):
-    dash = Dashboard()
-    dash.update_rails({}, reachable=False, now_s=0.0)
-    assert dash._rails["pwr.24v"]._last.text() == ""
-
+# 🔴 전원 레일의 계약(명령됨·마지막 알던 값·순서)은 이제 Qt 없이
+#    host/tests/test_screen.py 에서 본다. 배치를 바꿔도 그 시험은
+#    살아남는다 — 레일을 아래에서 왼쪽으로 옮기면서 위젯 이름이 전부
+#    바뀌었는데 계약 시험은 하나도 안 바뀌었다.
 
 # ------------------------------------------------------------ 워커 결과
 

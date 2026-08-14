@@ -16,6 +16,7 @@ import sys
 
 from PyQt6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QMainWindow,
     QStackedWidget,
     QVBoxLayout,
@@ -24,13 +25,22 @@ from PyQt6.QtWidgets import (
 
 from host.core.limits import DEFAULT_BAUD
 from host.gui.command_queue import CommandQueue
-from host.gui.qt.dashboard import AIN_COUNT, Dashboard
+from host.gui.qt.dashboard import Dashboard
 from host.gui.qt.settings_page import SettingsPage
 from host.gui.qt.topbar import TopBar
 from host.gui.qt.worker import WorkerThread
 from host.gui.settings_form import SettingsForm
+from host.gui.qt.rail import Rail
+from host.gui.last_known import StateHistory
+from host.gui.screen import (
+    AIN_COUNT,
+    RAILS,
+    Identity,
+    ScreenState,
+    build_screen,
+    empty_channels,
+)
 from host.gui.theme import stylesheet
-from host.gui.widgets.status_chip import Level, Verification
 
 WINDOW_TITLE = "MarkON Studio"
 PAGES = ("대시보드", "설정")
@@ -59,13 +69,38 @@ class MainWindow(QMainWindow):
         self._pages.addWidget(self._settings)
         self._top.page_selected.connect(self._pages.setCurrentIndex)
 
+        # 🔴 세 구역으로 나눈다: 정체성 바(위) · 레일(왼쪽) · 캔버스.
+        #
+        #    처음에는 위·아래 두 덩이였는데, 화면을 띄워 보니 가운데 60% 가
+        #    비고 전원 레일이 맨 아래 고아처럼 떨어져 있었다. 어디부터
+        #    읽어야 할지 알 수 없는 화면이었다.
+        #
+        #    레일을 왼쪽에 세우면 세 가지가 한꺼번에 풀린다 — 화면에
+        #    무게중심이 생기고, 전원이 늘 보이는 자리로 오고(5V 가 없으면
+        #    채널이 하나도 안 돈다), 캔버스의 가로폭이 줄어 채널 카드가
+        #    적당한 크기가 된다.
+        self._rail = Rail()
+
+        split = QWidget()
+        row = QHBoxLayout(split)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        row.addWidget(self._rail)
+        row.addWidget(self._pages, 1)
+
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
         col.addWidget(self._top)
-        col.addWidget(self._pages, 1)
+        col.addWidget(split, 1)
         self.setCentralWidget(body)
+
+        # 🔴 뷰 목록. 배치를 바꾸는 것은 이 목록과 위 레이아웃을 고치는
+        #    일이고, 데이터 배선(_on_step)은 건드리지 않는다.
+        self._views = (self._top, self._rail, self._dashboard)
+        self._history = StateHistory()
+        self._state = ScreenState(channels=empty_channels())
 
         self._worker = WorkerThread(service, self._queue)
         self._worker.worker.stepped.connect(self._on_step)
@@ -109,26 +144,41 @@ class MainWindow(QMainWindow):
             return
         self._settings.set_form(SettingsForm(schema))
 
+    def _rail_values(self) -> dict[str, bool]:
+        """설정 화면이 들고 있는 레일 값.
+
+        🔴 화면에 그려진 값이 곧 보드에 보낸 값이다. 별도로 보관하면 둘이
+           갈리고, 그때 화면이 어느 쪽을 말하는지 알 수 없다.
+        """
+        form = self._settings.form
+        if form is None:
+            return {}
+        return {key: form.row(key).value == "true"
+                for key, _label in RAILS if key in form.keys()}
+
     # ------------------------------------------------------------- 워커
 
     def _on_step(self, result) -> None:
-        self._top.set_mode(result.mode)
-        reachable = result.error is None
-        if result.error:
-            self._top.set_link(f"통신 오류: {result.error}", bad=True)
-            self._dashboard.set_link("확인 불가", bad=True)
-        else:
-            self._top.set_link("연결됨")
-            self._dashboard.set_link(f"{AIN_COUNT}채널 · 4–20 mA")
+        """워커가 한 바퀴 돌 때마다.
 
-        rails = {}
-        form = getattr(self._settings, "_form", None)
-        if form is not None:
-            for key, _label in Dashboard.RAILS:
-                if key in form.keys():
-                    rails[key] = form.row(key).value == "true"
-        self._dashboard.update_rails(rails, reachable=reachable)
-        self._apply_records(result.records, reachable=reachable)
+        🔴 하는 일이 셋뿐이다: **상태를 만들고 · 뷰들에 건네고 · 명령
+           결과를 설정 화면에 알린다.** 뷰끼리 값을 주고받지 않는다.
+
+           예전에는 여기서 레일 값을 설정 화면의 private 에서 꺼내
+           대시보드를 거쳐 레일에 넣었다. 그래서 배치를 바꾸면 이 함수도
+           같이 뜯어야 했다. 이제 배치를 바꿔도 이 함수는 그대로다.
+        """
+        self._state = build_screen(
+            self._state,
+            identity=self._state.identity,
+            mode=result.mode,
+            error=result.error,
+            rail_values=self._rail_values(),
+            records=result.records,
+            history=self._history,
+        )
+        for view in self._views:
+            view.render(self._state)
 
         for res in result.results:
             tag = res.tag or ""
@@ -155,41 +205,6 @@ class MainWindow(QMainWindow):
                 self._settings.on_accepted(key)
             else:
                 self._settings.on_rejected(key, res.reason or "거부됨")
-
-    def _apply_records(self, records, *, reachable: bool) -> None:
-        """텔레메트리를 게이지에 옮긴다.
-
-        🔴 채널 장애 격리 — 한 채널이 이상해도 나머지는 계속 갱신된다.
-           레코드를 하나씩 보고, 오지 않은 채널은 건드리지 않는다.
-        """
-        if not reachable:
-            for ch in range(AIN_COUNT):
-                self._dashboard.update_channel(
-                    ch, None, level=Level.IDLE,
-                    verification=Verification.UNKNOWN,
-                )
-            return
-
-        for rec in records or ():
-            if not isinstance(rec, dict) or rec.get("type") != "ain":
-                continue
-            cid = rec.get("connector_id")
-            if not isinstance(cid, int):
-                continue
-            ch = cid - 3          # AIN0 = J3 (데이터시트 §5.3)
-            if not (0 <= ch < AIN_COUNT):
-                continue
-            ma = rec.get("ma")
-            status = rec.get("status", 0)
-            value = rec.get("value")
-            self._dashboard.update_channel(
-                ch,
-                float(ma) if isinstance(ma, (int, float)) else None,
-                level=Level.OK if not status else Level.WARN,
-                verification=Verification.VERIFIED,
-                value=float(value) if isinstance(value, (int, float)) else None,
-                unit=str(rec.get("unit", "")),
-            )
 
     def _on_apply(self, changes: list) -> None:
         for key, value in changes:

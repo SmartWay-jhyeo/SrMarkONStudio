@@ -197,6 +197,15 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------- 구성
 
+    @property
+    def form(self):
+        """지금 그리고 있는 폼. `None` 이면 아직 카탈로그를 못 받았다.
+
+        🔴 공개한다. 예전에는 바깥에서 `getattr(page, "_form", None)` 으로
+           private 를 뒤졌다 — 그런 접근은 리팩터링을 조용히 깨뜨린다.
+        """
+        return getattr(self, "_form", None)
+
     def set_form(self, form: SettingsForm) -> None:
         """카탈로그가 도착했다. 화면을 다시 그린다."""
         self._form = form
