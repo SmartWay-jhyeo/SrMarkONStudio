@@ -34,6 +34,7 @@ C_SRC = \
   app/mk_json.c \
   app/mk_hostlink.c \
   app/mk_config.c \
+  app/mk_cfgwire.c \
   bsp/mk_uart.c \
   bsp/stm32h7xx_it.c \
   $(DEV)/Source/Templates/system_stm32h7xx.c \

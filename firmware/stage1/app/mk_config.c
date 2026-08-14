@@ -107,7 +107,8 @@ static MkCfgResult coerce(const MkCfgItem *item, const char *raw, MkValue *out)
         if (!parse_u32(raw, &out->u)) {
             return MK_CFG_RANGE;
         }
-        if ((float)out->u < item->min || (float)out->u > item->max) {
+        if ((item->has_min && (float)out->u < item->min) ||
+            (item->has_max && (float)out->u > item->max)) {
             return MK_CFG_RANGE;
         }
         return MK_CFG_OK;
@@ -129,7 +130,8 @@ static MkCfgResult coerce(const MkCfgItem *item, const char *raw, MkValue *out)
         if (!parse_f32(raw, &out->f)) {
             return MK_CFG_RANGE;
         }
-        if (out->f < item->min || out->f > item->max) {
+        if ((item->has_min && out->f < item->min) ||
+            (item->has_max && out->f > item->max)) {
             return MK_CFG_RANGE;
         }
         return MK_CFG_OK;
@@ -137,7 +139,7 @@ static MkCfgResult coerce(const MkCfgItem *item, const char *raw, MkValue *out)
 
     case MK_VT_STR: {
         size_t n = strlen(raw);
-        if (n > (size_t)item->max || n > MK_CFG_STR_MAX) {
+        if ((item->has_max && n > (size_t)item->max) || n > MK_CFG_STR_MAX) {
             return MK_CFG_RANGE;
         }
         /* 🔴 프로토콜 구분자와 제어문자를 막는다. 값 하나가 줄 구조를

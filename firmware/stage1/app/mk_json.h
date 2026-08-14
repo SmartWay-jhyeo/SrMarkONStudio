@@ -55,6 +55,13 @@ void mk_json_i32(MkJson *j, const char *key, int32_t val);
 void mk_json_u32(MkJson *j, const char *key, uint32_t val);
 void mk_json_bool(MkJson *j, const char *key, int val);
 
+/* 정수 배열. 규격 §7.3 의 `choices` 가 이 형태다.
+ *
+ * 🔴 배열이 없으면 enum 항목을 화면에 그릴 수 없다. 호스트는 설정 항목을
+ *    하드코딩하지 않으므로 허용값 목록도 보드가 알려 줘야 한다. */
+void mk_json_u32_array(MkJson *j, const char *key,
+                       const uint32_t *values, size_t count);
+
 /* 고정 소수점 자릿수로 반올림한 십진수. digits 는 0~6.
  *
  * 🔴 유한하지 않거나(NaN/Inf) 자릿수를 곱했을 때 int64 를 넘는 값은

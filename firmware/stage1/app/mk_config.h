@@ -53,9 +53,15 @@ typedef struct {
     MkVType     vtype;
     MkValue     def;
     MkValue     cur;
-    /* 숫자 항목의 범위. 문자열은 max 를 길이 상한으로 쓴다. */
+    /* 숫자 항목의 범위. 문자열은 max 를 길이 상한으로 쓴다.
+     *
+     * 🔴 `has_min`·`has_max` 가 0 이면 전선에 싣지 않는다. 규격 §7.3 은
+     *    범위가 없는 항목에 min·max 를 요구하지 않고, 없는 것을 0 으로
+     *    실어 보내면 화면이 "최소 0" 이라고 잘못 말한다. */
     float       min;
     float       max;
+    uint8_t     has_min;
+    uint8_t     has_max;
     const char *unit;
     /* 🔴 인터록은 읽기 전용과 다르다. 규격 §5.2 — 둘 다 해당하면
      *    INTERLOCK 이 이긴다. 사용자가 왜 안 되는지 알아야 하기 때문이다. */

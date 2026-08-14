@@ -47,12 +47,13 @@ static void setup(void)
     memset(ITEMS, 0, sizeof ITEMS);
 
     ITEMS[0] = (MkCfgItem){ .key = "dev.id", .group = "dev", .vtype = MK_VT_STR,
-                            .max = 15, .label = "장치 ID" };
+                            .max = 15, .has_max = 1, .label = "장치 ID" };
     put(ITEMS[0].def.s, sizeof ITEMS[0].def.s, "1");
     put(ITEMS[0].cur.s, sizeof ITEMS[0].cur.s, "1");
 
     ITEMS[1] = (MkCfgItem){ .key = "tx.period_ms", .group = "tx",
                             .vtype = MK_VT_U16, .min = 10, .max = 10000,
+                            .has_min = 1, .has_max = 1,
                             .unit = "ms", .label = "전송 주기" };
     ITEMS[1].def.u = 100;
     ITEMS[1].cur.u = 100;
@@ -71,6 +72,7 @@ static void setup(void)
 
     ITEMS[4] = (MkCfgItem){ .key = "ain0.zero", .group = "ain",
                             .vtype = MK_VT_F32, .min = 0.0f, .max = 25.0f,
+                            .has_min = 1, .has_max = 1,
                             .unit = "mA", .label = "J3 영점" };
     ITEMS[4].def.f = 4.0f;
     ITEMS[4].cur.f = 4.0f;
@@ -84,13 +86,14 @@ static void setup(void)
 
     /* 읽기 전용이지만 인터록은 아닌 항목 */
     ITEMS[6] = (MkCfgItem){ .key = "dev.rev", .group = "dev",
-                            .vtype = MK_VT_STR, .max = 8, .readonly = 1,
+                            .vtype = MK_VT_STR, .max = 8, .has_max = 1, .readonly = 1,
                             .label = "보드 리비전" };
     put(ITEMS[6].def.s, sizeof ITEMS[6].def.s, "2.0");
     put(ITEMS[6].cur.s, sizeof ITEMS[6].cur.s, "2.0");
 
     ITEMS[7] = (MkCfgItem){ .key = "tx.fields", .group = "tx",
                             .vtype = MK_VT_U32, .min = 0, .max = 4294967295.0f,
+                            .has_min = 1, .has_max = 1,
                             .label = "NDJSON 필드 마스크" };
     ITEMS[7].def.u = 698;
     ITEMS[7].cur.u = 698;
