@@ -442,9 +442,11 @@ def default_store(path: Path | None = None) -> ConfigStore:
         SimConfigItem("pwr.14v9", "pwr", "bool", False, False,
                       label="14.9V 전원"),
         SimConfigItem(
-            "pwr.5v", "pwr", "bool", True, True,
-            readonly=True, interlocked=True, label="5V 전원",
-            note="쿨링 팬이 5V 전원에 직결이라 끌 수 없다",
+            # 🔴 5V 도 끌 수 있다 (사용자 확정 2026-08-14). 막지 않는 대신
+            #    무엇이 함께 멈추는지 note 가 말하고, 화면이 그 문구를
+            #    그대로 띄운다(규격 §7.3).
+            "pwr.5v", "pwr", "bool", True, True, label="5V 전원",
+            note="끄면 쿨링 팬·아날로그 수집·WS2812 가 함께 멈춘다",
         ),
         SimConfigItem("pwr.seq_delay_ms", "pwr", "u16", 500, 500,
                       minimum=0, maximum=5000, unit="ms", label="레일 기동 간격"),

@@ -43,27 +43,52 @@ def test_set_unknown_key():
     assert exc.value.reason == Reason.UNKNOWN_KEY
 
 
-def test_pwr_5v_is_readonly_and_true():
-    """쿨링 팬이 5V 레일 직결이라 끌 수 없다 (데이터시트 §5.14)."""
+def test_pwr_5v_is_settable_and_defaults_on():
+    """5V 도 끌 수 있다 (사용자 확정 2026-08-14).
+
+    🔴 막지 않는 대신 무엇이 함께 멈추는지 `note` 가 말한다. 화면이 그
+       문구를 그대로 띄우므로(규격 §7.3), 그것이 인터록을 푼 대신 남은
+       유일한 안전장치다.
+    """
     store = default_store()
-    assert store.get("pwr.5v") is True
-    assert store.items["pwr.5v"].readonly is True
+    item = store.items["pwr.5v"]
+    assert store.get("pwr.5v") is True, "기본값은 켜짐"
+    assert item.readonly is False and item.interlocked is False
+    for word in ("팬", "수집", "WS2812"):
+        assert word in item.note, f"사유에 '{word}' 가 없다: {item.note!r}"
 
 
-def test_pwr_5v_off_raises_interlock_not_readonly():
-    """읽기 전용이지만 사용자에게는 '안전상 거부'로 알려야 한다."""
+def test_pwr_5v_off_is_accepted():
     store = default_store()
+    store.set("pwr.5v", "false")
+    assert store.get("pwr.5v") is False
+
+
+def test_interlock_is_reported_before_readonly(interlocked_store):
+    """🔴 규격 §5.2 — 인터록이 읽기 전용보다 **앞**이다.
+
+    둘 다 걸린 항목에서 READONLY 만 돌려주면 `note` 에 담긴 하드웨어 사유가
+    사라진다. 사용자는 "왜 안 되는지" 대신 "안 된다" 만 듣게 된다.
+
+    🔴 이 시험은 이제 제품 설정표에 기대지 않는다. 예전에는 `pwr.5v` 가
+       그 예시였는데, 5V 를 끌 수 있게 하면서 인터록 항목이 하나도 남지
+       않았다 — 그때 이 계약을 확인하는 시험이 통째로 사라질 뻔했다.
+       검증 순서는 규격이 정한 계약이므로, 쓰는 항목이 없어도 확인한다.
+    """
     with pytest.raises(ConfigError) as exc:
-        store.set("pwr.5v", "false")
+        interlocked_store.set("test.locked", "false")
     assert exc.value.reason == Reason.INTERLOCK
-    assert "팬" in exc.value.detail
+    assert "시험용" in exc.value.detail
 
 
-def test_pwr_5v_set_true_is_accepted_as_noop():
-    """이미 참인 값을 참으로 두는 것은 거부할 이유가 없다."""
-    store = default_store()
-    store.set("pwr.5v", "true")
-    assert store.get("pwr.5v") is True
+def test_setting_an_interlocked_item_to_its_current_value_is_allowed(
+        interlocked_store):
+    """이미 참인 값을 참으로 두는 것은 거부할 이유가 없다.
+
+    호스트가 전체 설정을 한꺼번에 되쓸 때 불필요한 거부가 나지 않게 한다.
+    """
+    interlocked_store.set("test.locked", "true")
+    assert interlocked_store.get("test.locked") is True
 
 
 def test_save_and_load_roundtrip(tmp_path):
@@ -96,20 +121,22 @@ def test_load_corrupt_file_falls_back_to_defaults(tmp_path):
     assert store.load_failed is True
 
 
-def test_load_refuses_stored_interlock_bypass(tmp_path):
-    """🔴 저장 파일이 pwr.5v=false 를 담고 있어도 복원하지 않는다.
+def test_load_refuses_stored_interlock_bypass(tmp_path, interlocked_items):
+    """🔴 저장 파일이 인터록 항목을 뒤집어도 복원하지 않는다.
 
-    Flash 손상이나 손편집으로 인터록이 뚫리면 쿨링 팬이 꺼진 채 부팅한다.
-    저장 매체는 신뢰 대상이 아니다.
+    Flash 손상이나 손편집으로 인터록이 뚫리면, 안전상 거부하기로 한 값이
+    부팅 때 그대로 살아난다. 저장 매체는 신뢰 대상이 아니다.
     """
     import json
 
+    from tools.simulator.config_store import ConfigStore
+
     path = tmp_path / "cfg.json"
-    path.write_text(json.dumps({"pwr.5v": False}), encoding="utf-8")
-    store = default_store(path)
+    path.write_text(json.dumps({"test.locked": False}), encoding="utf-8")
+    store = ConfigStore(interlocked_items(), path)
     store.load()
-    assert store.get("pwr.5v") is True
-    assert "pwr.5v" in store.rejected_keys
+    assert store.get("test.locked") is True
+    assert "test.locked" in store.rejected_keys
 
 
 def test_load_rejects_out_of_range_stored_value(tmp_path):

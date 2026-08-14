@@ -71,7 +71,18 @@ class Row:
     choices: tuple = ()
     editable: bool = True
     reason: str = ""
-    """편집이 안 되는 이유. 툴팁에 그대로 띄운다."""
+    """편집이 **안 되는** 이유. 툴팁에 그대로 띄운다."""
+
+    note: str = ""
+    """보드가 이 항목에 붙여 보낸 사유. 편집 가능해도 실린다.
+
+    🔴 예전에는 읽기 전용일 때만 `reason` 으로 옮겨 담고 나머지는 버렸다.
+       그러다 `pwr.5v` 를 끌 수 있게 하면서(사용자 확정 2026-08-14) 문제가
+       드러났다 — "끄면 쿨링 팬·아날로그 수집·WS2812 가 함께 멈춘다" 는
+       경고가 화면에 뜨지 않았다. 인터록을 푼 대신 남긴 유일한 안전장치가
+       바로 그 문구인데, 편집 가능해졌다는 이유로 버려지고 있었다.
+
+       보드가 사유를 붙였으면 이유가 있다. 편집 여부와 무관하게 전달한다."""
 
     is_integer: bool = False
 
@@ -145,6 +156,8 @@ def build_row(item: ConfigItem) -> Row:
         choices=tuple(item.choices),
         editable=editable,
         reason=reason,
+        # 🔴 편집 가능해도 사유를 버리지 않는다. Row.note 의 설명 참조.
+        note=item.note,
         is_integer=item.vtype in ("u8", "u16", "u32"),
     )
 

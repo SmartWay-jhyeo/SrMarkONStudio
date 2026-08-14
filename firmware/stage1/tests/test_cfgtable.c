@@ -177,16 +177,22 @@ static void test_interlocked_items_say_why(void)
     CHECK(bad == 0, "인터록 항목은 사유를 함께 낸다");
 }
 
-static void test_five_volt_rail_cannot_be_turned_off(void)
+static void test_five_volt_rail_is_settable_but_warns(void)
 {
-    /* 🔴 하드웨어 제약 (CLAUDE.md §4) — 쿨링 팬(J34)이 5V 레일 직결이고
-     *    상시 동작이 요구사항이다. 설정으로 끌 수 있으면 안 된다. */
+    /* 사용자 확정(2026-08-14) — 5V 도 끌 수 있어야 한다.
+     *
+     * 🔴 막지 않는 대신 **무엇이 함께 멈추는지 알려 준다.** 쿨링 팬(J34)이
+     *    직결이고 ADS1256 의 아날로그 전원·기준전압과 WS2812 도 이 레일이다.
+     *    화면은 note 를 그대로 띄우므로(규격 §7.3), note 가 사라지면
+     *    사용자가 모르고 끄게 된다. 그것을 여기서 막는다. */
     setup();
     const MkCfgItem *it = mk_cfg_find(&CFG, "pwr.5v");
     CHECK(it != NULL, "pwr.5v 항목이 있다");
     if (it != NULL) {
-        CHECK(it->interlocked || it->readonly, "5V 는 끌 수 없다");
+        CHECK(!it->interlocked && !it->readonly, "5V 를 바꿀 수 있다");
         CHECK(it->def.u == 1u, "5V 기본값은 켜짐");
+        CHECK(it->note != NULL && it->note[0] != '\0',
+              "끄면 무엇이 멈추는지 사유가 붙어 있다");
     }
 }
 
@@ -268,7 +274,7 @@ int main(int argc, char **argv)
     test_enums_carry_choices();
     test_enum_defaults_are_choices();
     test_interlocked_items_say_why();
-    test_five_volt_rail_cannot_be_turned_off();
+    test_five_volt_rail_is_settable_but_warns();
     test_all_channels_are_present();
     test_pack_unpack_round_trips();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);

@@ -96,57 +96,55 @@ def test_rail_pins_only_appear_in_the_owner(path: Path):
         )
 
 
-def test_five_volt_rail_is_never_driven_low():
-    """🔴 PD10(5V)을 내리는 코드가 없는지.
+def test_five_volt_rail_warns_about_what_it_stops():
+    """🔴 5V 를 끌 수 있게 한 대신, 무엇이 함께 멈추는지 알려 주는지.
 
-    쿨링 팬(J34)이 5V 레일에 직결이고 상시 동작이 요구사항이다
-    (CLAUDE.md §4). 저전력 모드·에러 처리·레일 재시작 루틴에서 실수로
-    내리는 것이 문서가 경고하는 상황이고, 여기가 그것을 잡는 자리다.
+    사용자 확정(2026-08-14)으로 5V 는 이제 설정으로 끌 수 있다. 그런데
+    이 레일에는 세 가지가 걸려 있다:
 
-    🔴 이 검사는 이전 규칙("레일을 아예 안 건드린다")보다 **촘촘하다.**
-       이전에는 PD10 을 내리는 코드를 막을 방법이 아예 없었다 — 안 건드리는
-       동안에는 검사할 것이 없었기 때문이다. 이제 레일을 제어하므로
-       올리는 것과 내리는 것을 나눠서 본다.
+        쿨링 팬 (J34)       — 직결. 회전수를 읽을 수도 없다.
+        ADS1256 AVDD·VREFP  — 아날로그 수집이 전부 선다. 디지털만 3.3V 라
+                              SPI 는 여전히 응답하므로, "레지스터는 읽히는데
+                              변환이 안 되는" 헷갈리는 상태가 된다.
+        WS2812 (J21~J24)    — 전원이 V5 다.
 
-    소유 파일이 PIN_5V 를 쓰는 자리는 두 곳뿐이어야 한다:
-      - init 에서 전부 Low 로 두는 곳 (리셋 직후 상태 유지)
-      - set 에서 `on` 일 때만 내보내는 곳
+    막지 않기로 한 이상 남은 안전장치는 **사용자가 알고 끄는 것** 하나다.
+    화면은 `note` 를 그대로 띄우므로(규격 §7.3), note 가 사라지면 그
+    안전장치도 사라진다. 여기가 그것을 지키는 자리다.
+
+    🔴 문구를 통째로 못박지는 않는다 — 표현은 다듬을 수 있어야 한다.
+       대신 세 가지가 다 언급되는지 본다.
     """
-    code = _strip_comments((FW / "bsp" / RAIL_OWNER).read_text(encoding="utf-8"))
+    # 🔴 `pwr.5v` 는 문서 주석에도 나온다. **항목 정의** 근처를 봐야 한다 —
+    #    처음에 첫 등장을 찾았더니 파일 머리의 설명글에 걸려서, 사유가
+    #    멀쩡한데도 없다고 했다.
+    for path, anchor in ((FW / "app" / "mk_cfgtable.c", '.key = "pwr.5v"'),
+                         (FW.parents[1] / "tools" / "simulator"
+                          / "config_store.py", '"pwr.5v", "pwr", "bool"')):
+        text = path.read_text(encoding="utf-8")
+        at = text.find(anchor)
+        assert at >= 0, f"{path.name} 에서 pwr.5v 항목 정의를 못 찾았다"
+        near = text[at:at + 600]
+        for word in ("팬", "수집", "WS2812"):
+            assert word in near, (
+                f"{path.name} 의 pwr.5v 사유에 '{word}' 가 없다. 5V 를 끄면 "
+                f"무엇이 멈추는지 사용자가 알아야 한다 — 그것이 인터록을 "
+                f"푼 대신 남은 유일한 안전장치다."
+            )
 
-    # `on ? SET : RESET` 삼항 밖에서 PIN_5V 와 RESET 이 같은 문장에 있으면
-    # 조건 없이 내리는 코드다. init 의 일괄 Low 만 예외로 둔다.
-    for stmt in code.split(";"):
-        if "PIN_5V" not in stmt or "GPIO_PIN_RESET" not in stmt:
-            continue
-        # init 의 일괄 초기화: 네 핀을 모두 묶어 Low 로 두는 문장
-        if "PIN_24V" in stmt and "PIN_14V9" in stmt and "PIN_LED" in stmt:
-            continue
-        # 삼항으로 on 일 때만 SET 하는 문장
-        if "GPIO_PIN_SET" in stmt and "?" in stmt:
-            continue
-        raise AssertionError(
-            f"{RAIL_OWNER} 에 5V 를 조건 없이 내리는 코드가 있다:\n"
-            f"  {' '.join(stmt.split())[:160]}"
-        )
 
+def test_the_rail_sequence_test_still_exists():
+    """레일 순서·동시차단 시험이 지워지지 않았는지.
 
-def test_rail_controller_refuses_to_lower_five_volts():
-    """순서 로직(app/mk_railctl.c)도 5V 내리기를 거부하는지.
-
-    bsp 한 겹만으로는 부족하다 — 이 층이 상태를 들고 있고, 여기서 막지
-    않으면 `on[]` 이 꺼진 것으로 바뀌어 `$STAT` 이 거짓을 보고한다.
+    실제 동작은 C 시험이 확인한다. 여기서는 그 시험들이 **존재하는지**를
+    본다 — 지워지면 불변조건이 조용히 사라지고, 그것은 코드를 고치는 것보다
+    알아채기 어렵다.
     """
-    code = _strip_comments((FW / "app" / "mk_railctl.c").read_text(encoding="utf-8"))
-    assert "MK_RAIL_5V" in code and "return" in code, (
-        "mk_railctl.c 에 5V 내리기를 막는 코드가 안 보인다"
-    )
-    # 실제 동작은 C 시험(test_railctl.c)이 확인한다. 여기서는 그 시험이
-    # 존재하는지까지 본다 — 지워지면 이 불변조건이 조용히 사라진다.
     t = (FW / "tests" / "test_railctl.c").read_text(encoding="utf-8")
-    assert "test_five_volts_can_never_be_turned_off" in t, (
-        "5V 금지 시험이 사라졌다"
-    )
+    for name in ("test_sequence_order_and_spacing",
+                 "test_turning_off_five_volts_drops_the_others_too",
+                 "test_five_volts_comes_back_and_resequences"):
+        assert name in t, f"{name} 이 사라졌다"
 
 
 def test_uart_uses_only_usart3_pins():

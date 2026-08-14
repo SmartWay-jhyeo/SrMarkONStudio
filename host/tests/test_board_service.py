@@ -162,7 +162,9 @@ def test_fetch_schema_builds_from_catalog(rig):
     svc, _sim, _clock = rig
     schema = svc.fetch_schema()
     assert "pwr.5v" in schema.items
-    assert schema.items["pwr.5v"].readonly is True
+    # 🔴 5V 는 이제 끌 수 있다(사용자 확정 2026-08-14). 카탈로그가 실어
+    #    오는 것은 사유(note)이고, 화면이 그것을 그대로 띄운다.
+    assert "팬" in schema.items["pwr.5v"].note
 
 
 def test_heartbeat_puts_board_in_config_mode(rig):
@@ -197,9 +199,12 @@ def test_mode_follows_heartbeat_timeout(rig):
 def test_set_config_helper_returns_reason_on_reject(rig):
     svc, _sim, _clock = rig
     svc.heartbeat()
-    ok, reason = svc.set_config("pwr.5v", "false")
+    # 🔴 인터록 항목을 예시로 쓰지 않는다 — 5V 를 끌 수 있게 하면서 제품
+    #    표에 인터록이 하나도 남지 않았다. 거부 사유가 그대로 올라오는지가
+    #    요점이므로 범위 밖 값으로 확인한다.
+    ok, reason = svc.set_config("tx.period_ms", "999999")
     assert ok is False
-    assert reason == "INTERLOCK"
+    assert reason == "RANGE"
 
 
 def test_set_config_helper_succeeds(rig):

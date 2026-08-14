@@ -63,13 +63,21 @@ class RowWidget(QWidget):
         self._note.setWordWrap(True)
         lay.addWidget(self._note, 1)
 
-        if not row.editable and row.reason:
-            # 🔴 보드가 준 이유를 그대로 띄운다. "읽기 전용" 이라고만 쓰면
-            #    왜 못 바꾸는지가 사라진다 — 쿨링 팬이 5V 전원에 직결이라는
-            #    하드웨어 사실이 곧 사용자가 알아야 할 내용이다.
-            self._note.setText(row.reason)
-            self.setToolTip(row.reason)
-            self._editor.setToolTip(row.reason)
+        # 🔴 보드가 준 사유를 그대로 띄운다. 편집 가능 여부와 무관하다.
+        #
+        #    못 바꾸는 항목이면 "왜 못 바꾸는지" 가 되고("읽기 전용" 이라고만
+        #    쓰면 그 이유가 사라진다), 바꿀 수 있는 항목이면 "바꾸면 무슨 일이
+        #    생기는지" 가 된다.
+        #
+        #    후자가 실제로 필요해졌다 — pwr.5v 를 끌 수 있게 하면서
+        #    (사용자 확정 2026-08-14) "끄면 쿨링 팬·아날로그 수집·WS2812 가
+        #    함께 멈춘다" 는 경고가 유일한 안전장치가 됐는데, 예전 코드는
+        #    편집 가능하다는 이유로 그 문구를 버리고 있었다.
+        text = row.reason if not row.editable else row.note
+        if text:
+            self._note.setText(text)
+            self.setToolTip(text)
+            self._editor.setToolTip(text)
 
     def _make_editor(self, row: Row) -> QWidget:
         if row.widget is Widget.TOGGLE:

@@ -103,27 +103,30 @@ static int save_config(void *ctx)
     return mk_flash_save(s_blob, n);
 }
 
-/* 설정표의 ain* 항목을 수집기에 반영한다.
- *
- * 🔴 핀 번호가 아니라 커넥터 개념으로 다룬다 — 채널 n 은 J(n+3) 이고,
- *    그 대응은 설정 키 이름에만 있다(설계 원칙 1). */
 /* 설정표의 pwr.* 를 레일 제어기에 반영한다.
  *
- * 🔴 5V 는 인자로 넘기지 않는다. mk_railctl 이 늘 켜기 때문이다 —
- *    쿨링 팬이 직결이라 설정으로 끌 수 있으면 안 된다. 설정표에서도
- *    pwr.5v 는 인터록이라 사용자가 못 바꾼다. */
+ * 🔴 항목을 못 찾으면 **끈 것으로** 본다. 설정표에서 항목이 사라지는 것은
+ *    실수이고, 실수했을 때 24V 가 켜지면 안 된다. 5V 도 마찬가지다 —
+ *    못 찾았는데 켜 두면 왜 켜졌는지 아무도 설명할 수 없다. */
 static void sync_rails(MkRailCtl *rc, MkConfig *cfg, int64_t now_ms)
 {
+    MkCfgItem *v5  = mk_cfg_find(cfg, "pwr.5v");
     MkCfgItem *v14 = mk_cfg_find(cfg, "pwr.14v9");
     MkCfgItem *v24 = mk_cfg_find(cfg, "pwr.24v");
     MkCfgItem *dly = mk_cfg_find(cfg, "pwr.seq_delay_ms");
 
     mk_railctl_tick(rc,
+                    v5  != NULL && v5->cur.u,
                     v14 != NULL && v14->cur.u,
                     v24 != NULL && v24->cur.u,
                     dly != NULL ? (uint16_t)dly->cur.u : 500u,
                     now_ms);
 }
+
+/* 설정표의 ain* 항목을 수집기에 반영한다.
+ *
+ * 🔴 핀 번호가 아니라 커넥터 개념으로 다룬다 — 채널 n 은 J(n+3) 이고,
+ *    그 대응은 설정 키 이름에만 있다(설계 원칙 1). */
 
 static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
 {

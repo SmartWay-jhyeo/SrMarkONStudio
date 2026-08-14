@@ -138,13 +138,15 @@ void mk_cfgtable_init(MkConfig *cfg)
     s_items[i] = (MkCfgItem){ .key = "pwr.14v9", .group = "pwr",
                               .vtype = MK_VT_BOOL, .label = "14.9V 전원" };
     i++;
-    /* 🔴 5V 는 끌 수 없다. 쿨링 팬(J34)이 직결이고 상시 동작이 요구사항이다
-     *    (데이터시트 §4). 인터록으로 두어 사유가 사용자에게 전달되게 한다 —
-     *    읽기 전용으로만 두면 왜 안 되는지가 사라진다(규격 §5.2). */
+    /* 🔴 5V 는 끌 수 있다 (사용자 확정 2026-08-14). 다만 무엇이 함께
+     *    멈추는지는 알려 준다 — 막지는 않되 모르고 끄는 일은 없게 한다.
+     *
+     *    note 가 화면에 그대로 뜬다(규격 §7.3). 이것이 인터록을 푼 대신
+     *    남겨 둔 안전장치다. */
     s_items[i] = (MkCfgItem){ .key = "pwr.5v", .group = "pwr",
-                              .vtype = MK_VT_BOOL, .interlocked = 1,
+                              .vtype = MK_VT_BOOL,
                               .label = "5V 전원",
-                              .note = "쿨링 팬이 5V 전원에 직결이라 끌 수 없다" };
+                              .note = "끄면 쿨링 팬·아날로그 수집·WS2812 가 함께 멈춘다" };
     s_items[i].def.u = 1;
     i++;
     s_items[i] = (MkCfgItem){ .key = "pwr.seq_delay_ms", .group = "pwr",

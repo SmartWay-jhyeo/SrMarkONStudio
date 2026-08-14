@@ -37,13 +37,31 @@ def app():
     yield a
 
 
-@pytest.fixture
-def form():
-    sim = DeviceSim(default_store())
+def _form_from(store) -> SettingsForm:
+    sim = DeviceSim(store)
     sim.feed(build_command("HB"))
     lines = [ln for ln in sim.feed(build_command("CFG", "LIST"))
              if ln.startswith("{")]
     return SettingsForm(parse_catalog(lines))
+
+
+@pytest.fixture
+def form():
+    return _form_from(default_store())
+
+
+@pytest.fixture
+def readonly_form(interlocked_items):
+    """읽기 전용 항목이 있는 카탈로그로 만든 폼.
+
+    🔴 제품 카탈로그에는 지금 읽기 전용 항목이 없다 — 5V 를 끌 수 있게
+       하면서(사용자 확정 2026-08-14) 마지막 하나가 사라졌다. 읽기 전용을
+       어떻게 그리는지는 규격 §7.3 이 정한 계약이므로, 쓰는 항목이 없어도
+       계속 확인한다.
+    """
+    from tools.simulator.config_store import ConfigStore
+
+    return _form_from(ConfigStore(interlocked_items()))
 
 
 # ------------------------------------------------------------------ 칩
@@ -96,15 +114,31 @@ def test_settings_page_draws_every_catalog_item(app, form):
     assert len(page._rows) == len(form.keys()) == 45
 
 
-def test_readonly_row_is_disabled_and_explains_why(app, form):
+def test_readonly_row_is_disabled_and_explains_why(app, readonly_form):
     page = SettingsPage()
-    page.set_form(form)
-    readonly = [k for k in form.keys() if not form.row(k).editable]
+    page.set_form(readonly_form)
+    readonly = [k for k in readonly_form.keys()
+                if not readonly_form.row(k).editable]
     assert readonly
     for key in readonly:
         w = page._rows[key]
         assert not w._editor.isEnabled(), f"{key} 가 편집 가능하다"
         assert w.toolTip(), f"{key} 에 이유 툴팁이 없다"
+
+
+def test_editable_row_still_shows_the_boards_warning(app, form):
+    """🔴 편집 가능해도 보드가 붙인 사유는 화면에 뜬다.
+
+    `pwr.5v` 를 끌 수 있게 하면서(사용자 확정 2026-08-14) "끄면 쿨링 팬·
+    아날로그 수집·WS2812 가 함께 멈춘다" 는 경고가 인터록을 푼 대신 남긴
+    유일한 안전장치가 됐다. 그런데 예전 코드는 편집 가능하다는 이유로 그
+    문구를 버렸다 — 안전장치가 화면에 없었던 것이다.
+    """
+    page = SettingsPage()
+    page.set_form(form)
+    w = page._rows["pwr.5v"]
+    assert w._editor.isEnabled(), "5V 는 이제 바꿀 수 있다"
+    assert "팬" in w.toolTip(), f"경고가 안 뜬다: {w.toolTip()!r}"
 
 
 def test_editing_flows_into_the_form(app, form):

@@ -26,6 +26,27 @@ def form() -> SettingsForm:
     return SettingsForm(parse_catalog(_catalog_lines()))
 
 
+@pytest.fixture
+def readonly_form(interlocked_items) -> SettingsForm:
+    """읽기 전용 항목이 있는 카탈로그로 만든 폼.
+
+    🔴 제품 카탈로그에서 빌리지 않는다. 5V 를 끌 수 있게 하면서(사용자 확정
+       2026-08-14) 읽기 전용 항목이 하나도 남지 않았고, 그때 이 시험들이
+       "읽기 전용 항목이 하나는 있어야 한다" 로 깨졌다.
+
+       읽기 전용을 화면에 어떻게 그리고 사유를 어떻게 보여 주는지는 규격
+       §7.3 이 정한 계약이다. 지금 그것을 쓰는 제품 항목이 없더라도 계약은
+       유효하고, 나중에 필요한 항목이 생겼을 때 동작해야 한다.
+    """
+    from tools.simulator.config_store import ConfigStore
+
+    sim = DeviceSim(ConfigStore(interlocked_items()))
+    sim.feed(build_command("HB"))
+    lines = [ln for ln in sim.feed(build_command("CFG", "LIST"))
+             if ln.startswith("{")]
+    return SettingsForm(parse_catalog(lines))
+
+
 # --------------------------------------------------------- 하드코딩 금지
 
 def test_form_is_built_only_from_the_catalog(form):
@@ -92,29 +113,34 @@ def test_float_row_is_not_integer(form):
 
 # ------------------------------------------------------------- 읽기 전용
 
-def test_readonly_row_is_disabled_with_the_boards_reason(form):
+def test_readonly_row_is_disabled_with_the_boards_reason(readonly_form):
     """🔴 `note` 를 버리고 '읽기 전용' 이라고만 쓰면 이유가 사라진다.
 
-    보드가 왜 못 바꾸는지 알려 준다 — 예를 들어 쿨링 팬이 5V 레일 직결이라
-    끌 수 없다는 하드웨어 사실이다. 그것이 곧 사용자가 알아야 할 내용이다.
+    보드가 **왜** 못 바꾸는지 알려 준다. 사유 없이 비활성이면 사용자는
+    고장인 줄 안다.
     """
-    readonly = [k for k in form.keys() if not form.row(k).editable]
+    readonly = [k for k in readonly_form.keys()
+                if not readonly_form.row(k).editable]
     assert readonly, "읽기 전용 항목이 하나는 있어야 한다"
     for key in readonly:
-        row = form.row(key)
-        assert row.reason, f"{key} 에 이유가 없다"
+        assert readonly_form.row(key).reason, f"{key} 에 이유가 없다"
 
 
-def test_pwr_5v_explains_the_cooling_fan(form):
-    """5V 레일은 쿨링 팬이 직결이라 끌 수 없다 (데이터시트 §4)."""
+def test_pwr_5v_is_editable_but_carries_a_warning(form):
+    """5V 는 끌 수 있다 (사용자 확정 2026-08-14).
+
+    🔴 막지 않는 대신 무엇이 함께 멈추는지 화면이 말한다 — 쿨링 팬,
+       아날로그 수집, WS2812. 그것이 인터록을 푼 대신 남은 안전장치다.
+    """
     row = form.row("pwr.5v")
-    if not row.editable:
-        assert "팬" in row.reason or "fan" in row.reason.lower(), row.reason
+    assert row.editable, "5V 는 이제 바꿀 수 있다"
+    assert "팬" in row.note, row.note
 
 
-def test_validate_reports_the_reason_for_readonly(form):
-    readonly = next(k for k in form.keys() if not form.row(k).editable)
-    assert form.validate(readonly)
+def test_validate_reports_the_reason_for_readonly(readonly_form):
+    readonly = next(k for k in readonly_form.keys()
+                    if not readonly_form.row(k).editable)
+    assert readonly_form.validate(readonly)
 
 
 # --------------------------------------------------------------- 편집

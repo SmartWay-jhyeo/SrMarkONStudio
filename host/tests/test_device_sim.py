@@ -256,12 +256,21 @@ def test_cfg_set_out_of_range():
     )
 
 
-def test_cfg_set_pwr_5v_off_is_interlocked():
+def test_cfg_set_pwr_5v_off_is_accepted():
+    """5V 도 끌 수 있다 (사용자 확정 2026-08-14).
+
+    🔴 막지 않는 대신 카탈로그의 `note` 가 무엇이 함께 멈추는지 말한다 —
+       쿨링 팬·아날로그 수집·WS2812. 그것이 인터록을 푼 대신 남은 유일한
+       안전장치라, note 가 사라지면 사용자가 모르고 끄게 된다. */
+    """
     sim = _sim()
     sim.feed(build_command("HB"))
     assert _sack(sim.feed(build_command("CFG", "SET", "pwr.5v", "false"))).args == (
-        "CFG", "ERR", "INTERLOCK",
+        "CFG", "OK",
     )
+    assert sim.store.get("pwr.5v") is False
+    for word in ("팬", "수집", "WS2812"):
+        assert word in sim.store.items["pwr.5v"].note
 
 
 def test_cfg_save_and_reset_require_config_mode():

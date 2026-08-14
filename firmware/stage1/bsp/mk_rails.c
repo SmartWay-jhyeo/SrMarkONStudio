@@ -46,12 +46,6 @@ void mk_rails_set(void *ctx, MkRail rail, int on)
     default:           return;
     }
 
-    /* 🔴 5V 를 내리는 요청은 여기까지 오지 않는다 — mk_railctl 의 drive()
-     *    가 먼저 막는다. 그래도 한 겹 더 둔다. 이 파일만 보고 고치는
-     *    사람이 있을 수 있고, 팬이 멈추는 대가가 크다. */
-    if (rail == MK_RAIL_5V && !on) {
-        return;
-    }
 
     HAL_GPIO_WritePin(RAIL_PORT, pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }

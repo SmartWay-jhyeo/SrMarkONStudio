@@ -26,7 +26,6 @@ def test_cmd_list_prints_grouped_items(capsys):
     out = capsys.readouterr().out
     assert "tx.period_ms" in out
     assert "pwr.5v" in out
-    assert "[읽기전용]" in out
 
 
 def test_cmd_get_prints_value(capsys):
@@ -46,7 +45,13 @@ def test_cmd_set_sends_heartbeat_first(capsys):
     assert svc.transport.sim.store.get("tx.period_ms") == 250
 
 
-def test_cmd_set_interlock_prints_reason(capsys):
-    assert cmd_set(_svc(), "pwr.5v", "false") != 0
+def test_cmd_set_rejection_prints_the_reason(capsys):
+    """거부 사유가 사용자에게 그대로 보여야 한다.
+
+    🔴 예전에는 pwr.5v 를 인터록 예시로 썼는데, 5V 를 끌 수 있게 하면서
+       제품 표에 인터록 항목이 하나도 남지 않았다. 사유가 보이는지가
+       요점이므로 범위 밖 값으로 확인한다.
+    """
+    assert cmd_set(_svc(), "tx.period_ms", "999999") != 0
     out = capsys.readouterr().out
-    assert "INTERLOCK" in out
+    assert "RANGE" in out
