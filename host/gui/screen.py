@@ -194,6 +194,9 @@ class ScreenState:
     reachable: bool = False
     rails: tuple[RailState, ...] = ()
     channels: tuple[ChannelState, ...] = ()
+    #: I2C 센서 카드 (규격 §7.5). 아날로그와 따로 두는 이유는 정체가
+    #: 번호가 아니라 (커넥터, 양) 짝이기 때문이다 — `SensorState` 머리말.
+    sensors: tuple[SensorState, ...] = ()
 
     def channel(self, index: int) -> ChannelState | None:
         for ch in self.channels:
@@ -269,6 +272,8 @@ def build_screen(previous: ScreenState, *, identity: Identity, mode: str,
         channels=build_channels(records, reachable=reachable,
                                 previous=previous.channels, ranges=ranges,
                                 units=units),
+        sensors=build_sensors(records, reachable=reachable,
+                              previous=previous.sensors),
     )
 
 
@@ -344,6 +349,141 @@ def build_channels(records, *, reachable: bool,
         )
 
     return tuple(base[i] for i in sorted(base))
+
+
+# ---- I2C 센서 (규격 §7.5) ---------------------------------------------------
+
+#: `quantity` 키 → 사람이 읽는 이름표.
+#:
+#: 🔴 고정 어휘다 (규격 §7.5.1). 설정 항목이 아니라 프로토콜이 정한 값이라
+#:    호스트가 알고 있어도 된다 — `time_source` 의 `gnss`/`device_clock` 과
+#:    같은 성격이다.
+QUANTITY_LABELS = {
+    "lux": "조도",
+    "temp": "온도",
+    "humidity": "습도",
+    "temp_object": "대상 온도",
+    "temp_ambient": "주변 온도",
+    "pressure": "기압",
+}
+
+#: `quantity` 키 → 표준 단위 (규격 §7.5.1).
+#:
+#: 🔴 레코드의 `unit` 은 마스크로 꺼져 있는 것이 기본이다. 그런데 단위가
+#:    없으면 온도와 습도가 화면에서 똑같아 보인다 — 둘 다 그냥 숫자다.
+#:    규격이 양마다 단위를 정해 두었으므로 여기서 채운다. 지어내는 것이
+#:    아니라 규격을 읽는 것이다.
+QUANTITY_UNITS = {
+    "lux": "lx",
+    "temp": "°C",
+    "humidity": "%RH",
+    "temp_object": "°C",
+    "temp_ambient": "°C",
+    "pressure": "hPa",
+}
+
+
+def quantity_unit(quantity: str) -> str:
+    """🔴 모르는 양의 단위는 비워 둔다. 아무 단위나 붙이면 화면이 틀린
+       물리량을 말하게 되고, 그건 값이 없는 것보다 나쁘다."""
+    return QUANTITY_UNITS.get(quantity, "")
+
+
+def quantity_label(quantity: str) -> str:
+    """🔴 모르는 양에 이름을 지어내지 않는다. 키를 그대로 보여 주면
+       사용자가 펌웨어와 대조해 무엇이 어긋났는지 찾을 수 있다."""
+    return QUANTITY_LABELS.get(quantity, quantity)
+
+
+@dataclass(frozen=True)
+class SensorState:
+    """I2C 센서 카드 하나.
+
+    🔴 정체가 **(커넥터, 양) 짝**이다. 아날로그처럼 번호 하나로 못 센다 —
+       온습도 센서 하나가 `temp` 와 `humidity` 를 함께 내기 때문이다.
+       커넥터만으로 묶으면 둘이 같은 카드에 덮어써져 값이 번갈아 튄다.
+    """
+
+    connector: str
+    quantity: str
+    label: str
+    value: float | None = None
+    unit: str = ""
+    status: int = 0
+
+    trace: tuple[float | None, ...] = ()
+    trace_t: tuple[int | None, ...] = ()
+
+    @property
+    def broken(self) -> bool:
+        """센서가 대답을 안 하거나 값이 깨졌다.
+
+        🔴 꺼진 포트는 여기 오지 않는다. 규격 §7.5 대로 아예 레코드를 안
+           보내기 때문이다 — 미연결은 정상 상태다(설계 원칙 3).
+        """
+        return self.status != 0
+
+
+def build_sensors(records, *, reachable: bool,
+                  previous: tuple[SensorState, ...] = (),
+                  ) -> tuple[SensorState, ...]:
+    """`type` 이 `i2c` 인 레코드를 센서 카드로.
+
+    🔴 순서를 지킨다. 처음 본 순서대로 두고 새로 온 것만 뒤에 붙인다 —
+       매번 정렬하면 센서가 하나 늘거나 조용해질 때 카드가 자리를 바꾸고,
+       값을 읽던 사람이 무엇을 보고 있었는지 잃는다.
+    """
+    order: list[tuple[str, str]] = []
+    base: dict[tuple[str, str], SensorState] = {}
+    for s in previous:
+        key = (s.connector, s.quantity)
+        order.append(key)
+        base[key] = s
+
+    if not reachable:
+        # 🔴 현재값은 지우고 이력은 남긴다 — build_channels 와 같은 이유다.
+        return tuple(
+            replace(base[k], value=None,
+                    trace=_gap(base[k].trace),
+                    trace_t=_gap_t(base[k].trace, base[k].trace_t))
+            for k in order
+        )
+
+    for rec in records or ():
+        if not isinstance(rec, dict) or rec.get("type") != "i2c":
+            continue
+        cid = rec.get("connector_id")
+        quantity = rec.get("quantity")
+        # 🔴 양이 없으면 무엇을 잰 값인지 알 수 없다. 지어내지 않고 버린다.
+        if not isinstance(cid, int) or not isinstance(quantity, str) \
+                or not quantity:
+            continue
+
+        key = (f"J{cid}", quantity)
+        if key not in base:
+            order.append(key)
+            base[key] = SensorState(connector=key[0], quantity=quantity,
+                                    label=quantity_label(quantity),
+                                    unit=quantity_unit(quantity))
+
+        raw = rec.get("value")
+        value = float(raw) if isinstance(raw, (int, float)) else None
+        status = rec.get("status")
+        status = status if isinstance(status, int) else 0
+        unit = rec.get("unit")
+
+        prev = base[key]
+        base[key] = replace(
+            prev,
+            value=value,
+            status=status,
+            unit=unit if isinstance(unit, str) else prev.unit,
+            # 🔴 값이 없으면 이력에도 `None` 을 남긴다. 직전 값을 복사하면
+            #    선이 매끈해지고, 화면이 오지 않은 값을 온 것처럼 그린다.
+            trace=_push(prev.trace, value),
+            trace_t=_push(prev.trace_t, rec.get("t")),
+        )
+    return tuple(base[k] for k in order)
 
 
 def _push(seq: tuple, value) -> tuple:

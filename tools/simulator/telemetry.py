@@ -103,3 +103,71 @@ def build_ain_record(
 def render(rec: dict) -> str:
     """레코드를 NDJSON 한 줄로 만든다 (줄바꿈 없음)."""
     return json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
+
+
+# ---- I2C 센서 (규격 §7.5) ---------------------------------------------------
+
+#: 시뮬레이터가 포트마다 흉내 내는 센서 종류.
+#:
+#: 🔴 **데모 데이터다.** 실기기에서 무엇이 꽂혔는지는 펌웨어가 정하고,
+#:    시뮬레이터는 화면을 확인할 수 있을 만큼만 지어낸다 — 아날로그 쪽
+#:    `_synthetic_raw` 와 같은 성격이다.
+#:
+#: 짝 커넥터가 같은 버스라는 사실이 화면에서도 보이도록, 한 버스에 서로 다른
+#: 종류를 물려 둔다(J10·J11 = I2C3).
+SIM_I2C_SENSORS: dict[int, tuple[tuple[str, str], ...]] = {
+    10: (("temp", "°C"), ("humidity", "%RH")),
+    11: (("lux", "lx"),),
+    12: (("temp_object", "°C"), ("temp_ambient", "°C")),
+    13: (("temp", "°C"),),
+    14: (("pressure", "hPa"),),
+    15: (("lux", "lx"),),
+}
+
+#: 양마다 그럴듯한 중앙값과 진폭. (중앙, 진폭)
+_I2C_SHAPE = {
+    "temp": (23.0, 1.5),
+    "humidity": (55.0, 8.0),
+    "lux": (400.0, 350.0),
+    "temp_object": (31.0, 3.0),
+    "temp_ambient": (24.0, 1.0),
+    "pressure": (1013.0, 4.0),
+}
+
+
+def synthetic_i2c_value(connector_id: int, quantity: str,
+                        now_ms: int) -> float:
+    """포트·양마다 위상이 다른 사인파."""
+    import math
+
+    mid, swing = _I2C_SHAPE.get(quantity, (1.0, 0.5))
+    phase = now_ms / 7000.0 + connector_id * 0.9 + len(quantity) * 0.3
+    return mid + swing * math.sin(phase)
+
+
+def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
+                     unit: str, seq: int, t_ms: int,
+                     value: float | None, status: int = 0) -> dict:
+    """규격 §7.5 의 i2c 레코드. 마스크는 ain 과 **같은** `tx.fields` 다."""
+    mask = store.field_mask
+    digits = int(store.get("tx.float_digits"))
+
+    rec: dict = {"schema_ver": SCHEMA_VER, "seq": seq, "t": t_ms,
+                 "type": "i2c"}
+    if mask & (1 << _BIT_OF["connector_id"]):
+        rec["connector_id"] = connector_id
+    # 🔴 quantity·value 는 마스크로 끌 수 없다 (규격 §7.5). 둘이 빠지면
+    #    레코드가 아무 말도 안 한다.
+    rec["quantity"] = quantity
+    rec["value"] = None if value is None else round(value, digits)
+    if mask & (1 << _BIT_OF["unit"]):
+        rec["unit"] = unit
+    if mask & (1 << _BIT_OF["status"]):
+        rec["status"] = status
+    if mask & (1 << _BIT_OF["device_id"]):
+        rec["device_id"] = str(store.get("dev.id"))
+    if mask & (1 << _BIT_OF["time_source"]):
+        rec["time_source"] = "device_clock"
+    if mask & (1 << _BIT_OF["time_quality"]):
+        rec["time_quality"] = 0
+    return rec

@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from host.gui.last_known import StateHistory, build_chip_state
 from host.gui.qt.channel_card import ChannelCard
+from host.gui.qt.sensor_card import SensorCard
 from host.gui.qt.parts import hairline
 from host.gui.screen import (
     AIN_COUNT,
@@ -257,9 +258,28 @@ class Dashboard(QWidget):
         col = QVBoxLayout(self)
         col.setContentsMargins(Space.LG, Space.LG, Space.LG, Space.LG)
         col.setSpacing(Space.SM)
+        # ── I2C 센서 ─────────────────────────────────────────────
+        #
+        # 🔴 자리를 미리 잡아 두지 않는다. 아날로그는 채널이 일곱으로 고정
+        #    이지만 I2C 는 무엇이 꽂히느냐에 따라 카드 수가 달라진다 —
+        #    온습도 하나가 카드 둘을 만든다. 빈 카드를 여섯 장 깔아 두면
+        #    화면 절반이 "—" 가 된다.
+        self._sensor_title = SectionTitle("I2C 센서")
+        self._sensor_grid = QGridLayout()
+        self._sensor_grid.setHorizontalSpacing(Space.MD)
+        self._sensor_grid.setVerticalSpacing(Space.MD)
+        self._sensor_cards: dict[tuple[str, str], SensorCard] = {}
+        for c in range(cols):
+            self._sensor_grid.setColumnStretch(c, 1)
+        self._sensor_title.setVisible(False)
+
         col.addWidget(self._ch_title)
         col.addSpacing(Space.XS)
         col.addLayout(grid, 1)
+        col.addSpacing(Space.SM)
+        col.addWidget(self._sensor_title)
+        col.addSpacing(Space.XS)
+        col.addLayout(self._sensor_grid)
 
     # ------------------------------------------------------------- 커서
 
@@ -297,7 +317,23 @@ class Dashboard(QWidget):
             #    언젠가 갈리고, 그때 어느 쪽을 믿어야 할지 알 수 없다.
             card.set_state(ch.level, ch.verification)
 
+        self._render_sensors(state)
         self._summary.render(state)
+
+    def _render_sensors(self, state: ScreenState) -> None:
+        """🔴 카드를 매번 새로 만들지 않는다. 텔레메트리는 초당 열 번 오는데
+           그때마다 위젯을 새로 만들면 마우스가 카드 위에 있을 때 계속
+           밑에서 사라진다 — 값을 읽을 수가 없다."""
+        cols = 3
+        self._sensor_title.setVisible(bool(state.sensors))
+        for i, sensor in enumerate(state.sensors):
+            key = (sensor.connector, sensor.quantity)
+            card = self._sensor_cards.get(key)
+            if card is None:
+                card = SensorCard()
+                self._sensor_cards[key] = card
+                self._sensor_grid.addWidget(card, i // cols, i % cols)
+            card.render(sensor)
         self._ch_title.set_aside(
             f"{AIN_COUNT}채널 · 4–20 mA" if state.reachable else "확인 불가",
             Color.FAULT if not state.reachable else None,

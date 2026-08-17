@@ -14,7 +14,14 @@ from host.core.errors import ConfigError, ProtocolError, Reason
 from host.core.framing import build_command, parse_line
 from host.core.records import SCHEMA_VER
 from tools.simulator.config_store import ConfigStore
-from tools.simulator.telemetry import ADS1256_FULL_SCALE, build_ain_record, render
+from tools.simulator.telemetry import (
+    ADS1256_FULL_SCALE,
+    SIM_I2C_SENSORS,
+    build_ain_record,
+    build_i2c_record,
+    render,
+    synthetic_i2c_value,
+)
 
 #: 규격 §6 — 이 시간 안에 $HB 를 못 받으면 RUN 으로 내려간다.
 HB_TIMEOUT_MS = 3000
@@ -62,6 +69,8 @@ class DeviceSim:
         self._last_hb_rx_ms: int | None = None
         self._last_hb_tx_ms = 0
         self._last_emit_ms = 0
+        #: I2C 는 포트마다 주기가 따로다 — 마지막으로 낸 시각을 각각 센다.
+        self._last_i2c_ms: dict[int, int] = {}
         self._boot_ms = 0
         # 🔴 부팅 기본값은 ACTIVE 다 (규격 §6.4). 보드는 혼자서도 제 일을
         #    해야 하고, 테스트는 사람이 명시적으로 들어가는 상태다.
@@ -273,6 +282,35 @@ class DeviceSim:
                     )
                 )
             )
+        lines += self._emit_i2c(now_ms)
+        return lines
+
+    def _emit_i2c(self, now_ms: int) -> list[str]:
+        """규격 §7.5 — 켜 둔 포트만 내보낸다.
+
+        🔴 꺼졌거나 안 꽂힌 포트는 **아무것도 보내지 않는다**. 설계 원칙 3 —
+           센서 미연결은 정상 상태이고 오류로 올리지 않는다.
+
+        🔴 주기는 포트마다 다르다(`i2cN.period_ms`). 아날로그처럼 한 주기로
+           묶으면 200 ms 짜리 온도계와 20 ms 짜리 조도계를 같은 속도로
+           읽게 되어 설정이 뜻을 잃는다.
+        """
+        lines: list[str] = []
+        for cid, quantities in SIM_I2C_SENSORS.items():
+            if not self.store.get(f"i2c{cid}.enabled"):
+                continue
+            period = int(self.store.get(f"i2c{cid}.period_ms"))
+            last = self._last_i2c_ms.get(cid, -period)
+            if now_ms - last < period:
+                continue
+            self._last_i2c_ms[cid] = now_ms
+            for quantity, unit in quantities:
+                self._seq += 1
+                lines.append(render(build_i2c_record(
+                    self.store, connector_id=cid, quantity=quantity,
+                    unit=unit, seq=self._seq, t_ms=now_ms,
+                    value=synthetic_i2c_value(cid, quantity, now_ms),
+                )))
         return lines
 
     # ------------------------------------------------------------------ 보조
