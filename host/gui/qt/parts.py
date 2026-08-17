@@ -9,7 +9,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
-from host.gui.theme import Color, Space
+from host.gui.theme import Color, Font, Space
 
 
 class TestBand(QFrame):
@@ -42,6 +42,15 @@ class TestBand(QFrame):
 
     def render(self, state) -> None:
         self.setVisible(state.ctl_mode == "TEST")
+
+
+def card_title(text: str) -> QLabel:
+    title = QLabel(text)
+    title.setStyleSheet(
+        f"color: {Color.INK_DIM}; font-size: {Font.SIZE_SM}pt;"
+        f" font-weight: 700; letter-spacing: 1px;"
+    )
+    return title
 
 
 def hairline(colour: str = Color.LINE) -> QWidget:

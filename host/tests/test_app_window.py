@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 from host.gui.app import MainWindow, make_service  # noqa: E402
 from host.gui.qt.dashboard import AIN_COUNT, Dashboard  # noqa: E402
 from host.gui.qt.rail import RailRow  # noqa: E402
-from host.gui.theme import stylesheet  # noqa: E402
+from host.gui.qt.style import stylesheet  # noqa: E402
 from host.gui.widgets.status_chip import Level, Verification  # noqa: E402
 from host.gui.worker_loop import StepResult  # noqa: E402
 
@@ -43,6 +43,31 @@ def window(app):
 def test_window_opens_without_a_board(window):
     assert window.windowTitle().startswith("MarkON Studio")
     assert window._pages.count() == 2
+
+
+def test_every_view_keeps_the_contract(window):
+    """🔴 뷰 계약(qt/view.py)이 실제로 강제되는지.
+
+    예전에는 오리 타입이었다 — `render` 를 빠뜨린 뷰를 넣으면 창은 뜨고
+    **다음 워커 주기에** 터진다. Protocol 을 적어 두고 아무도 확인하지
+    않으면 그것은 계약이 아니라 주석이다.
+    """
+    from host.gui.qt.view import View
+
+    assert window._views, "뷰가 하나는 있어야 한다"
+    for v in window._views:
+        assert isinstance(v, View), f"{type(v).__name__} 이 render 를 안 가졌다"
+
+
+def test_a_view_without_render_is_refused(app):
+    """계약을 어긴 뷰는 **만들 때** 걸린다 — 100 ms 뒤가 아니라."""
+    from host.gui.app import _checked_views
+
+    class 계약을어긴뷰:
+        pass
+
+    with pytest.raises(TypeError, match="뷰 계약"):
+        _checked_views(계약을어긴뷰())
 
 
 def test_catalog_is_loaded_from_the_board(window):

@@ -466,11 +466,6 @@ def test_channel_units_come_from_the_settings(form):
     assert channel_units(form)[0] == "bar"
 
 
-def test_imports_no_qt():
-    import inspect
-
-    import host.gui.settings_form as mod
-
-    src = inspect.getsource(mod)
-    assert "PyQt" not in src
-    assert "QtWidgets" not in src
+# 🔴 `test_imports_no_qt` 는 여기서 걷어냈다. 파일마다 손으로 복사한
+#    문자열 검사였고, 그러다 보니 정작 `screen.py`·`theme.py` 에는
+#    없었다. 지금은 `test_layer_boundaries.py` 가 층 전체를 AST 로 훑는다.

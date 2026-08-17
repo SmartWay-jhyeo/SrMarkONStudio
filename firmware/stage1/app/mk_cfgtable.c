@@ -126,18 +126,20 @@ static size_t gen(const char *prefix, unsigned num, const char *suffix,
     return k;
 }
 
-void mk_cfgtable_init(MkConfig *cfg)
+/* 장치. */
+static size_t add_dev(size_t i)
 {
-    size_t i = 0;
-    memset(s_items, 0, sizeof s_items);
-    s_gen = 0;                       /* 이름 자리를 처음부터 다시 잡는다 */
-
     s_items[i] = (MkCfgItem){ .key = "dev.id", .group = "dev",
                               .vtype = MK_VT_STR, .max = 15, .has_max = 1,
                               .label = "장치 ID" };
     put(s_items[i].def.s, sizeof s_items[i].def.s, "1");
     i++;
+    return i;
+}
 
+/* 전송. */
+static size_t add_tx(size_t i)
+{
     s_items[i] = (MkCfgItem){ .key = "tx.fields", .group = "tx",
                               .vtype = MK_VT_U32, .min = 0,
                               .has_min = 1, .has_max = 1,
@@ -176,7 +178,12 @@ void mk_cfgtable_init(MkConfig *cfg)
                               .label = "실수 자릿수" };
     s_items[i].def.u = 4;
     i++;
+    return i;
+}
 
+/* 전원 레일. */
+static size_t add_pwr(size_t i)
+{
     /* 🔴 전원 레일. 라벨에 핀 번호를 쓰지 않는다 (설계 원칙 1). */
     s_items[i] = (MkCfgItem){ .key = "pwr.24v", .group = "pwr",
                               .vtype = MK_VT_BOOL, .out = 1,
@@ -203,7 +210,12 @@ void mk_cfgtable_init(MkConfig *cfg)
                               .unit = "ms", .label = "레일 기동 간격" };
     s_items[i].def.u = 500;
     i++;
+    return i;
+}
 
+/* ADS1256. */
+static size_t add_adc(size_t i)
+{
     s_items[i] = (MkCfgItem){ .key = "adc.pga", .group = "adc",
                               .vtype = MK_VT_ENUM,
                               .choices = PGA_CHOICES, .n_choices = 7,
@@ -216,7 +228,12 @@ void mk_cfgtable_init(MkConfig *cfg)
                               .label = "데이터율" };
     s_items[i].def.u = 60;
     i++;
+    return i;
+}
 
+/* 아날로그 입력 J3~J9. */
+static size_t add_ain(size_t i)
+{
     for (int ch = 0; ch < MK_AIN_COUNT; ch++) {
         /* 커넥터 번호는 채널 + 3 (데이터시트 §5.3). */
         unsigned jack = (unsigned)ch + 3u;
@@ -267,7 +284,12 @@ void mk_cfgtable_init(MkConfig *cfg)
                                   .label = s_labels[k] };
         i++;
     }
+    return i;
+}
 
+/* 디지털 출력 J18~J20. */
+static size_t add_sol(size_t i)
+{
     /* ── 디지털 출력 J18~J20 (데이터시트 §5.7) ───────────────────────
      *
      * 🔴 MCU GPIO 가 커넥터에 직결이다 — 버퍼도 직렬저항도 클램프도 없다.
@@ -290,7 +312,12 @@ void mk_cfgtable_init(MkConfig *cfg)
             .note = "외부 옵토·드라이버 필요 — 핀당 20 mA 가 상한이다" };
         i++;
     }
+    return i;
+}
 
+/* WS2812 체인 J21~J24. */
+static size_t add_led(size_t i)
+{
     /* ── WS2812 체인 J21~J24 (데이터시트 §5.8) ──────────────────────── */
     s_items[i] = (MkCfgItem){
         .key = "led.count", .group = "led", .vtype = MK_VT_U8,
@@ -322,7 +349,12 @@ void mk_cfgtable_init(MkConfig *cfg)
             i++;
         }
     }
+    return i;
+}
 
+/* I2C 센서 포트 J10~J15. */
+static size_t add_i2c(size_t i)
+{
     /* ── I2C 센서 포트 J10~J15 (데이터시트 §5.4) ─────────────────────
      *
      * 🔴 짝 커넥터는 같은 버스다. J10·J11 은 물리적으로 같은 I2C3 에 병렬로
@@ -368,6 +400,26 @@ void mk_cfgtable_init(MkConfig *cfg)
         s_items[i].def.u = 200;
         i++;
     }
+    return i;
+}
+
+void mk_cfgtable_init(MkConfig *cfg)
+{
+    /* 🔴 그룹마다 함수 하나. 예전에는 254 줄짜리 한 덩어리였고, 항목을
+     *    더할 때마다 `i++` 를 손으로 세며 남의 그룹 한가운데에 끼워
+     *    넣어야 했다. 무엇이 어느 그룹인지도 주석에만 있었다. */
+    size_t i = 0;
+    memset(s_items, 0, sizeof s_items);
+    s_gen = 0;                       /* 이름 자리를 처음부터 다시 잡는다 */
+
+    i = add_dev(i);
+    i = add_tx(i);
+    i = add_pwr(i);
+    i = add_adc(i);
+    i = add_ain(i);
+    i = add_sol(i);
+    i = add_led(i);
+    i = add_i2c(i);
 
     for (size_t n = 0; n < i; n++) {
         s_items[n].cur = s_items[n].def;

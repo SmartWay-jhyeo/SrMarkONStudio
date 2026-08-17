@@ -29,6 +29,7 @@ from host.gui.qt.dashboard import Dashboard
 from host.gui.qt.parts import TestBand
 from host.gui.qt.settings_page import SettingsPage
 from host.gui.qt.topbar import TopBar
+from host.gui.qt.view import View
 from host.gui.qt.worker import WorkerThread
 from host.gui.settings_form import (
     SettingsForm,
@@ -45,10 +46,26 @@ from host.gui.screen import (
     build_screen,
     empty_channels,
 )
-from host.gui.theme import stylesheet
+from host.gui.qt.style import stylesheet
 
 WINDOW_TITLE = "MarkON Studio"
 PAGES = ("대시보드", "설정")
+
+
+def _checked_views(*views) -> tuple[View, ...]:
+    """뷰 목록을 만들면서 계약을 확인한다.
+
+    🔴 `View` 는 `runtime_checkable` 이라 `isinstance` 가 `render` 의 존재를
+       본다. 서명까지는 못 보지만, 실제로 겪는 사고는 "render 를 안 만들었다"
+       와 "이름을 다르게 썼다" 이지 인자 개수가 아니다.
+    """
+    for v in views:
+        if not isinstance(v, View):
+            raise TypeError(
+                f"{type(v).__name__} 이 뷰 계약을 지키지 않는다 — "
+                f"`render(state)` 가 필요하다 (host/gui/qt/view.py)"
+            )
+    return views
 
 
 class MainWindow(QMainWindow):
@@ -114,7 +131,14 @@ class MainWindow(QMainWindow):
 
         # 🔴 뷰 목록. 배치를 바꾸는 것은 이 목록과 위 레이아웃을 고치는
         #    일이고, 데이터 배선(_on_step)은 건드리지 않는다.
-        self._views = (self._top, self._band, self._rail, self._dashboard)
+        # 🔴 뷰 계약을 **여기서** 확인한다 (qt/view.py).
+        #
+        #    예전에는 오리 타입이었다. `render` 를 빠뜨린 뷰를 넣으면 창은
+        #    멀쩡히 뜨고 **다음 워커 주기에** 터진다 — 100 ms 뒤, 생성과
+        #    상관없어 보이는 자리에서. 계약을 Protocol 로 적어 두고 아무도
+        #    확인하지 않으면 그것은 계약이 아니라 주석이다.
+        self._views = _checked_views(
+            self._top, self._band, self._rail, self._dashboard)
         self._history = StateHistory()
         self._state = ScreenState(channels=empty_channels())
 

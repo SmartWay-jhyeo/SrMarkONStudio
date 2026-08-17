@@ -24,7 +24,7 @@ from host.gui.last_known import ChipState, StateHistory, build_chip_state  # noq
 from host.gui.qt.chip import ChipCard, LabeledValue, StatusChip  # noqa: E402
 from host.gui.qt.settings_page import RowWidget, SettingsPage  # noqa: E402
 from host.gui.settings_form import SettingsForm  # noqa: E402
-from host.gui.theme import stylesheet  # noqa: E402
+from host.gui.qt.style import stylesheet  # noqa: E402
 from host.gui.widgets.status_chip import Level, Verification  # noqa: E402
 from tools.simulator.config_store import default_store  # noqa: E402
 from tools.simulator.device_sim import DeviceSim  # noqa: E402
@@ -282,6 +282,44 @@ def test_labeled_value(app):
 
 
 # ------------------------------------------------------------ 설정 화면
+
+def test_every_cell_keeps_the_contract(app, form):
+    """🔴 설정 칸 셋이 같은 계약을 지키는지 (qt/cell.py).
+
+    예전에는 어디에도 안 적혀 있었고, 그래서 `RangeFields` 와
+    `FieldMaskCard` 에 `note_text` 가 없었다. 그것을 모으는 쪽이
+    `getattr(w, "note_text", "")` 로 덮고 있어서 아무도 몰랐다 — 보드가
+    영점에 사유를 붙이는 순간 그 문구는 화면 어디에도 안 뜬다.
+    """
+    from host.gui.qt.cell import Cell
+
+    page = SettingsPage()
+    page.set_form(form)
+    assert page._rows
+    kinds = {type(w).__name__ for w in page._rows.values()}
+    assert len(kinds) >= 3, f"칸 종류가 셋은 나와야 한다: {kinds}"
+    for key, w in page._rows.items():
+        assert isinstance(w, Cell), f"{key} 의 {type(w).__name__} 이 계약을 어긴다"
+
+
+def test_a_range_cell_reports_both_reasons(app):
+    """🔴 한 칸이 두 항목을 맡으므로 사유도 둘을 합쳐 내야 한다.
+
+    한쪽만 내면 나머지가 사라지는데, 화면에는 칸이 하나뿐이라 그 손실이
+    눈에 띄지 않는다.
+    """
+    from host.core.config_schema import ConfigItem
+    from host.gui.qt.settings_page import RangeFields
+    from host.gui.settings_form import build_row
+
+    zero = build_row(ConfigItem(key="ain0.zero", group="ain", vtype="f32",
+                                default=4.0, current=4.0, note="영점 사유"))
+    scale = build_row(ConfigItem(key="ain0.scale", group="ain", vtype="f32",
+                                 default=1.0, current=1.0, note="스케일 사유"))
+    w = RangeFields(zero, scale)
+    assert "영점 사유" in w.note_text
+    assert "스케일 사유" in w.note_text
+
 
 def test_settings_page_draws_every_catalog_item(app, form):
     """🔴 카탈로그의 모든 항목이 그려지는지. 개수는 적지 않는다 —

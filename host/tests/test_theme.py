@@ -1,6 +1,7 @@
 import pytest
 
-from host.gui.theme import Color, Font, Space, contrast_ratio, stylesheet
+from host.gui.qt.style import stylesheet
+from host.gui.theme import Color, Font, Space, contrast_ratio
 
 
 def test_all_colors_are_hex():

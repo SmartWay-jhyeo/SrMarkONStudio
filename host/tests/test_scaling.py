@@ -77,9 +77,6 @@ def test_a_zero_scale_has_no_range():
     assert range_of(4.0, 0.0) is None
 
 
-def test_imports_no_qt():
-    import inspect
-
-    import host.core.scaling as mod
-
-    assert "PyQt" not in inspect.getsource(mod)
+# 🔴 `test_imports_no_qt` 는 여기서 걷어냈다. 파일마다 손으로 복사한
+#    문자열 검사였고, 그러다 보니 정작 `screen.py`·`theme.py` 에는
+#    없었다. 지금은 `test_layer_boundaries.py` 가 층 전체를 AST 로 훑는다.

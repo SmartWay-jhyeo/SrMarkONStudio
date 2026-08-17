@@ -212,16 +212,6 @@ def test_history_is_per_key():
     assert h.last_known("pwr.5v", now_s=1.0).text is None
 
 
-def test_imports_no_qt():
-    """🔴 이 층은 PyQt6 를 import 하지 않는다.
-
-    디스플레이 없이 시험이 돌아야 하고, 시각 언어와 상태 판정이 위젯보다
-    먼저 굳어야 한다.
-    """
-    import inspect
-
-    import host.gui.last_known as mod
-
-    src = inspect.getsource(mod)
-    assert "PyQt" not in src
-    assert "QtWidgets" not in src
+# 🔴 `test_imports_no_qt` 는 여기서 걷어냈다. 파일마다 손으로 복사한
+#    문자열 검사였고, 그러다 보니 정작 `screen.py`·`theme.py` 에는
+#    없었다. 지금은 `test_layer_boundaries.py` 가 층 전체를 AST 로 훑는다.
