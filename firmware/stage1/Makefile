@@ -41,8 +41,10 @@ C_SRC = \
   app/mk_ads1256.c \
   app/mk_railctl.c \
   app/mk_telem.c \
+  app/mk_ws2812.c \
   bsp/mk_time.c \
   bsp/mk_rails.c \
+  bsp/mk_ws2812_io.c \
   bsp/mk_ads_io.c \
   bsp/mk_flash.c \
   bsp/mk_uart.c \
@@ -60,6 +62,8 @@ C_SRC = \
   $(HAL)/Src/stm32h7xx_hal_dma.c \
   $(HAL)/Src/stm32h7xx_hal_dma_ex.c \
   $(HAL)/Src/stm32h7xx_hal_spi.c \
+  $(HAL)/Src/stm32h7xx_hal_tim.c \
+  $(HAL)/Src/stm32h7xx_hal_tim_ex.c \
   $(HAL)/Src/stm32h7xx_hal_flash.c \
   $(HAL)/Src/stm32h7xx_hal_flash_ex.c
 

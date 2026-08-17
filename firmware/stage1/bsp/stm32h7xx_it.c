@@ -12,6 +12,7 @@
 
 #include "mk_ads_io.h"
 #include "mk_uart.h"
+#include "mk_ws2812_io.h"
 
 void NMI_Handler(void)        { for (;;) {} }
 void HardFault_Handler(void)  { for (;;) {} }
@@ -62,4 +63,9 @@ void DMA1_Stream0_IRQHandler(void)   /* SPI4 RX */
 void DMA1_Stream1_IRQHandler(void)   /* SPI4 TX */
 {
     mk_ads_io_dma_tx_isr();
+}
+
+void DMA1_Stream2_IRQHandler(void)   /* TIM3_CH2 — WS2812 */
+{
+    mk_ws2812_io_dma_isr();
 }

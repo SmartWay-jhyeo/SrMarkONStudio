@@ -26,7 +26,9 @@
 #include "bsp/mk_time.h"
 #include "app/mk_railctl.h"
 #include "app/mk_telem.h"
+#include "app/mk_ws2812.h"
 #include "bsp/mk_rails.h"
+#include "bsp/mk_ws2812_io.h"
 #include "mk_config.h"
 #include "mk_flash.h"
 #include "mk_hostlink.h"
@@ -158,6 +160,77 @@ static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
     }
 }
 
+/* 설정표의 led* 를 WS2812 체인으로 내보낸다.
+ *
+ * 🔴 매번 보내지 않는다. 한 프레임이 180us 이고 그동안 DMA1 이 물린다 —
+ *    수집(SPI4)과 같은 컨트롤러다. 값이 바뀐 때와, 500ms 마다 한 번만 보낸다.
+ *
+ * 🔴 주기적으로도 보내는 이유: 5V 레일이 나중에 켜질 수 있다. 체인은 전원이
+ *    없는 동안 받은 프레임을 기억하지 못하므로, 값이 안 바뀌었다는 이유로
+ *    안 보내면 레일을 켜도 계속 깜깜하다. */
+static void sync_leds(MkConfig *cfg, int64_t now_ms)
+{
+    static uint8_t last[1u + 1u + MK_LED_COUNT * 3u];
+    static int64_t last_send;
+    static int primed;
+
+    MkCfgItem *cnt = mk_cfg_find(cfg, "led.count");
+    MkCfgItem *br  = mk_cfg_find(cfg, "led.brightness");
+    /* 못 찾으면 끈 것으로 본다 — sync_rails 와 같은 이유다. */
+    unsigned n      = cnt != NULL ? (unsigned)cnt->cur.u : 0u;
+    uint8_t bright  = br  != NULL ? (uint8_t)br->cur.u   : 0u;
+    if (n > MK_LED_COUNT) {
+        n = MK_LED_COUNT;
+    }
+
+    MkRgb lamps[MK_LED_COUNT];
+    memset(lamps, 0, sizeof lamps);
+
+    uint8_t now_state[sizeof last];
+    size_t s = 0;
+    now_state[s++] = (uint8_t)n;
+    now_state[s++] = bright;
+
+    static const char *const SUFFIX[3] = { ".r", ".g", ".b" };
+    for (unsigned lamp = 0; lamp < MK_LED_COUNT; lamp++) {
+        uint8_t rgb[3] = {0, 0, 0};
+        for (int c = 0; c < 3; c++) {
+            /* "led21.r" 를 손으로 만든다 — app/ 과 같은 이유로 snprintf 없다. */
+            char key[12];
+            int k = 0;
+            key[k++] = 'l'; key[k++] = 'e'; key[k++] = 'd';
+            key[k++] = (char)('0' + (21u + lamp) / 10u);
+            key[k++] = (char)('0' + (21u + lamp) % 10u);
+            for (const char *p = SUFFIX[c]; *p; p++) { key[k++] = *p; }
+            key[k] = '\0';
+            MkCfgItem *it = mk_cfg_find(cfg, key);
+            rgb[c] = it != NULL ? (uint8_t)it->cur.u : 0u;
+            now_state[s++] = rgb[c];
+        }
+        lamps[lamp].r = rgb[0];
+        lamps[lamp].g = rgb[1];
+        lamps[lamp].b = rgb[2];
+    }
+
+    int changed = !primed || memcmp(now_state, last, sizeof last) != 0;
+    if (!changed && now_ms - last_send < 500) {
+        return;
+    }
+    if (mk_ws2812_io_busy()) {
+        return;                 /* 다음 바퀴에 다시 온다 */
+    }
+
+    size_t cap = 0;
+    uint16_t *buf = mk_ws2812_io_buffer(&cap);
+    size_t slots = mk_ws2812_encode(lamps, n, bright, buf, cap);
+    if (slots == 0u || !mk_ws2812_io_send(slots)) {
+        return;                 /* 보내지 못했으면 last 를 갱신하지 않는다 */
+    }
+    memcpy(last, now_state, sizeof last);
+    last_send = now_ms;
+    primed = 1;
+}
+
 int main(void)
 {
     HAL_Init();
@@ -198,6 +271,7 @@ int main(void)
      *    (VREFP). 디지털(DVDD pin16)만 V3V3 상시다. WS2812(J21~J24)도
      *    같은 레일이다. */
     mk_railctl_init(&s_rails, mk_rails_set, NULL);
+    mk_ws2812_io_init();
 
     mk_ads_io_init(&s_ads);
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
@@ -240,6 +314,7 @@ int main(void)
          *    하지 않으므로(그러지 않으면 예정이 영원히 밀린다) 싸다. */
         sync_channels(&s_ads, &s_cfg, now);
         sync_rails(&s_rails, &s_cfg, now);
+        sync_leds(&s_cfg, now);
 
         mk_ads_tick(&s_ads, now);
         mk_telem_tick(&s_telem, now, emit, NULL);
