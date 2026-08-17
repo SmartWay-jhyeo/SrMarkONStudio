@@ -30,7 +30,9 @@ from host.gui.qt.cells import RangeFields, RowWidget
 from host.gui.qt.field_mask import FieldMaskCard
 from host.gui.qt.matrix_card import MatrixCard
 from host.gui.qt.parts import card_title, hairline
+from host.gui.qt.tare_panel import TarePanel
 from host.gui.settings_form import (
+    COL_ZERO,
     KEY_FIELD_MASK,
     Row,
     SettingsForm,
@@ -39,6 +41,7 @@ from host.gui.settings_form import (
     matrix_of,
     telemetry_shape,
 )
+from host.gui.tare import tare_rows
 from host.gui.theme import Color, Space
 
 #: 폼 한 줄이 차지할 최대 폭. 🔴 예전에는 사유 칸이 stretch 라 창을 넓힐수록
@@ -66,6 +69,12 @@ class SettingsPage(QWidget):
         #: 🔴 보드의 dirty 플래그와 별개로 호스트가 자기가 보낸 것을 센다 —
         #:    보드는 그것을 알려 주지 않고, 물어볼 명령도 없다.
         self._unsaved = False
+        #: 채널 번호 → 지금 들어오는 전류(mA). 영점 패널이 쓴다.
+        #: 🔴 설정 화면이 텔레메트리를 직접 듣지 않는다. app 이 넣어 준다 —
+        #:    뷰끼리 값을 주고받기 시작하면 배치를 바꿀 때마다 배선이 딸려
+        #:    온다(app.py `_render` 머리말).
+        self._live_ma: dict[int, float | None] = {}
+        self._tare: TarePanel | None = None
         #: 시험에서 확인 대화상자를 건너뛰기 위한 고리.
         self._confirm = self._ask_confirm
 
@@ -176,6 +185,14 @@ class SettingsPage(QWidget):
                 "", matrix,
                 lambda r: self._make_cell(r, compact=True),
                 self._make_range))
+            # 🔴 영점 패널은 범위 칸이 있는 그룹에만 붙는다. 그룹 이름을
+            #    보고 정하지 않는다 — 카탈로그가 채널을 늘리거나 그룹 이름을
+            #    바꿔도 따라온다.
+            if COL_ZERO in matrix.columns:
+                self._tare = TarePanel()
+                self._tare.tare_requested.connect(self._on_tare)
+                body.addWidget(self._tare)
+                self._refresh_tare()
         else:
             for card in self._form_cards(group.rows):
                 body.addWidget(card)
@@ -261,6 +278,54 @@ class SettingsPage(QWidget):
         self._pages.setCurrentIndex(index)
         for i, button in enumerate(self._tab_buttons):
             button.setChecked(i == index)
+
+    # ------------------------------------------------------------- 영점
+
+    def set_live_ma(self, live_ma: dict[int, float | None]) -> None:
+        """지금 들어오는 채널별 전류를 받아 영점 패널을 갱신한다.
+
+        🔴 값이 바뀌지 않았으면 다시 그리지 않는다. 텔레메트리는 초당 열 번
+           오는데 그때마다 위젯을 만지면 `잡기` 버튼을 누르는 순간 밑에서
+           갱신이 일어나 클릭이 씹힌다.
+        """
+        if live_ma == self._live_ma:
+            return
+        self._live_ma = dict(live_ma)
+        self._refresh_tare()
+
+    def _refresh_tare(self) -> None:
+        if self._tare is None or self._form is None:
+            return
+        self._tare.show_rows(tare_rows(self._form, self._live_ma))
+
+    def _on_tare(self, key: str, text: str) -> None:
+        """🔴 보통 편집과 같은 길로 보낸다. 영점만 따로 보드에 바로 쏘면
+           `적용` 을 안 눌러도 값이 나가는 항목이 하나 생기고, 화면의
+           변경 표시와 실제 보드 상태가 어긋난다."""
+        self.set_value(key, text)
+        self._redraw_range(key)
+        self._refresh_tare()
+
+    def _redraw_range(self, zero_key: str) -> None:
+        """범위 칸을 다시 그린다.
+
+        🔴 `set_value` 만으로는 안 된다. 범위 칸은 영점·스케일 **둘**로
+           그려지는 한 위젯이라 값 하나를 밀어 넣는 통로가 없고, 실제로
+           `RangeFields.set_value` 는 일부러 아무 일도 하지 않는다.
+
+           그냥 두면 폼에는 새 영점이 들어갔는데 화면의 범위는 옛 숫자를
+           계속 보여 준다 — 잡기 버튼이 먹지 않은 것처럼 보이고, 그 상태로
+           `적용` 을 누르면 보드만 조용히 바뀐다.
+        """
+        widget = self._rows.get(zero_key)
+        if not isinstance(widget, RangeFields) or self._form is None:
+            return
+        scale_key = f"{zero_key.rsplit('.', 1)[0]}.scale"
+        try:
+            widget.show_settings(self._form.row(zero_key).value,
+                                 self._form.row(scale_key).value)
+        except KeyError:
+            return
 
     # ------------------------------------------------------------- 편집
 

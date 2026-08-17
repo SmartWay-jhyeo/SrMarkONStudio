@@ -234,6 +234,13 @@ class MainWindow(QMainWindow):
         for view in self._views:
             view.render(self._state)
 
+        # 🔴 영점 패널은 뷰가 아니라 설정 화면의 일부라 `render` 로는 안
+        #    닿는다. 여기서 넘긴다 — 화면 상태를 만드는 곳이 여기이고,
+        #    설정 화면이 텔레메트리를 직접 듣게 하면 뷰끼리 값을 주고받는
+        #    구조로 되돌아간다(위 머리말).
+        self._settings.set_live_ma(
+            {ch.index: ch.ma for ch in self._state.channels})
+
         for res in result.results:
             tag = res.tag or ""
             if tag == "cfg:save":
