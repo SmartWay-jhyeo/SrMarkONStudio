@@ -355,12 +355,21 @@ def test_scalars_beside_a_repeating_set_do_not_block_the_table(form):
     R·G·B 는 반복이다. 예전 규칙("하나라도 어긋나면 표가 아니다")은 이
     그룹을 12줄로 늘어놓았다. 섞였다고 반복을 못 접을 이유가 없다.
     """
-    m = matrix_of(_group(form, "led"))
+    group = _group(form, "led")
+    m = matrix_of(group)
     assert m is not None
     assert [r.label for r in m.rows] == [f"J{i}" for i in range(21, 25)]
     assert len(m.columns) == 3                      # 빨강·초록·파랑
-    assert sorted(r.key for r in m.leftovers) == ["led.brightness",
-                                                  "led.count"]
+
+    # 🔴 남는 항목을 이름으로 적지 않는다. 카탈로그는 보드에서 오고 늘어난다 —
+    #    실제로 `led.grb` 가 늘면서 이 시험이 깨졌다. 확인할 것은 "무엇이
+    #    남았나" 가 아니라 **한 항목도 잃지 않았나** 다. 표에 접힌 것과 남은
+    #    것을 합치면 그룹 전체가 나와야 한다.
+    folded = {c.key for r in m.rows for c in r.cells if c is not None}
+    left = {r.key for r in m.leftovers}
+    assert folded | left == {r.key for r in group.rows}
+    assert not (folded & left), "같은 항목이 표와 폼에 두 번 나오면 안 된다"
+    assert left, "반복이 아닌 항목은 남아야 한다"
 
 
 def test_a_group_that_does_not_repeat_stays_a_form(form):

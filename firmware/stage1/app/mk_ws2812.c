@@ -21,7 +21,7 @@ static size_t put_byte(uint16_t *out, size_t i, uint8_t v)
 }
 
 size_t mk_ws2812_encode(const MkRgb *lamps, size_t n, uint8_t brightness,
-                        uint16_t *out, size_t cap)
+                        MkWs2812Order order, uint16_t *out, size_t cap)
 {
     if (out == NULL) {
         return 0;
@@ -38,9 +38,13 @@ size_t mk_ws2812_encode(const MkRgb *lamps, size_t n, uint8_t brightness,
 
     size_t i = 0;
     for (size_t k = 0; k < n; k++) {
-        /* 🔴 GRB 다. RGB 가 아니다 (WS2812B 데이터시트). */
-        i = put_byte(out, i, scale(lamps[k].g, brightness));
-        i = put_byte(out, i, scale(lamps[k].r, brightness));
+        /* 🔴 앞 두 바이트만 자리를 바꾼다. 파랑은 두 순서 모두 셋째다 —
+         *    그래서 파랑만 켜 보고는 순서가 맞는지 알 수 없다. 확인은
+         *    빨강이나 초록으로 해야 한다. */
+        uint8_t first  = order == MK_WS2812_GRB ? lamps[k].g : lamps[k].r;
+        uint8_t second = order == MK_WS2812_GRB ? lamps[k].r : lamps[k].g;
+        i = put_byte(out, i, scale(first, brightness));
+        i = put_byte(out, i, scale(second, brightness));
         i = put_byte(out, i, scale(lamps[k].b, brightness));
     }
 

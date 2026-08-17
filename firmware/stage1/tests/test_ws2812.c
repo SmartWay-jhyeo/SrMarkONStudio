@@ -5,7 +5,8 @@
  *    보드에서 원인을 가리기가 어렵다. 인코딩이 맞는지는 여기서 못 박아 두고
  *    실물에서는 타이밍과 배선만 의심하도록 한다.
  *
- * 규격(WS2812B 데이터시트): 24비트 GRB, 상위 비트 먼저, 리셋은 50us 이상 Low.
+ * 규격(WS2812B 데이터시트): 24비트, 상위 비트 먼저, 리셋은 50us 이상 Low.
+ * 색 바이트 순서는 칩마다 달라 설정으로 뺐다 — test_colour_order 참조.
  */
 #include <stdio.h>
 #include <string.h>
@@ -21,10 +22,17 @@ static int failures = 0;
 #define CAP 512
 static uint16_t OUT[CAP];
 
-static size_t encode(const MkRgb *lamps, size_t n, uint8_t bright)
+static size_t encode_as(const MkRgb *lamps, size_t n, uint8_t bright,
+                        MkWs2812Order order)
 {
     memset(OUT, 0xAA, sizeof OUT);   /* 안 쓴 자리를 눈에 띄게 */
-    return mk_ws2812_encode(lamps, n, bright, OUT, CAP);
+    return mk_ws2812_encode(lamps, n, bright, order, OUT, CAP);
+}
+
+/* 대부분의 시험은 순서와 무관하다. 기본값(RGB)으로 돌린다. */
+static size_t encode(const MkRgb *lamps, size_t n, uint8_t bright)
+{
+    return encode_as(lamps, n, bright, MK_WS2812_RGB);
 }
 
 /* out[i] 가 1 비트인가 0 비트인가. */
@@ -44,30 +52,52 @@ static void test_slot_count(void)
           "램프 0개면 리셋만 — 체인을 끄는 것도 보내야 한다");
 }
 
-/* ---- GRB 순서 ----------------------------------------------------------- */
+/* ---- 색 순서 ----------------------------------------------------------- */
 
-static void test_grb_order(void)
+/* 8비트 구간이 전부 1인가 / 전부 0인가. */
+static int span_all(size_t from, int want_one)
 {
-    printf("-- GRB 순서 --\n");
+    for (size_t i = from; i < from + 8u; i++) {
+        if (want_one ? !is_one(i) : !is_zero(i)) return 0;
+    }
+    return 1;
+}
 
-    /* 🔴 RGB 가 아니라 GRB 다. 이것을 뒤집으면 빨강이 초록으로 나오는데,
-     *    보드에서 보면 "색이 이상하다" 로만 보여 원인을 짚기 어렵다. */
+static void test_colour_order(void)
+{
+    printf("-- 색 바이트 순서 --\n");
+
+    /* 🔴 칩마다 다르다. WS2812B 데이터시트는 GRB 지만, 이 보드에 물린
+     *    스트립은 RGB 였다 [실증 2026-08-17] — 빨강을 넣었더니 초록이
+     *    켜졌다. 그래서 설정으로 뺐고, 여기서 양쪽을 다 못 박는다.
+     *
+     *    이것이 틀리면 증상이 "색이 이상하다" 뿐이라 배선·전원·타이밍과
+     *    구분이 안 된다. 그 갈림길을 시험이 없애 준다. */
     MkRgb red = { 255, 0, 0 };
-    encode(&red, 1, 255);
-    /* 0~7 = G(0), 8~15 = R(255), 16~23 = B(0) */
-    int g_all_zero = 1, r_all_one = 1, b_all_zero = 1;
-    for (size_t i = 0; i < 8; i++)  if (!is_zero(i))      g_all_zero = 0;
-    for (size_t i = 8; i < 16; i++) if (!is_one(i))       r_all_one = 0;
-    for (size_t i = 16; i < 24; i++) if (!is_zero(i))     b_all_zero = 0;
-    CHECK(g_all_zero, "빨강만 켜면 첫 8비트(G)는 0");
-    CHECK(r_all_one,  "빨강만 켜면 다음 8비트(R)가 1");
-    CHECK(b_all_zero, "빨강만 켜면 마지막 8비트(B)는 0");
+
+    encode_as(&red, 1, 255, MK_WS2812_RGB);
+    CHECK(span_all(0, 1),  "RGB: 빨강만 켜면 첫 8비트가 1");
+    CHECK(span_all(8, 0),  "RGB: 둘째 8비트는 0");
+    CHECK(span_all(16, 0), "RGB: 셋째 8비트는 0");
+
+    encode_as(&red, 1, 255, MK_WS2812_GRB);
+    CHECK(span_all(0, 0),  "GRB: 빨강만 켜면 첫 8비트(G)는 0");
+    CHECK(span_all(8, 1),  "GRB: 둘째 8비트(R)가 1");
+    CHECK(span_all(16, 0), "GRB: 셋째 8비트(B)는 0");
 
     MkRgb green = { 0, 255, 0 };
-    encode(&green, 1, 255);
-    int g_one = 1;
-    for (size_t i = 0; i < 8; i++) if (!is_one(i)) g_one = 0;
-    CHECK(g_one, "초록만 켜면 첫 8비트(G)가 1");
+    encode_as(&green, 1, 255, MK_WS2812_GRB);
+    CHECK(span_all(0, 1), "GRB: 초록만 켜면 첫 8비트가 1");
+    encode_as(&green, 1, 255, MK_WS2812_RGB);
+    CHECK(span_all(8, 1), "RGB: 초록만 켜면 둘째 8비트가 1");
+
+    /* 파랑은 어느 순서에서도 셋째다 — 그래서 파랑만으로는 순서를 못 가린다.
+     * 빨강·초록으로 확인해야 한다는 것을 남겨 둔다. */
+    MkRgb blue = { 0, 0, 255 };
+    encode_as(&blue, 1, 255, MK_WS2812_RGB);
+    int b_rgb = span_all(16, 1);
+    encode_as(&blue, 1, 255, MK_WS2812_GRB);
+    CHECK(b_rgb && span_all(16, 1), "파랑은 두 순서 모두 셋째 — 순서 판별에 못 쓴다");
 }
 
 /* ---- 비트 순서 ---------------------------------------------------------- */
@@ -76,12 +106,13 @@ static void test_msb_first(void)
 {
     printf("-- 비트 순서 --\n");
 
-    MkRgb l = { 0, 0x80, 0 };        /* G = 0b10000000 */
+    /* RGB 순서로 도니 첫 바이트가 R 이다. */
+    MkRgb l = { 0x80, 0, 0 };        /* R = 0b10000000 */
     encode(&l, 1, 255);
     CHECK(is_one(0), "0x80 이면 첫 슬롯이 1 — 상위 비트가 먼저다");
     CHECK(is_zero(7), "0x80 이면 여덟째 슬롯은 0");
 
-    MkRgb l2 = { 0, 0x01, 0 };       /* G = 0b00000001 */
+    MkRgb l2 = { 0x01, 0, 0 };       /* R = 0b00000001 */
     encode(&l2, 1, 255);
     CHECK(is_zero(0), "0x01 이면 첫 슬롯이 0");
     CHECK(is_one(7),  "0x01 이면 여덟째 슬롯이 1");
@@ -142,7 +173,7 @@ static void test_capacity(void)
     uint16_t small[10];
     memset(small, 0x5A, sizeof small);
 
-    CHECK(mk_ws2812_encode(l, 4, 255, small, 10) == 0u,
+    CHECK(mk_ws2812_encode(l, 4, 255, MK_WS2812_RGB, small, 10) == 0u,
           "자리가 모자라면 0 을 돌려준다");
 
     /* 🔴 반쪽 프레임을 보내면 체인이 엉뚱한 색으로 굳는다. 자리가 모자라면
@@ -175,7 +206,7 @@ int main(void)
 {
     printf("test_ws2812\n");
     test_slot_count();
-    test_grb_order();
+    test_colour_order();
     test_msb_first();
     test_brightness();
     test_reset_gap();

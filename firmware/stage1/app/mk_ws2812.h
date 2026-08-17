@@ -47,6 +47,19 @@ typedef struct {
     uint8_t r, g, b;
 } MkRgb;
 
+/* 색 바이트를 내보내는 순서.
+ *
+ * 🔴 칩마다 다르다. WS2812B 데이터시트는 GRB 지만, 이 보드에 물린 스트립은
+ *    **RGB** 였다 [실증 2026-08-17] — 빨강을 넣었더니 초록이 켜졌다.
+ *
+ *    그래서 코드에 못 박지 않고 설정(`led.grb`)으로 뺐다. 어느 쪽이 맞는지는
+ *    데이터시트로 단정할 수 없고 물린 스트립을 봐야 아는 값이다. 기본값은
+ *    이 보드에서 확인된 RGB 다. */
+typedef enum {
+    MK_WS2812_RGB = 0,
+    MK_WS2812_GRB = 1
+} MkWs2812Order;
+
 /* 램프 배열을 듀티 배열로 바꾼다.
  *
  * brightness 는 0~255 로 전체를 비례 축소한다. 0 이면 꺼진다.
@@ -55,6 +68,6 @@ typedef struct {
  *
  * 돌려주는 값은 out 에 쓴 슬롯 수다. */
 size_t mk_ws2812_encode(const MkRgb *lamps, size_t n, uint8_t brightness,
-                        uint16_t *out, size_t cap);
+                        MkWs2812Order order, uint16_t *out, size_t cap);
 
 #endif /* MK_WS2812_H */

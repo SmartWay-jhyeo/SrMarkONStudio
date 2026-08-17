@@ -531,6 +531,13 @@ def default_store(path: Path | None = None) -> ConfigStore:
             label="밝기", out=True,
             note="5V 레일이 꺼져 있으면 LED 가 켜지지 않는다",
         ),
+        # 🔴 out 이 아니다. 켜고 끄는 출력이 아니라 물린 스트립의 성질이다 —
+        #    out 으로 두면 TEST 를 빠져나올 때 색이 저 혼자 뒤집힌다.
+        SimConfigItem(
+            "led.grb", "led", "bool", False, False,
+            label="색 순서 GRB",
+            note="빨강과 초록이 바뀌어 보이면 이 값을 뒤집는다 — 칩마다 다르다",
+        ),
     ]
 
     # 🔴 색을 0xRRGGBB 한 덩이로 두지 않는다. 그러면 화면에 생짜 숫자가

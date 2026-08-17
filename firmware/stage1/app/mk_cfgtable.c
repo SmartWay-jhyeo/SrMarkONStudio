@@ -14,10 +14,10 @@
 #define MK_SOL_COUNT   3
 #define MK_I2C_COUNT   6
 
-/* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 3 + led 2+3×4 + i2c 4×6 */
+/* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 3 + led 3+3×4 + i2c 4×6 */
 #define ITEM_COUNT   (1 + 3 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + MK_SOL_COUNT \
-                      + 2 + MK_LED_COUNT * 3 \
+                      + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 4)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
@@ -335,6 +335,17 @@ static size_t add_led(size_t i)
         .out = 1, .label = "밝기",
         .note = "5V 레일이 꺼져 있으면 LED 가 켜지지 않는다" };
     s_items[i].def.u = 64;
+    i++;
+    /* 🔴 out 이 아니다. 이것은 켜고 끄는 출력이 아니라 **물린 스트립의
+     *    성질**이다. out 으로 두면 TEST 를 빠져나올 때 기본값으로 돌아가
+     *    색이 저 혼자 뒤집힌다.
+     *
+     *    안내문에 증상을 적는다. 사용자가 겪는 것은 "GRB" 라는 낱말이 아니라
+     *    빨강을 넣었는데 초록이 켜지는 일이다. */
+    s_items[i] = (MkCfgItem){
+        .key = "led.grb", .group = "led", .vtype = MK_VT_BOOL,
+        .label = "색 순서 GRB",
+        .note = "빨강과 초록이 바뀌어 보이면 이 값을 뒤집는다 — 칩마다 다르다" };
     i++;
 
     /* 🔴 색을 0xRRGGBB 한 덩이로 두지 않는다. 그러면 화면에 생짜 숫자가

@@ -170,15 +170,18 @@ static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
  *    안 보내면 레일을 켜도 계속 깜깜하다. */
 static void sync_leds(MkConfig *cfg, int64_t now_ms)
 {
-    static uint8_t last[1u + 1u + MK_LED_COUNT * 3u];
+    static uint8_t last[1u + 1u + 1u + MK_LED_COUNT * 3u];
     static int64_t last_send;
     static int primed;
 
     MkCfgItem *cnt = mk_cfg_find(cfg, "led.count");
     MkCfgItem *br  = mk_cfg_find(cfg, "led.brightness");
+    MkCfgItem *grb = mk_cfg_find(cfg, "led.grb");
     /* 못 찾으면 끈 것으로 본다 — sync_rails 와 같은 이유다. */
     unsigned n      = cnt != NULL ? (unsigned)cnt->cur.u : 0u;
     uint8_t bright  = br  != NULL ? (uint8_t)br->cur.u   : 0u;
+    MkWs2812Order order = (grb != NULL && grb->cur.u) ? MK_WS2812_GRB
+                                                      : MK_WS2812_RGB;
     if (n > MK_LED_COUNT) {
         n = MK_LED_COUNT;
     }
@@ -190,6 +193,7 @@ static void sync_leds(MkConfig *cfg, int64_t now_ms)
     size_t s = 0;
     now_state[s++] = (uint8_t)n;
     now_state[s++] = bright;
+    now_state[s++] = (uint8_t)order;
 
     static const char *const SUFFIX[3] = { ".r", ".g", ".b" };
     for (unsigned lamp = 0; lamp < MK_LED_COUNT; lamp++) {
@@ -222,7 +226,7 @@ static void sync_leds(MkConfig *cfg, int64_t now_ms)
 
     size_t cap = 0;
     uint16_t *buf = mk_ws2812_io_buffer(&cap);
-    size_t slots = mk_ws2812_encode(lamps, n, bright, buf, cap);
+    size_t slots = mk_ws2812_encode(lamps, n, bright, order, buf, cap);
     if (slots == 0u || !mk_ws2812_io_send(slots)) {
         return;                 /* 보내지 못했으면 last 를 갱신하지 않는다 */
     }
