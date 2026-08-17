@@ -15,7 +15,22 @@
    적어 두었는데, 되읽기(dump)로는 **잡힌다.** 안 잡히는 것은
    compare-sections 쪽이다.
 
-그래서 여기서는 굽고 → 되읽고 → 바이트로 비교하고 → 틀리면 다시 굽는다.
+🔴 그런데 되읽기도 흔들린다 (2026-08-17 실증).
+
+   같은 gdb 세션 안에서 같은 플래시를 세 번 읽었더니 **세 번이 다 달랐다**
+   (16 바이트, 12 바이트, 4 바이트씩). 값은 `00` ↔ `ff` 로 통째로 튄다.
+   `set remote memory-read-packet-size 256 fixed` 를 걸면 줄지만 없어지지는
+   않는다. SWD 클럭을 782 kHz 까지 낮춰도 그대로다.
+
+   그래서 한 번 읽고 내린 "N 바이트 다르다" 는 판정은 **거짓 실패일 수
+   있다.** 멀쩡히 구워진 판을 두고 재시도를 반복하게 된다 — 실제로 그랬다.
+
+   → 세 번 읽어 **다수결**을 취한다. 세 번 중 둘 이상이 같으면 그것이 참이다.
+     읽을 때마다 흔들린 자리 수도 함께 알린다. 그 수가 크면 링크가 나쁜
+     것이고, 그때는 굽기를 되풀이할 게 아니라 링크를 봐야 한다.
+
+그래서 여기서는 굽고 → 세 번 되읽어 다수결 내고 → 바이트로 비교하고 →
+틀리면 다시 굽는다.
 
 사용:
     python tools/flash_verified.py [build/markon_stage1.elf] [시도횟수]
@@ -78,20 +93,54 @@ def _flash(elf: Path) -> str:
     )
 
 
-def _readback(size: int, out: Path) -> str:
-    return _run_gdb(
+READS = 3
+
+
+def _readback(size: int) -> tuple[bytes, int]:
+    """세 번 읽어 다수결을 낸다. (내용, 흔들린 자리 수) 를 돌려준다.
+
+    한 세션에서 연달아 읽는다. 붙었다 떼기를 세 번 하면 느릴 뿐 아니라,
+    그 사이에 달라진 것과 읽기가 흔들린 것을 구분할 수 없게 된다.
+    """
+    outs = [STAGE / f"readback{i}.bin" for i in range(READS)]
+    dumps = "".join(
+        f"dump binary memory {o.name} "
+        f"0x{FLASH_BASE:08x} 0x{FLASH_BASE + size:08x}\n" for o in outs)
+    _run_gdb(
         "set confirm off\n"
         "set pagination off\n"
         "set mem inaccessible-by-default off\n"
+        # 🔴 읽기도 고정한다. 쓰기 쪽만 고정해 온 탓에 되읽기가 흔들렸다.
+        "set remote memory-read-packet-size 256\n"
+        "set remote memory-read-packet-size fixed\n"
         "target extended-remote \\\\.\\COM24\n"
         "monitor connect_rst enable\n"
         "monitor swdp_scan\n"
         "attach 1\n"
-        f"dump binary memory {out.name} "
-        f"0x{FLASH_BASE:08x} 0x{FLASH_BASE + size:08x}\n"
+        + dumps +
         "detach\n"
         "quit\n"
     )
+    reads = [o.read_bytes()[:size] for o in outs if o.exists()]
+    if len(reads) < READS or any(len(r) < size for r in reads):
+        return b"", -1
+
+    voted = bytearray(size)
+    shaky = 0
+    for i in range(size):
+        a, b, c = reads[0][i], reads[1][i], reads[2][i]
+        if a == b or a == c:
+            voted[i] = a
+        elif b == c:
+            voted[i] = b
+        else:
+            # 셋이 전부 다르다. 다수가 없으니 참을 정할 수 없다.
+            voted[i] = a
+        if not (a == b == c):
+            shaky += 1
+    for o in outs:
+        o.unlink(missing_ok=True)
+    return bytes(voted), shaky
 
 
 def _release() -> str:
@@ -120,7 +169,6 @@ def main(argv: list[str]) -> int:
         return 2
 
     want = binary.read_bytes()
-    readback = STAGE / "readback.bin"
     print(f"굽는다: {elf.name} ({len(want)} 바이트)\n")
 
     for attempt in range(1, tries + 1):
@@ -130,11 +178,13 @@ def main(argv: list[str]) -> int:
             print("      쓰기 오류 — 다시 시도한다")
             continue
 
-        _readback(len(want), readback)
-        if not readback.exists():
+        got, shaky = _readback(len(want))
+        if shaky < 0:
             print("      되읽기 실패 — 다시 시도한다")
             continue
-        got = readback.read_bytes()[:len(want)]
+        if shaky:
+            print(f"      (되읽기 {READS}회 중 {shaky} 자리가 흔들려 "
+                  f"다수결로 정했다)")
 
         bad = [i for i in range(len(want)) if want[i] != got[i]]
         if not bad:
