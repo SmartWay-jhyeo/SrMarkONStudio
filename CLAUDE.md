@@ -6,17 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 0. 이 저장소의 현재 상태
 
-**계획 1(프로토콜·시뮬레이터·CLI) 완료, 계획 3(GUI) 기반 모듈 완료.** 원격 저장소는 없다 — 로컬 전용.
+**계획 1(프로토콜·시뮬레이터·CLI) 완료, 계획 2(펌웨어) 1단계 진행 중, 계획 3(GUI) 완료.**
+원격 저장소는 없다 — 로컬 전용.
+
+**지금 상태와 다음 작업은 `HANDOFF.md`를 본다.** 이 파일은 규칙이고 그쪽이 현황이다.
 
 ```
 MarkON_Studio/
-├─ CLAUDE.md  .gitignore  pyproject.toml
+├─ CLAUDE.md  HANDOFF.md  .gitignore  pyproject.toml
 ├─ protocol/specification.md   ← 펌웨어·호스트 공통 계약 (v3)
+├─ firmware/stage1/            ← H723 펌웨어. app/(HAL 비의존) + bsp/
 ├─ host/
-│  ├─ core/      framing · records · config_schema · errors
+│  ├─ core/      framing · records · config_schema · scaling · errors
 │  ├─ service/   board_service (연결·명령응답·유실집계)
-│  ├─ gui/       theme · command_queue · widgets/{status_chip, loop_gauge}
-│  └─ tests/     209개 시험 — 보드도 디스플레이도 불필요
+│  ├─ gui/       screen · settings_form · field_budget · theme · qt/*
+│  └─ tests/     473개 시험 — 보드도 디스플레이도 불필요
 ├─ tools/
 │  ├─ simulator/ config_store · telemetry · device_sim · capacity · serial_server
 │  └─ cli/       markon_cli
@@ -30,7 +34,7 @@ MarkON_Studio/
 
 **보드 없이 전체가 돈다:**
 ```bash
-python -m pytest -q                                  # 209 passed
+python -m pytest -q                                  # 473 passed
 python -m tools.cli.markon_cli list                  # 설정 카탈로그 45항목
 python -m tools.cli.markon_cli monitor --seconds 3   # 텔레메트리 + 유실 통계
 python -m tools.cli.markon_cli --port COM7 list      # 실물 보드 (펌웨어 완성 후)
@@ -46,7 +50,21 @@ python -m tools.cli.markon_cli --port COM7 list      # 실물 보드 (펌웨어 
 
 Qt 위젯은 이 함수들을 **호출만** 한다. 새 화면을 만들 때 이 경계를 지킨다.
 
-**남은 것**: 계획 2(H723 펌웨어) 미착수. 계획 3 의 Task 5~9(워커·화면들) 미착수.
+**남은 것**: 텔레메트리 송신(펌웨어), sol·led·i2c 를 실제 핀으로 내보내는 코드,
+GNSS/PPS·I2C 드라이버. 자세한 것은 `HANDOFF.md` §3·§7.
+
+### 🔴 설정 항목은 **보드에만** 넣는다
+
+화면은 `$CFG,LIST` 카탈로그만 보고 그려진다. 항목을 늘릴 때 고치는 곳은
+**시뮬레이터(`tools/simulator/config_store.py`)와 펌웨어
+(`firmware/stage1/app/mk_cfgtable.c`) 둘뿐**이고, 호스트 코드는 건드리지 않는다.
+
+실제로 그랬다 — 디지털 출력·LED·I2C 41항목을 넣었더니 GUI 는 그룹 이름표만
+추가하고 탭 셋을 저절로 그렸다.
+
+**두 곳을 함께 고쳐야 한다.** 한쪽만 고치면 GUI 가 시뮬레이터에서 멀쩡하다가
+보드에서만 틀어진다. `firmware/stage1/tests/crosscheck_cfgtable.py` 가 그것을
+막는다 — 실제로 하한 하나가 어긋난 것을 잡았다.
 
 ### 🔴 `docs/`는 무시 대상이지 불필요한 파일이 아니다
 
