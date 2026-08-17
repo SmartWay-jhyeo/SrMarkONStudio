@@ -98,6 +98,11 @@ typedef struct {
     /* enum 의 허용값. 개수가 0 이면 enum 이 아니다. */
     const uint32_t *choices;
     uint8_t     n_choices;
+    /* `choices` 와 같은 순서·같은 개수의 이름표 (규격 §7.3).
+     *
+     * 🔴 NULL 이어도 된다. PGA 배율(1·2·4·8)이나 SPS 처럼 숫자가 곧 뜻인
+     *    열거에는 필요 없다 — 이름표를 붙이면 오히려 값이 가려진다. */
+    const char *const *choice_labels;
 } MkCfgItem;
 
 typedef struct {

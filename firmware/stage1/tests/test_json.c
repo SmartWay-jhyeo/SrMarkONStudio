@@ -357,12 +357,45 @@ static void print_records(void)
     printf("ain_nan\t%s\n", b);
 }
 
+/* ---- 문자열 배열 (규격 §7.3 choice_labels) ------------------------------ */
+
+static void test_str_array(void)
+{
+    char b[256];
+    MkJson j;
+
+    static const char *const LABELS[] = { "없음", "조도", "온습도" };
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_str_array(&j, "choice_labels", LABELS, 3);
+    mk_json_end(&j);
+    CHECK(strcmp(b, "{\"choice_labels\":[\"없음\",\"조도\",\"온습도\"]}") == 0,
+          "이름표 배열이 그대로 실린다");
+
+    /* 🔴 이름표에도 이스케이프가 걸려야 한다. 따옴표 하나가 새면 그 줄부터
+     *    끝까지 파싱이 깨지는데, 깨지는 것은 그 항목이 아니라 **카탈로그
+     *    전체**다 — 화면이 통째로 안 뜬다. */
+    static const char *const NASTY[] = { "a\"b" };
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_str_array(&j, "x", NASTY, 1);
+    mk_json_end(&j);
+    CHECK(strcmp(b, "{\"x\":[\"a\\\"b\"]}") == 0, "이름표도 이스케이프된다");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_str_array(&j, "x", LABELS, 0);
+    mk_json_end(&j);
+    CHECK(strcmp(b, "{\"x\":[]}") == 0, "빈 배열");
+}
+
 int main(int argc, char **argv)
 {
+    /* 🔴 `--records` 보다 뒤에 둔다. 앞에 두면 시험이 찍는 "ok ..." 줄이
+     *    레코드 출력에 섞여 crosscheck_json.py 가 그것을 레코드로 읽는다 —
+     *    한글이 섞여 있어 인코딩 오류로 먼저 죽는다 [2026-08-17]. */
     if (argc > 1 && strcmp(argv[1], "--records") == 0) {
         print_records();
         return 0;
     }
+    test_str_array();
     printf("mk_json\n");
     test_empty_object();
     test_scalars();

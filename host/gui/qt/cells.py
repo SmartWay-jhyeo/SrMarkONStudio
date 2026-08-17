@@ -126,13 +126,20 @@ class RowWidget(QWidget):
 
         if row.widget is Widget.CHOICE:
             combo = QComboBox()
-            for choice in row.choices:
-                combo.addItem(str(choice))
-            idx = combo.findText(row.value)
+            # 🔴 이름표가 있으면 그것을 보이고 값은 데이터로 숨긴다.
+            #    센서 종류처럼 번호에 뜻이 없는 열거는 `0`·`1`·`2` 가 떠서
+            #    무엇을 고르는지 알 수 없다 (규격 §7.3).
+            labels = row.choice_labels
+            for i, choice in enumerate(row.choices):
+                text = labels[i] if i < len(labels) else str(choice)
+                combo.addItem(text, str(choice))
+            idx = combo.findData(row.value)
             if idx >= 0:
                 combo.setCurrentIndex(idx)
-            combo.currentTextChanged.connect(
-                lambda text: self.changed.emit(self._key, text)
+            # 🔴 보내는 것은 **값**이지 이름표가 아니다. 이름표를 보내면
+            #    보드가 못 알아듣고 RANGE 로 거부한다.
+            combo.currentIndexChanged.connect(
+                lambda i: self.changed.emit(self._key, combo.itemData(i))
             )
             return combo
 

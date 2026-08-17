@@ -69,6 +69,8 @@ class Row:
     minimum: float | None = None
     maximum: float | None = None
     choices: tuple = ()
+    choice_labels: tuple[str, ...] = ()
+    """열거 항목의 이름표. 비어 있으면 화면이 값을 그대로 보여 준다."""
     editable: bool = True
     reason: str = ""
     """편집이 **안 되는** 이유. 툴팁에 그대로 띄운다."""
@@ -416,6 +418,7 @@ def build_row(item: ConfigItem) -> Row:
         minimum=item.minimum,
         maximum=item.maximum,
         choices=tuple(item.choices),
+        choice_labels=tuple(item.choice_labels),
         editable=editable,
         reason=reason,
         # 🔴 편집 가능해도 사유를 버리지 않는다. Row.note 의 설명 참조.

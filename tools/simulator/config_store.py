@@ -47,6 +47,28 @@ FIELD_BITS: tuple[tuple[int, str, bool, str], ...] = (
 #: 은 압축 형식만 낸다 — 두 형식이 섞이면 두 구현을 바이트로 대조할 수 없다.
 _COMPACT = (",", ":")
 
+#: I2C 포트에 꽂을 수 있는 센서 **종류** — (값, 이름표, 내는 양들).
+#:
+#: 🔴 칩 모델이 아니라 종류다 (사용자 확정 2026-08-17). 조도계가 BH1750 이든
+#:    다른 것이든 호스트가 할 일은 같고, 펌웨어만 드라이버를 고르면 된다.
+#:    모델로 두면 새 칩을 살 때마다 카탈로그를 고쳐야 한다.
+#:
+#: 🔴 값이 둘인 종류는 온습도뿐이다. 나머지는 전부 하나다.
+I2C_KIND_NONE = 0
+I2C_KINDS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
+    (I2C_KIND_NONE, "없음", ()),
+    (1, "조도", ("lux",)),
+    (2, "온습도", ("temp", "humidity")),
+    (3, "적외 온도", ("temp_object",)),
+    (4, "방수 온도", ("temp",)),
+)
+
+#: 종류 값 → 내는 양들.
+I2C_QUANTITIES = {k: q for k, _l, q in I2C_KINDS}
+
+#: I2C 센서 포트 (데이터시트 §5.4). 짝끼리 같은 버스다 — J10·J11 = I2C3.
+I2C_PORTS: tuple[int, ...] = (10, 11, 12, 13, 14, 15)
+
 #: ADS1256 지원 DRATE (SPS)
 DRATE_CHOICES = (2, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1000, 2000, 3750, 7500)
 
@@ -93,6 +115,9 @@ class SimConfigItem:
     label: str = ""
     note: str = ""
     choices: tuple = ()
+    #: `choices` 와 같은 순서의 이름표 (규격 §7.3). 번호에 뜻이 없는 열거
+    #: (센서 종류 등)에만 쓴다 — PGA 배율처럼 숫자가 곧 뜻이면 필요 없다.
+    choice_labels: tuple = ()
     #: 참이면 값 변경 시도를 INTERLOCK 으로 거부한다 (현재값과 같으면 통과)
     interlocked: bool = False
 
@@ -324,6 +349,8 @@ class ConfigStore:
                 rec["note"] = item.note
             if item.choices:
                 rec["choices"] = list(item.choices)
+                if item.choice_labels:
+                    rec["choice_labels"] = list(item.choice_labels)
             yield json.dumps(rec, ensure_ascii=False, separators=_COMPACT)
 
         for bit, name, default, label in FIELD_BITS:
@@ -577,6 +604,14 @@ def default_store(path: Path | None = None) -> ConfigStore:
             SimConfigItem(f"i2c{port}.addr", "i2c", "u8", 0, 0,
                           minimum=0, maximum=0x77, label=f"J{port} 주소",
                           note="0 = 미지정. 쓸 수 있는 7비트 주소는 0x08~0x77"),
+            SimConfigItem(
+                f"i2c{port}.kind", "i2c", "enum",
+                I2C_KIND_NONE, I2C_KIND_NONE,
+                choices=tuple(k for k, _l, _q in I2C_KINDS),
+                choice_labels=tuple(l for _k, l, _q in I2C_KINDS),
+                label=f"J{port} 종류",
+                note="꽂은 센서 종류",
+            ),
             SimConfigItem(f"i2c{port}.period_ms", "i2c", "u16", 200, 200,
                           minimum=10, maximum=60000, unit="ms",
                           label=f"J{port} 주기"),

@@ -7,21 +7,35 @@
 /* 이 보드가 가진 것들 (데이터시트 §5).
  *   J18~J20  디지털 출력 3
  *   J21~J24  WS2812 체인 — 개수·밝기 + 램프마다 R·G·B
- *   J10~J15  I2C 6포트 — 버스·사용·주소·주기
+ *   J10~J15  I2C 6포트 — 버스·사용·종류·주소·주기
  *
  * 🔴 MK_LED_COUNT 를 여기 다시 적지 않는다. 송신 버퍼 크기가 같은 수에
  *    묶여 있어, 두 곳에 적으면 카탈로그와 실제로 켜지는 램프 수가 갈린다. */
 #define MK_SOL_COUNT   3
 #define MK_I2C_COUNT   6
 
-/* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 3 + led 3+3×4 + i2c 4×6 */
+/* I2C 포트에 꽂을 수 있는 센서 **종류**.
+ *
+ * 🔴 칩 모델이 아니라 종류다 (사용자 확정 2026-08-17). 조도계가 무엇이든
+ *    호스트가 할 일은 같고, 펌웨어만 드라이버를 고르면 된다. 모델로 두면
+ *    새 칩을 살 때마다 카탈로그를 고쳐야 한다.
+ *
+ * 🔴 값이 둘인 종류는 온습도뿐이다. 나머지는 전부 하나다.
+ *    시뮬레이터(tools/simulator/config_store.py)의 I2C_KINDS 와 같아야
+ *    하고, crosscheck_cfgtable.py 가 그것을 대조한다. */
+static const uint32_t I2C_KIND_CHOICES[] = { 0u, 1u, 2u, 3u, 4u };
+static const char *const I2C_KIND_LABELS[] = {
+    "없음", "조도", "온습도", "적외 온도", "방수 온도"
+};
+
+/* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 3 + led 3+3×4 + i2c 5×6 */
 #define ITEM_COUNT   (1 + 3 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + MK_SOL_COUNT \
                       + 3 + MK_LED_COUNT * 3 \
-                      + MK_I2C_COUNT * 4)
+                      + MK_I2C_COUNT * 5)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
-#define GEN_COUNT    (MK_AIN_COUNT * 5 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 4)
+#define GEN_COUNT    (MK_AIN_COUNT * 5 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 5)
 
 static MkCfgItem s_items[ITEM_COUNT];
 
@@ -405,6 +419,15 @@ static size_t add_i2c(size_t i)
             .min = 0, .max = 0x77, .has_min = 1, .has_max = 1,
             .label = s_labels[k],
             .note = "0 = 미지정. 쓸 수 있는 7비트 주소는 0x08~0x77" };
+        i++;
+
+        k = gen("i2c", jack, ".kind", jack, "종류");
+        s_items[i] = (MkCfgItem){
+            .key = s_keys[k], .group = "i2c", .vtype = MK_VT_ENUM,
+            .choices = I2C_KIND_CHOICES, .n_choices = 5,
+            .choice_labels = I2C_KIND_LABELS,
+            .label = s_labels[k],
+            .note = "꽂은 센서 종류" };
         i++;
 
         k = gen("i2c", jack, ".period_ms", jack, "주기");

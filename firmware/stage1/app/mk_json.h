@@ -62,6 +62,13 @@ void mk_json_bool(MkJson *j, const char *key, int val);
 void mk_json_u32_array(MkJson *j, const char *key,
                        const uint32_t *values, size_t count);
 
+/* 문자열 배열. 규격 §7.3 의 `choice_labels` 가 이 형태다.
+ *
+ * 🔴 숫자에 뜻이 없는 열거(센서 종류 등)는 이름표가 없으면 화면에 `0`·`1`
+ *    이 뜬다 — 사용자가 무엇을 고르는지 알 수 없다. */
+void mk_json_str_array(MkJson *j, const char *key,
+                       const char *const *values, size_t count);
+
 /* 고정 소수점 자릿수로 반올림한 십진수. digits 는 0~6.
  *
  * 🔴 유한하지 않거나(NaN/Inf) 자릿수를 곱했을 때 int64 를 넘는 값은

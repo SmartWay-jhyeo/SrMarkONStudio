@@ -103,10 +103,14 @@ static char short_escape(unsigned char c)
     }
 }
 
-void mk_json_str(MkJson *j, const char *key, const char *val)
+/* 문자열 하나를 따옴표째 이스케이프해 넣는다.
+ *
+ * 🔴 `mk_json_str` 과 `mk_json_str_array` 가 **같은 함수**를 쓴다. 배열 쪽에
+ *    이스케이프를 따로 적으면 언젠가 한쪽만 고쳐지고, 그때 따옴표 하나가
+ *    새면서 깨지는 것은 그 항목이 아니라 카탈로그 전체다. */
+static void put_escaped(MkJson *j, const char *val)
 {
     static const char HEX[] = "0123456789abcdef";
-    put_key(j, key);
     put(j, '"');
     for (const unsigned char *p = (const unsigned char *)val; *p; p++) {
         unsigned char c = *p;
@@ -131,6 +135,26 @@ void mk_json_str(MkJson *j, const char *key, const char *val)
         }
     }
     put(j, '"');
+}
+
+void mk_json_str(MkJson *j, const char *key, const char *val)
+{
+    put_key(j, key);
+    put_escaped(j, val);
+}
+
+void mk_json_str_array(MkJson *j, const char *key,
+                       const char *const *values, size_t count)
+{
+    put_key(j, key);
+    put(j, '[');
+    for (size_t i = 0; i < count; i++) {
+        if (i > 0u) {
+            put(j, ',');
+        }
+        put_escaped(j, values[i]);
+    }
+    put(j, ']');
 }
 
 void mk_json_i64(MkJson *j, const char *key, int64_t val)

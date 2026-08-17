@@ -107,31 +107,16 @@ def render(rec: dict) -> str:
 
 # ---- I2C 센서 (규격 §7.5) ---------------------------------------------------
 
-#: 시뮬레이터가 포트마다 흉내 내는 센서 종류.
-#:
-#: 🔴 **데모 데이터다.** 실기기에서 무엇이 꽂혔는지는 펌웨어가 정하고,
-#:    시뮬레이터는 화면을 확인할 수 있을 만큼만 지어낸다 — 아날로그 쪽
-#:    `_synthetic_raw` 와 같은 성격이다.
-#:
-#: 짝 커넥터가 같은 버스라는 사실이 화면에서도 보이도록, 한 버스에 서로 다른
-#: 종류를 물려 둔다(J10·J11 = I2C3).
-SIM_I2C_SENSORS: dict[int, tuple[tuple[str, str], ...]] = {
-    10: (("temp", "°C"), ("humidity", "%RH")),
-    11: (("lux", "lx"),),
-    12: (("temp_object", "°C"), ("temp_ambient", "°C")),
-    13: (("temp", "°C"),),
-    14: (("pressure", "hPa"),),
-    15: (("lux", "lx"),),
-}
-
 #: 양마다 그럴듯한 중앙값과 진폭. (중앙, 진폭)
+#:
+#: 🔴 값 자체는 지어낸 것이다 — 아날로그 쪽 `_synthetic_raw` 와 같은 성격이고,
+#:    화면을 확인할 수 있을 만큼만 그럴듯하면 된다. **무엇을 내는지**는
+#:    지어내지 않는다: 사용자가 `i2cN.kind` 로 고른 종류가 정한다.
 _I2C_SHAPE = {
     "temp": (23.0, 1.5),
     "humidity": (55.0, 8.0),
     "lux": (400.0, 350.0),
     "temp_object": (31.0, 3.0),
-    "temp_ambient": (24.0, 1.0),
-    "pressure": (1013.0, 4.0),
 }
 
 
@@ -146,7 +131,7 @@ def synthetic_i2c_value(connector_id: int, quantity: str,
 
 
 def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
-                     unit: str, seq: int, t_ms: int,
+                     seq: int, t_ms: int,
                      value: float | None, status: int = 0) -> dict:
     """규격 §7.5 의 i2c 레코드. 마스크는 ain 과 **같은** `tx.fields` 다."""
     mask = store.field_mask
@@ -160,8 +145,7 @@ def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
     #    레코드가 아무 말도 안 한다.
     rec["quantity"] = quantity
     rec["value"] = None if value is None else round(value, digits)
-    if mask & (1 << _BIT_OF["unit"]):
-        rec["unit"] = unit
+    # 🔴 `unit` 을 싣지 않는다 (규격 §7.5) — quantity 가 이미 정한다.
     if mask & (1 << _BIT_OF["status"]):
         rec["status"] = status
     if mask & (1 << _BIT_OF["device_id"]):

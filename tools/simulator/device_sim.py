@@ -13,10 +13,9 @@ import math
 from host.core.errors import ConfigError, ProtocolError, Reason
 from host.core.framing import build_command, parse_line
 from host.core.records import SCHEMA_VER
-from tools.simulator.config_store import ConfigStore
+from tools.simulator.config_store import I2C_PORTS, I2C_QUANTITIES, ConfigStore
 from tools.simulator.telemetry import (
     ADS1256_FULL_SCALE,
-    SIM_I2C_SENSORS,
     build_ain_record,
     build_i2c_record,
     render,
@@ -296,19 +295,26 @@ class DeviceSim:
            읽게 되어 설정이 뜻을 잃는다.
         """
         lines: list[str] = []
-        for cid, quantities in SIM_I2C_SENSORS.items():
+        for cid in I2C_PORTS:
             if not self.store.get(f"i2c{cid}.enabled"):
+                continue
+            # 🔴 무엇을 내는지는 사용자가 고른 종류가 정한다. 시뮬레이터가
+            #    포트마다 종류를 지어내면, 실기기에서 그 자리를 채우는 것이
+            #    무엇인지 코드를 봐야 알게 된다.
+            quantities = I2C_QUANTITIES.get(
+                int(self.store.get(f"i2c{cid}.kind")), ())
+            if not quantities:
                 continue
             period = int(self.store.get(f"i2c{cid}.period_ms"))
             last = self._last_i2c_ms.get(cid, -period)
             if now_ms - last < period:
                 continue
             self._last_i2c_ms[cid] = now_ms
-            for quantity, unit in quantities:
+            for quantity in quantities:
                 self._seq += 1
                 lines.append(render(build_i2c_record(
                     self.store, connector_id=cid, quantity=quantity,
-                    unit=unit, seq=self._seq, t_ms=now_ms,
+                    seq=self._seq, t_ms=now_ms,
                     value=synthetic_i2c_value(cid, quantity, now_ms),
                 )))
         return lines

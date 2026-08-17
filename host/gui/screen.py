@@ -363,8 +363,6 @@ QUANTITY_LABELS = {
     "temp": "온도",
     "humidity": "습도",
     "temp_object": "대상 온도",
-    "temp_ambient": "주변 온도",
-    "pressure": "기압",
 }
 
 #: `quantity` 키 → 표준 단위 (규격 §7.5.1).
@@ -378,8 +376,6 @@ QUANTITY_UNITS = {
     "temp": "°C",
     "humidity": "%RH",
     "temp_object": "°C",
-    "temp_ambient": "°C",
-    "pressure": "hPa",
 }
 
 

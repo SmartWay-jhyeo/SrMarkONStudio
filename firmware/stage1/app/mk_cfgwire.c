@@ -59,6 +59,14 @@ void mk_cfgwire_list(const MkConfig *cfg,
                      const MkFieldBit *fields, size_t n_fields,
                      int64_t now_ms, MkCfgEmit emit, void *ctx)
 {
+    /* 🔴 줄이 이 버퍼를 넘으면 `mk_json_end` 가 0 을 돌려주고 그 항목이
+     *    **조용히 빠진다.** 카탈로그가 한 줄 모자란 채로 가고, 화면에는
+     *    그 설정만 없다 — 왜 없는지 알 방법이 없다.
+     *
+     *    막는 것은 `cfg_end` 의 count 다. 선언한 수와 실제로 온 수가 다르면
+     *    호스트가 거부한다(규격 §7.3). 실제로 그것이 잡았다 — I2C 종류
+     *    항목의 안내문이 길어 6개가 통째로 빠진 것을 대조 시험이 걸렀다
+     *    [2026-08-17]. 안내문을 길게 쓸 때는 이 상한을 기억한다. */
     char buf[320];
     MkJson j;
 
@@ -105,6 +113,14 @@ void mk_cfgwire_list(const MkConfig *cfg,
          *    허용값도 보드가 알려 줘야 한다. */
         if (it->n_choices > 0 && it->choices != NULL) {
             mk_json_u32_array(&j, "choices", it->choices, it->n_choices);
+            /* 🔴 숫자에 뜻이 없는 열거만 이름표를 단다. 길이는 `choices` 와
+             *    같아야 하고, 호스트는 다르면 통째로 버린다(규격 §7.3) —
+             *    짝이 어긋난 이름표는 사용자가 엉뚱한 것을 고르게 만드는데
+             *    화면에는 아무 이상이 없어 보인다. */
+            if (it->choice_labels != NULL) {
+                mk_json_str_array(&j, "choice_labels",
+                                  it->choice_labels, it->n_choices);
+            }
         }
         int n = mk_json_end(&j);
         if (n > 0 && emit) {

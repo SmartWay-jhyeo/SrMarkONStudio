@@ -65,6 +65,13 @@ class ConfigItem:
     label: str = ""
     note: str = ""
     choices: tuple = ()
+    choice_labels: tuple[str, ...] = ()
+    """`choices` 와 같은 순서의 이름표 (규격 §7.3).
+
+    🔴 길이가 다르면 **통째로 버린다.** 짝이 어긋난 이름표를 그리면 사용자가
+       엉뚱한 것을 고르는데 화면에는 아무 이상이 없어 보인다 — 숫자가 흉해도
+       그쪽이 안전하다. 버리는 판단은 파싱에서 한 번만 한다.
+    """
 
 
 @dataclass(frozen=True)
@@ -194,6 +201,7 @@ def parse_catalog(lines: Iterable[str]) -> ConfigSchema:
                 label=rec.get("label", ""),
                 note=rec.get("note", ""),
                 choices=tuple(rec.get("choices", ())),
+                choice_labels=_labels_for(rec),
             )
 
         elif rtype == "cfg_field":
@@ -223,3 +231,12 @@ def parse_catalog(lines: Iterable[str]) -> ConfigSchema:
             f"카탈로그 개수 불일치: 선언 {declared}, 수신 {total}",
         )
     return schema
+
+
+def _labels_for(rec: dict) -> tuple[str, ...]:
+    """`choice_labels` 를 꺼낸다. 짝이 안 맞으면 버린다 (규격 §7.3)."""
+    labels = rec.get("choice_labels")
+    choices = rec.get("choices") or ()
+    if not isinstance(labels, list) or len(labels) != len(choices):
+        return ()
+    return tuple(str(x) for x in labels)
