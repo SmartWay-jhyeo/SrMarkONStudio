@@ -59,8 +59,12 @@ class ChannelCard(QFrame):
         self.setObjectName("card")
         # 🔴 QFrame 이어야 스타일시트의 배경·테두리가 먹는다. QWidget 은
         #    paintEvent 를 직접 쓰지 않으면 배경을 안 칠한다.
+        #
+        # 🔴 세로로도 늘어난다. 예전에는 높이가 고정이라 격자 아래로 화면
+        #    끝까지 빈 흰 바탕이 남았다. 늘어난 자리는 트레이스가 먹으므로
+        #    창이 클수록 이력이 길게 보인다 — 빈 공간이 정보가 된다.
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Fixed)
+                           QSizePolicy.Policy.Expanding)
 
         self._accent = _Accent()
         self.gauge = LoopGauge(connector)

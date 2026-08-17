@@ -25,7 +25,14 @@ from PyQt6.QtWidgets import (
 
 from host.gui.last_known import StateHistory, build_chip_state
 from host.gui.qt.channel_card import ChannelCard
-from host.gui.screen import AIN_COUNT, CONNECTOR_OFFSET, RAILS, ScreenState
+from host.gui.qt.parts import hairline
+from host.gui.screen import (
+    AIN_COUNT,
+    CONNECTOR_OFFSET,
+    RAILS,
+    ScreenState,
+    summarize,
+)
 from host.gui.theme import Color, Font, Space
 from host.gui.widgets.status_chip import (
     Level,
@@ -57,10 +64,7 @@ class SectionTitle(QWidget):
         self._aside.setStyleSheet(
             f"color: {Color.INK_DIM}; font-size: {Font.SIZE_SM}pt;"
         )
-        rule = QFrame()
-        rule.setFrameShape(QFrame.Shape.HLine)
-        rule.setStyleSheet(f"color: {Color.LINE};")
-        rule.setFixedHeight(1)
+        rule = hairline()
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -138,6 +142,71 @@ class RailPill(QFrame):
             )
 
 
+class _Summary(QFrame):
+    """수집 요약 — 카드 일곱 장을 한 줄로.
+
+    🔴 채널 카드와 같은 무게로 그리지 않는다. 값이 아니라 **값에 대한
+       사실**이라서, 나란히 두면 무엇이 이 화면의 주인공인지 흐려진다.
+       테두리 없이 글자만 얹는다.
+
+    🔴 고장 수는 있을 때만 쓴다. 늘 `단선 0` 을 띄우면 눈이 그 자리를 읽지
+       않게 되고, 정작 1 이 됐을 때도 안 보인다.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        self._title = QLabel("수집")
+        self._title.setStyleSheet(
+            f"color: {Color.INK_FAINT}; font-size: {Font.SIZE_SM}pt;"
+            f" font-weight: 700; letter-spacing: 1.2px;"
+        )
+        self._rows = QVBoxLayout()
+        self._rows.setSpacing(2)
+        self._lines: list[QLabel] = []
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(Space.MD, Space.MD, Space.MD, Space.MD)
+        col.setSpacing(Space.SM)
+        col.addWidget(self._title)
+        col.addWidget(hairline())
+        col.addLayout(self._rows)
+        col.addStretch(1)
+
+    def _line(self, index: int) -> QLabel:
+        while len(self._lines) <= index:
+            lab = QLabel("")
+            self._lines.append(lab)
+            self._rows.addWidget(lab)
+        return self._lines[index]
+
+    def render(self, state: ScreenState) -> None:
+        summary = summarize(state.channels)
+        facts: list[tuple[str, str, str]] = [
+            ("값이 오는 채널", f"{summary.live} / {summary.total}",
+             Color.INK if summary.live else Color.INK_FAINT),
+        ]
+        if summary.interval_ms is not None:
+            facts.append(("표본 간격", f"{summary.interval_ms:.0f} ms",
+                          Color.INK_DIM))
+        if summary.broken:
+            facts.append(("단선", str(summary.broken), Color.FAULT))
+        if summary.over:
+            facts.append(("범위 밖", str(summary.over), Color.WARN))
+
+        for i, (name, value, colour) in enumerate(facts):
+            lab = self._line(i)
+            lab.setText(f"{name}    {value}")
+            lab.setStyleSheet(
+                f"color: {colour}; font-size: {Font.SIZE_SM}pt;"
+                f" font-family: {Font.MONO};"
+            )
+            lab.setVisible(True)
+        for i in range(len(facts), len(self._lines)):
+            self._lines[i].setVisible(False)
+
+
 class Dashboard(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -160,13 +229,27 @@ class Dashboard(QWidget):
         cols = 3
         for ch in range(AIN_COUNT):
             card = ChannelCard(f"J{ch + CONNECTOR_OFFSET}")
+            # 🔴 커서를 화면 전체로 퍼뜨린다. 한 계기 위에서 움직인 마우스가
+            #    일곱 계기 모두를 같은 시각으로 돌려세운다 — 채널 사이의
+            #    관계는 이 방법으로만 보인다.
+            card.gauge.cursorMoved.connect(self._on_cursor)
             self._cards.append(card)
             grid.addWidget(card, ch // cols, ch % cols)
-        # 마지막 줄의 빈 칸을 채워 카드가 늘어나지 않게 한다.
-        for c in range(AIN_COUNT % cols, cols):
-            grid.addWidget(QWidget(), AIN_COUNT // cols, c)
+        # 🔴 마지막 줄의 남는 칸. 예전에는 빈 위젯으로 자리만 잡아 두었고,
+        #    화면 오른쪽 아래에 흰 구멍이 남았다. 수집이 지금 어떻게 되고
+        #    있는지를 거기 넣는다 — 카드 일곱 장을 한 줄로 요약한 것이라
+        #    자리도 맞다.
+        self._summary = _Summary()
+        empty = cols - AIN_COUNT % cols
+        grid.addWidget(self._summary, AIN_COUNT // cols,
+                       AIN_COUNT % cols, 1, empty)
         for c in range(cols):
             grid.setColumnStretch(c, 1)
+        # 🔴 줄에도 늘어날 몫을 준다. 예전에는 격자가 위에 붙고 아래로 화면
+        #    끝까지 빈 흰 바탕이 남았다. 이제 카드가 높이를 나눠 갖고,
+        #    늘어난 자리는 트레이스가 먹는다.
+        for r in range((AIN_COUNT + cols - 1) // cols):
+            grid.setRowStretch(r, 1)
 
         # 🔴 전원 레일은 이제 좌측 레일(qt/rail.py)에 있다. 여기서는 그리지
         #    않는다 — 5V 가 없으면 채널이 하나도 안 도는 관계라, 채널 아래에
@@ -176,8 +259,21 @@ class Dashboard(QWidget):
         col.setSpacing(Space.SM)
         col.addWidget(self._ch_title)
         col.addSpacing(Space.XS)
-        col.addLayout(grid)
-        col.addStretch(1)
+        col.addLayout(grid, 1)
+
+    # ------------------------------------------------------------- 커서
+
+    def _on_cursor(self, at_ms: int) -> None:
+        """한 계기에서 나온 **시각**을 일곱 계기 전부에 건다.
+
+        🔴 시각으로 거는 것이 요점이다. 채널마다 수집 주기가 따로라
+           인덱스로 맞추면 서로 다른 순간을 보여 주면서 "같은 순간" 이라고
+           말하게 된다. 각 계기가 자기 표본 중 그 시각에 가장 가까운 것을
+           고른다.
+        """
+        cursor = None if at_ms < 0 else at_ms
+        for card in self._cards:
+            card.gauge.set_cursor(cursor)
 
     # ------------------------------------------------------------- 갱신
 
@@ -195,11 +291,13 @@ class Dashboard(QWidget):
             card.gauge.set_reading(
                 ch.ma, level=ch.level, verification=ch.verification,
                 value=ch.value, unit=ch.unit, note=ch.note,
+                trace=ch.trace, trace_t=ch.trace_t, span=ch.span,
             )
             # 🔴 카드 띠와 게이지가 **같은** 판정을 쓴다. 따로 계산하면
             #    언젠가 갈리고, 그때 어느 쪽을 믿어야 할지 알 수 없다.
             card.set_state(ch.level, ch.verification)
 
+        self._summary.render(state)
         self._ch_title.set_aside(
             f"{AIN_COUNT}채널 · 4–20 mA" if state.reachable else "확인 불가",
             Color.FAULT if not state.reachable else None,

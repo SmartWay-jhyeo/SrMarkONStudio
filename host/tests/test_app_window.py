@@ -46,11 +46,16 @@ def test_window_opens_without_a_board(window):
 
 
 def test_catalog_is_loaded_from_the_board(window):
-    """🔴 45개 항목이 `$CFG,LIST` 만으로 그려진다."""
+    """🔴 항목이 `$CFG,LIST` 만으로 그려진다.
+
+    개수를 적지 않는다 — 보드에 항목이 늘 때마다 깨지는 시험은 하드코딩을
+    금지하면서 스스로 하드코딩하는 셈이다. 화면이 카탈로그의 **모든** 키를
+    빠짐없이 그렸는지만 본다.
+    """
     form = window._settings._form
     assert form is not None
-    assert len(form.keys()) == 45
-    assert len(window._settings._rows) == 45
+    assert form.keys()                              # 비어 있으면 실패다
+    assert sorted(window._settings._rows) == sorted(form.keys())
 
 
 def test_switching_pages(window):

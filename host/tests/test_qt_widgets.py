@@ -37,6 +37,182 @@ def app():
     yield a
 
 
+# ------------------------------------------------------------ 공유 커서
+
+def _gauge(trace, trace_t):
+    from host.gui.qt.gauge import LoopGauge
+
+    g = LoopGauge("J3")
+    g.set_reading(trace[-1], level=Level.OK,
+                  verification=Verification.VERIFIED,
+                  trace=trace, trace_t=trace_t)
+    return g
+
+
+def test_cursor_lands_on_the_sample_nearest_that_moment(app):
+    g = _gauge((10.0, 11.0, 12.0), (100, 200, 300))
+    g.set_cursor(210)
+    assert g.cursor_index() == 1
+
+
+def test_two_gauges_at_different_rates_share_one_moment(app):
+    """🔴 이것이 공유 크로스헤어가 시각을 기준으로 도는 이유다.
+
+    채널마다 수집 주기가 따로다(`ainN.period_ms`). 인덱스로 맞추면 느린
+    채널이 빠른 채널의 절반 시각을 가리키게 되고, 화면은 "같은 순간의
+    일곱 값" 이라고 말하면서 서로 다른 순간을 보여 준다.
+    """
+    fast = _gauge((1.0, 2.0, 3.0, 4.0), (100, 200, 300, 400))
+    slow = _gauge((1.0, 2.0), (100, 300))
+
+    fast.set_cursor(310)
+    slow.set_cursor(310)
+
+    assert fast.cursor_index() == 2      # t=300
+    assert slow.cursor_index() == 1      # t=300
+
+
+def test_dropping_the_cursor_returns_to_now(app):
+    g = _gauge((10.0, 11.0), (100, 200))
+    g.set_cursor(110)
+    g.set_cursor(None)
+    assert g.cursor_index() is None
+
+
+# ------------------------------------------------------------ 전원 레일
+
+class _Clock:
+    """시험이 시간을 쥔다. 진짜로 0.7초를 기다리지 않는다."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_a_brief_press_does_not_command_the_rail(app):
+    """🔴 24 V 는 잘못 누르면 곤란한 출력이다.
+
+    산업 HMI 의 답은 확인 대화상자가 아니라 hold-to-run 이다 — 손을 대고
+    있는 동안만 동작하고 떼면 멈춘다. 의도가 **계속** 확인된다는 것이
+    한 번의 확인 클릭과 다른 점이다.
+    """
+    from host.gui.qt.rail import RailRow
+
+    clock = _Clock()
+    row = RailRow("24V", "pwr.24v", hold_s=0.7, monotonic=clock)
+    row.set_commanded(False)
+    fired = []
+    row.toggled.connect(lambda key, on: fired.append((key, on)))
+
+    row.begin_hold()
+    clock.advance(0.3)
+    row.end_hold()
+
+    assert fired == []
+
+
+def test_holding_long_enough_commands_the_rail(app):
+    from host.gui.qt.rail import RailRow
+
+    clock = _Clock()
+    row = RailRow("24V", "pwr.24v", hold_s=0.7, monotonic=clock)
+    row.set_commanded(False)
+    fired = []
+    row.toggled.connect(lambda key, on: fired.append((key, on)))
+
+    row.begin_hold()
+    clock.advance(0.8)
+    row.end_hold()
+
+    assert fired == [("pwr.24v", True)]
+
+
+def test_holding_an_on_rail_turns_it_off(app):
+    """같은 동작이 반대 방향으로도 돈다 — 끄는 것도 누르고 있어야 한다."""
+    from host.gui.qt.rail import RailRow
+
+    clock = _Clock()
+    row = RailRow("24V", "pwr.24v", hold_s=0.7, monotonic=clock)
+    row.set_commanded(True)
+    fired = []
+    row.toggled.connect(lambda key, on: fired.append((key, on)))
+
+    row.begin_hold()
+    clock.advance(0.8)
+    row.end_hold()
+
+    assert fired == [("pwr.24v", False)]
+
+
+def test_an_unknown_rail_cannot_be_commanded(app):
+    """🔴 연결이 끊긴 동안에는 명령을 보내지 않는다.
+
+    `commanded is None` 은 "모른다" 다. 모르는 상태에서 토글하면 무엇의
+    반대를 보내는지 알 수 없다 — 24 V 를 켜려다 끄게 될 수 있다.
+    """
+    from host.gui.qt.rail import RailRow
+
+    clock = _Clock()
+    row = RailRow("24V", "pwr.24v", hold_s=0.7, monotonic=clock)
+    row.set_commanded(None)
+    fired = []
+    row.toggled.connect(lambda key, on: fired.append((key, on)))
+
+    row.begin_hold()
+    clock.advance(0.8)
+    row.end_hold()
+
+    assert fired == []
+
+
+def test_setting_a_value_from_outside_moves_the_widget_too(app):
+    """🔴 대시보드에서 레일을 켜면 설정 화면도 그렇게 보여야 한다.
+
+    `_rail_values()` 가 설정 폼을 유일한 출처로 읽는다(screen.py). 폼만
+    고치고 위젯을 두면 두 화면이 서로 다른 말을 하게 되고, 그때 사용자는
+    어느 쪽이 보드의 상태인지 알 수 없다.
+    """
+    page = SettingsPage()
+    page.set_form(_form_from(default_store()))
+
+    page.set_value("pwr.24v", "true")
+
+    assert page.form.row("pwr.24v").value == "true"
+    assert page.form.pending_changes() == [("pwr.24v", "true")]
+
+
+# ------------------------------------------------------------------ 구획선
+
+def test_hairline_is_exactly_one_pixel(app):
+    """🔴 `QFrame.HLine` 을 쓰지 않는 이유.
+
+    그것은 새김 효과가 있는 두 줄짜리 테두리라 **두꺼운 띠**로 렌더링된다.
+    어두운 면에서는 제목보다 눈에 띄고(qt/rail.py 가 이미 겪고 직접 칠하는
+    쪽으로 바꿨다), 밝은 면에서도 구획선이 아니라 입력칸처럼 보인다.
+
+    한 곳에서 만들어 네 화면이 같은 것을 쓴다.
+    """
+    from host.gui.qt.parts import hairline
+
+    line = hairline()
+    assert line.minimumHeight() == 1
+    assert line.maximumHeight() == 1
+
+
+def test_hairline_takes_the_colour_it_is_given(app):
+    """어두운 면과 밝은 면이 같은 부품을 쓰되 색만 갈아 낀다."""
+    from host.gui.qt.parts import hairline
+    from host.gui.theme import Color
+
+    assert Color.SHELL_LINE in hairline(Color.SHELL_LINE).styleSheet()
+    assert Color.LINE in hairline().styleSheet()
+
+
 def _form_from(store) -> SettingsForm:
     sim = DeviceSim(store)
     sim.feed(build_command("HB"))
@@ -108,10 +284,12 @@ def test_labeled_value(app):
 # ------------------------------------------------------------ 설정 화면
 
 def test_settings_page_draws_every_catalog_item(app, form):
-    """🔴 45개 항목이 카탈로그만으로 그려지는지."""
+    """🔴 카탈로그의 모든 항목이 그려지는지. 개수는 적지 않는다 —
+    보드가 항목을 늘릴 때마다 깨지는 숫자를 시험에 박아 두지 않는다."""
     page = SettingsPage()
     page.set_form(form)
-    assert len(page._rows) == len(form.keys()) == 45
+    assert form.keys()
+    assert sorted(page._rows) == sorted(form.keys())
 
 
 def test_readonly_row_is_disabled_and_explains_why(app, readonly_form):

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -20,6 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from host.gui.qt.parts import hairline
 from host.gui.screen import ScreenState
 from host.gui.theme import Color, Font, Space
 
@@ -65,8 +65,52 @@ class NavButton(QPushButton):
         )
 
 
+class CtlModeSwitch(QWidget):
+    """제어 모드 전환 — `테스트` / `운전` (규격 §6.4).
+
+    🔴 상단의 `CONFIG` 배지와 **다른 축**이다. 저쪽은 하트비트로 관측되는
+       것이고 이쪽은 사람이 선언하는 것이라, 나란히 두되 생김새를 다르게 한다.
+
+    🔴 지금 어느 쪽인지가 **틀리면 안 되는** 표시다. 테스트인 줄 알고 공정을
+       돌리거나 운전 중인 줄 모르고 밸브를 흔드는 것이 이 시스템에서 가장
+       나쁜 사고다. 그래서 선택된 쪽을 채워 그린다.
+    """
+
+    requested = pyqtSignal(str)          # "TEST" | "ACTIVE"
+
+    MODES = (("TEST", "테스트"), ("ACTIVE", "운전"))
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._buttons: dict[str, QPushButton] = {}
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(Space.XS)
+        for value, label in self.MODES:
+            b = QPushButton(label)
+            b.setObjectName("ctlmode")
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, v=value: self.requested.emit(v))
+            self._buttons[value] = b
+            row.addWidget(b)
+        self.set_mode("ACTIVE")
+
+    def set_mode(self, mode: str) -> None:
+        for value, b in self._buttons.items():
+            b.setChecked(value == mode)
+            # 🔴 테스트 쪽만 경고색으로 채운다. 운전이 평상 상태이므로
+            #    거기에 색을 쓰면 색이 뜻을 잃는다.
+            b.setProperty("danger", value == "TEST" and value == mode)
+            b.style().unpolish(b)
+            b.style().polish(b)
+
+
 class TopBar(QWidget):
     page_selected = pyqtSignal(int)
+    #: 사용자가 제어 모드를 바꾸려 한다. 실제 전환은 보드가 한다.
+    ctl_mode_requested = pyqtSignal(str)
 
     def __init__(self, pages: tuple[str, ...],
                  parent: QWidget | None = None) -> None:
@@ -93,6 +137,8 @@ class TopBar(QWidget):
             nav.addWidget(b)
 
         self._mode = ModeBadge()
+        self._ctl = CtlModeSwitch()
+        self._ctl.requested.connect(self.ctl_mode_requested)
         self._link = QLabel("보드 없음")
         self._link.setStyleSheet(
             f"color: {Color.INK_DIM}; font-size: {Font.SIZE_SM}pt;"
@@ -109,13 +155,12 @@ class TopBar(QWidget):
         row.addLayout(left)
         row.addLayout(nav)
         row.addStretch(1)
+        row.addWidget(self._ctl)
+        row.addSpacing(Space.MD)
         row.addWidget(self._link)
         row.addWidget(self._mode)
 
-        rule = QFrame()
-        rule.setFrameShape(QFrame.Shape.HLine)
-        rule.setStyleSheet(f"color: {Color.LINE};")
-        rule.setFixedHeight(1)
+        rule = hairline()
 
         col = QVBoxLayout(self)
         col.setContentsMargins(0, 0, 0, 0)
@@ -163,6 +208,10 @@ class TopBar(QWidget):
            "다른 입구가 있으면 안 된다" 가 아니다.
         """
         self.set_mode(state.mode)
+        # 🔴 보드가 말한 것을 그린다. 사용자가 누른 것이 아니다 — 명령이
+        #    거부될 수 있고(RUN 에서 TEST 진입), 그때 화면이 눌린 대로
+        #    보여 주면 실제와 다른 모드를 믿게 된다.
+        self._ctl.set_mode(state.ctl_mode)
         self.set_link(state.link.text, bad=state.link.bad)
         if state.identity.device_id or state.identity.fw:
             self.set_identity(

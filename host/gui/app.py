@@ -26,10 +26,15 @@ from PyQt6.QtWidgets import (
 from host.core.limits import DEFAULT_BAUD
 from host.gui.command_queue import CommandQueue
 from host.gui.qt.dashboard import Dashboard
+from host.gui.qt.parts import TestBand
 from host.gui.qt.settings_page import SettingsPage
 from host.gui.qt.topbar import TopBar
 from host.gui.qt.worker import WorkerThread
-from host.gui.settings_form import SettingsForm
+from host.gui.settings_form import (
+    SettingsForm,
+    channel_ranges,
+    channel_units,
+)
 from host.gui.qt.rail import Rail
 from host.gui.last_known import StateHistory
 from host.gui.screen import (
@@ -47,10 +52,14 @@ PAGES = ("대시보드", "설정")
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, service, port_label: str) -> None:
+    def __init__(self, service, port_label: str, *,
+                 baud: int = DEFAULT_BAUD) -> None:
         super().__init__()
         self.setWindowTitle(f"{WINDOW_TITLE} — {port_label}")
         self.resize(1180, 800)
+        # 🔴 대역폭 여유를 재려면 링크 속도를 알아야 한다. 설정 화면이
+        #    필드를 고를 때 "이만큼이면 링크의 몇 %" 를 말해 준다.
+        self._baud = baud
 
         self._service = service
         self._port_label = port_label
@@ -58,8 +67,10 @@ class MainWindow(QMainWindow):
 
         self._top = TopBar(PAGES)
         self._top.set_identity(port_label)
+        self._top.ctl_mode_requested.connect(self._on_ctl_mode)
+        self._band = TestBand()
         self._dashboard = Dashboard()
-        self._settings = SettingsPage()
+        self._settings = SettingsPage(baud=baud)
         self._settings.apply_requested.connect(self._on_apply)
         self._settings.save_requested.connect(self._on_save)
         self._settings.reset_requested.connect(self._on_reset)
@@ -80,6 +91,10 @@ class MainWindow(QMainWindow):
         #    채널이 하나도 안 돈다), 캔버스의 가로폭이 줄어 채널 카드가
         #    적당한 크기가 된다.
         self._rail = Rail()
+        # 🔴 레일을 만지면 설정 화면을 거쳐 보드로 간다. 레일이 자기 상태를
+        #    따로 들고 있지 않는 것이 요점이다 — 화면에 그려진 값이 곧
+        #    보드에 보낸 값이다 (`_rail_values` 주석 참조).
+        self._rail.railToggled.connect(self._on_rail_toggled)
 
         split = QWidget()
         row = QHBoxLayout(split)
@@ -93,12 +108,13 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
         col.addWidget(self._top)
+        col.addWidget(self._band)
         col.addWidget(split, 1)
         self.setCentralWidget(body)
 
         # 🔴 뷰 목록. 배치를 바꾸는 것은 이 목록과 위 레이아웃을 고치는
         #    일이고, 데이터 배선(_on_step)은 건드리지 않는다.
-        self._views = (self._top, self._rail, self._dashboard)
+        self._views = (self._top, self._band, self._rail, self._dashboard)
         self._history = StateHistory()
         self._state = ScreenState(channels=empty_channels())
 
@@ -156,6 +172,17 @@ class MainWindow(QMainWindow):
         return {key: form.row(key).value == "true"
                 for key, _label in RAILS if key in form.keys()}
 
+    def _channel_ranges(self) -> dict[int, tuple[float, float]]:
+        """센서의 물리량 범위. 레일 값과 같은 이유로 설정 화면에서 읽는다 —
+        화면에 그려진 값이 곧 보드에 보낸 값이다."""
+        form = self._settings.form
+        return channel_ranges(form) if form is not None else {}
+
+    def _channel_units(self) -> dict[int, str]:
+        """단위도 설정에서 읽는다 — `unit` 필드는 기본 마스크에서 꺼져 있다."""
+        form = self._settings.form
+        return channel_units(form) if form is not None else {}
+
     # ------------------------------------------------------------- 워커
 
     def _on_step(self, result) -> None:
@@ -172,10 +199,13 @@ class MainWindow(QMainWindow):
             self._state,
             identity=self._state.identity,
             mode=result.mode,
+            ctl_mode=result.ctl_mode,
             error=result.error,
             rail_values=self._rail_values(),
             records=result.records,
             history=self._history,
+            ranges=self._channel_ranges(),
+            units=self._channel_units(),
         )
         for view in self._views:
             view.render(self._state)
@@ -205,6 +235,26 @@ class MainWindow(QMainWindow):
                 self._settings.on_accepted(key)
             else:
                 self._settings.on_rejected(key, res.reason or "거부됨")
+
+    def _on_ctl_mode(self, mode: str) -> None:
+        """제어 모드 전환을 보드에 요청한다 (규격 §6.4).
+
+        🔴 화면이 먼저 바뀌지 않는다. 보드가 거부할 수 있고(RUN 에서 TEST
+           진입), 그때 눌린 대로 그려 두면 사용자가 실제와 다른 모드를
+           믿는다. `$STAT` 이 돌려주는 값만 화면에 반영된다.
+        """
+        self._queue.submit("MODE", mode, tag="mode")
+
+    def _on_rail_toggled(self, key: str, on: bool) -> None:
+        """대시보드에서 전원 레일을 누르고 있었다.
+
+        🔴 설정 화면의 `적용` 을 기다리지 않고 바로 보낸다. 누르고 있는
+           0.7 초가 이미 확인이고, 거기서 또 한 번 누르게 하면 hold-to-run
+           이 확인 대화상자와 다를 바 없어진다.
+        """
+        text = "true" if on else "false"
+        self._settings.set_value(key, text)
+        self._queue.submit("CFG", "SET", key, text, tag=f"set:{key}")
 
     def _on_apply(self, changes: list) -> None:
         for key, value in changes:
@@ -250,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setStyleSheet(stylesheet())
 
     service = make_service(args.port, args.baud)
-    window = MainWindow(service, args.port)
+    window = MainWindow(service, args.port, baud=args.baud)
     window.show()
     return app.exec()
 
