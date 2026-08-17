@@ -106,6 +106,9 @@ class BoardService:
         self.seq_tracker = SeqTracker()
         self.corrupt_total = 0
         self.mode = "RUN"
+        #: 제어 모드 (규격 §6.4). 부팅 기본값은 ACTIVE — 보드는 혼자서도
+        #: 제 일을 해야 하고, 테스트는 사람이 명시적으로 들어가는 상태다.
+        self.ctl_mode = "ACTIVE"
         self.last_payload: dict | None = None
 
         self._acks: list[Command] = []
@@ -197,6 +200,7 @@ class BoardService:
         sim = getattr(self.transport, "sim", None)
         if sim is not None:
             self.mode = sim.mode
+            self.ctl_mode = sim.ctl_mode
 
     def _ingest(self, line: str) -> None:
         line = line.strip()
@@ -238,6 +242,9 @@ class BoardService:
             self.last_payload = rec
             if rtype == "stat":
                 self.mode = rec.get("mode", self.mode)
+                # 🔴 두 축은 독립이다 (규격 §6.4). 하나가 없다고 다른 하나를
+                #    건드리지 않는다 — 구버전 펌웨어는 ctl_mode 를 안 보낸다.
+                self.ctl_mode = rec.get("ctl_mode", self.ctl_mode)
             return
 
         self.seq_tracker.observe(rec["seq"])

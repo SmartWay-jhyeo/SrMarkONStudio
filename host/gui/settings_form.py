@@ -98,6 +98,153 @@ class Group:
     rows: list[Row] = field(default_factory=list)
 
 
+#: 표로 접을 만한 최소 반복 수. 이보다 적으면 헤더 줄이 본문보다 길어져
+#: 폼보다 읽기 나빠진다.
+MATRIX_MIN_ROWS = 3
+
+
+@dataclass(frozen=True)
+class MatrixRow:
+    """표의 한 줄 — 번호 하나가 가진 칸들. 열 순서대로 늘어놓는다."""
+
+    index: int
+    label: str
+    cells: tuple[Row | None, ...]
+
+
+@dataclass(frozen=True)
+class Matrix:
+    """반복되는 항목들을 표로 접은 것. 행 = 번호, 열 = 속성."""
+
+    prefix: str
+    columns: tuple[str, ...]
+    """키의 뒷부분들 (`zero` · `scale` …). 화면은 안 쓰지만 시험이 짚는다."""
+
+    column_labels: tuple[str, ...]
+    rows: tuple[MatrixRow, ...]
+
+    leftovers: tuple[Row, ...] = ()
+    """접히지 않고 남은 항목들. 화면이 표 위에 폼으로 그린다.
+
+    🔴 그룹에 반복이 아닌 항목이 섞여 있다고 반복분까지 못 접을 이유는
+       없다. LED 그룹이 그렇다 — `체인 LED 수`·`밝기` 는 하나씩이고
+       J21~J24 의 R·G·B 는 반복이다.
+    """
+
+
+def _split_key(key: str) -> tuple[str, int, str] | None:
+    """`ain3.zero` → (`ain`, 3, `zero`). 그 꼴이 아니면 None."""
+    head, _, tail = key.partition(".")
+    if not tail:
+        return None
+    digits = len(head) - len(head.rstrip("0123456789"))
+    if digits == 0 or digits == len(head):
+        return None
+    return head[:-digits], int(head[-digits:]), tail
+
+
+def _common_prefix(texts: list[str]) -> str:
+    if not texts:
+        return ""
+    out = texts[0]
+    for other in texts[1:]:
+        i = 0
+        while i < len(out) and i < len(other) and out[i] == other[i]:
+            i += 1
+        out = out[:i]
+    return out.rstrip()
+
+
+def matrix_of(group: Group) -> Matrix | None:
+    """그룹이 표로 접을 만한 모양인지 보고, 그렇다면 접어서 돌려준다.
+
+    🔴 **항목을 하드코딩하지 않는다** — 이 파일의 전제다(머리말). 그래서
+       "ain 그룹은 표" 라고 적지 않고, 키가 `<접두><번호>.<속성>` 꼴로
+       반복되는지를 **구조로 판정**한다. 보드가 채널을 8 개로 늘리거나
+       속성을 추가해도 화면이 따라간다.
+
+    🔴 왜 접는가. 45 개 항목 중 35 개가 7 채널 × 5 속성이다. 세로로 35 줄을
+       쌓으면 스크롤이 길어지는 것보다 나쁜 일이 생긴다 — "J5 의 영점이
+       J6 보다 큰가" 를 볼 수 없다. 채널끼리 비교하는 것이 이 화면의 주된
+       용도인데도.
+    """
+    # 🔴 반복되는 것만 골라 낸다. 예전에는 "하나라도 어긋나면 표가 아니다"
+    #    였는데, 그러면 LED 그룹처럼 스칼라 두 개가 섞였다는 이유로 J21~J24
+    #    의 R·G·B 열두 줄이 통째로 늘어선다. 섞였다고 반복을 못 접을 이유가
+    #    없다 — 남는 것은 표 위에 폼으로 그린다.
+    parsed: list[tuple[str, int, str, Row]] = []
+    leftovers: list[Row] = []
+    for row in group.rows:
+        bits = _split_key(row.key)
+        if bits is None:
+            leftovers.append(row)
+        else:
+            parsed.append((*bits, row))
+
+    prefixes = {p for p, _, _, _ in parsed}
+    if len(prefixes) != 1:
+        return None
+
+    indices = sorted({i for _, i, _, _ in parsed})
+    if len(indices) < MATRIX_MIN_ROWS:
+        return None
+
+    # 열 순서는 **처음 나온 순서**다. 보드가 보낸 순서에 뜻이 있다고 보고
+    # 재정렬하지 않는다 (groups 프로퍼티와 같은 규칙).
+    columns: list[str] = []
+    for _, _, suffix, _ in parsed:
+        if suffix not in columns:
+            columns.append(suffix)
+    if len(columns) < 2:
+        return None                          # 한 열짜리 표는 폼만 못하다
+
+    prefix = next(iter(prefixes))
+    by_cell = {(i, s): r for _, i, s, r in parsed}
+
+    rows: list[MatrixRow] = []
+    for index in indices:
+        labels = [r.label for (i, _s), r in by_cell.items() if i == index]
+        # 🔴 라벨이 `J3 영점` · `J3 스케일` 처럼 생겼으므로, 한 번호의
+        #    라벨들이 공통으로 가진 앞부분이 곧 행 이름이다. 공통 부분이
+        #    없으면 키로 되돌아간다 — 빈 행 이름을 내놓지 않는다.
+        label = _common_prefix(labels) or f"{prefix}{index}"
+        rows.append(MatrixRow(
+            index=index,
+            label=label,
+            cells=tuple(by_cell.get((index, s)) for s in columns),
+        ))
+
+    return Matrix(
+        prefix=prefix,
+        columns=tuple(columns),
+        column_labels=tuple(
+            _column_label(by_cell, indices, rows, columns, k)
+            for k in range(len(columns))
+        ),
+        rows=tuple(rows),
+        leftovers=tuple(leftovers),
+    )
+
+
+def _column_label(by_cell, indices, rows, columns, k: int) -> str:
+    """열 제목 — 항목 라벨에서 행 이름을 뺀 나머지.
+
+    🔴 행 이름이 안 붙은 라벨이면 키의 뒷부분을 쓴다. 보드가 라벨을 어떻게
+       주든 화면이 빈 제목을 내놓지 않아야 한다.
+    """
+    suffix = columns[k]
+    for row in rows:
+        cell = row.cells[k]
+        if cell is None:
+            continue
+        text = cell.label
+        if row.label and text.startswith(row.label):
+            text = text[len(row.label):].strip()
+        if text:
+            return text
+    return suffix
+
+
 #: 그룹 이름을 사람이 읽는 말로. 없는 그룹은 이름 그대로 쓴다 —
 #: 🔴 보드가 새 그룹을 보내도 화면이 깨지지 않아야 한다.
 GROUP_LABELS = {
@@ -106,11 +253,126 @@ GROUP_LABELS = {
     "pwr": "전원",
     "adc": "ADC",
     "ain": "아날로그 입력",
+    "sol": "디지털 출력",
+    "led": "LED",
+    "i2c": "I2C 센서",
 }
 
 
 def group_label(name: str) -> str:
     return GROUP_LABELS.get(name, name)
+
+
+#: 규격 §7.2 가 이름 지은 전송 설정 항목들. 카탈로그 항목을 하드코딩하는
+#: 것과 다르다 — 이것은 **규격이 정한 계약**이고, 규격이 바뀌면 여기도 바뀐다.
+#: 규격 §7.2.1 이 이름 지은 채널 환산 항목의 뒷부분.
+#: `value = (ma - ainN.zero) * ainN.scale`
+COL_ZERO = "zero"
+COL_SCALE = "scale"
+COL_UNIT = "unit"
+
+KEY_FIELD_MASK = "tx.fields"
+KEY_PERIOD_MS = "tx.period_ms"
+KEY_FLOAT_DIGITS = "tx.float_digits"
+
+
+@dataclass(frozen=True)
+class TelemetryShape:
+    """지금 설정이 만들어 낼 텔레메트리의 모양. 대역폭 계산의 입력이다."""
+
+    channels: int
+    period_ms: int
+    float_digits: int
+
+
+def telemetry_shape(form: "SettingsForm") -> TelemetryShape:
+    """켜진 채널 수·전송 주기·실수 자릿수를 폼에서 읽는다.
+
+    🔴 값을 정수로 못 읽으면 **기본값으로 돌아간다.** 사용자가 주기를
+       지우는 동안 값은 빈 문자열이고, 그때 예외가 나면 숫자 하나 지웠다고
+       설정 화면이 통째로 죽는다.
+
+    🔴 채널 수는 키 이름을 짐작하지 않고 **반복 그룹의 토글 열**에서 센다
+       (`matrix_of`). 보드가 채널 항목의 이름을 바꿔도 따라간다.
+    """
+    channels = 0
+    for group in form.groups:
+        matrix = matrix_of(group)
+        if matrix is None:
+            continue
+        for mrow in matrix.rows:
+            for cell in mrow.cells:
+                if cell is not None and cell.widget is Widget.TOGGLE:
+                    channels += 1 if cell.value == "true" else 0
+                    break
+    return TelemetryShape(
+        channels=max(channels, 0),
+        period_ms=_int_or(form, KEY_PERIOD_MS, 100, minimum=1),
+        float_digits=_int_or(form, KEY_FLOAT_DIGITS, 4, minimum=0),
+    )
+
+
+def channel_ranges(form: "SettingsForm") -> dict[int, tuple[float, float]]:
+    """채널 번호 → (4 mA 일 때, 20 mA 일 때) 물리량.
+
+    🔴 게이지가 `0 – 150 bar` 를 그리려면 설정을 되짚어야 한다. 보드는
+       영점·스케일로 들고 있고 사람은 범위로 생각하며, 그 환산은 규격
+       §7.2.1 이 정했다.
+
+    되짚을 수 없는 채널(스케일 0, 값이 반쯤 입력된 중)은 **빠진다.** 없는
+    것을 지어내면 게이지가 틀린 눈금을 그린다.
+    """
+    from host.core.scaling import range_of
+
+    out: dict[int, tuple[float, float]] = {}
+    for group in form.groups:
+        matrix = matrix_of(group)
+        if matrix is None or COL_ZERO not in matrix.columns:
+            continue
+        if COL_SCALE not in matrix.columns:
+            continue
+        zi = matrix.columns.index(COL_ZERO)
+        si = matrix.columns.index(COL_SCALE)
+        for mrow in matrix.rows:
+            zero, scale = mrow.cells[zi], mrow.cells[si]
+            if zero is None or scale is None:
+                continue
+            try:
+                span = range_of(float(zero.value), float(scale.value))
+            except (TypeError, ValueError):
+                continue
+            if span is not None:
+                out[mrow.index] = span
+    return out
+
+
+def channel_units(form: "SettingsForm") -> dict[int, str]:
+    """채널 번호 → 단위 문자열.
+
+    🔴 `unit` 은 텔레메트리 필드이기도 하지만 기본 마스크에서 **꺼져 있다**
+       (규격 §7.2). 대역폭을 아끼려고 끈 것이고, 그렇다고 화면이 단위를
+       모를 이유는 없다 — 사용자가 설정에 적어 두었다.
+    """
+    out: dict[int, str] = {}
+    for group in form.groups:
+        matrix = matrix_of(group)
+        if matrix is None or COL_UNIT not in matrix.columns:
+            continue
+        ui = matrix.columns.index(COL_UNIT)
+        for mrow in matrix.rows:
+            cell = mrow.cells[ui]
+            if cell is not None and cell.value:
+                out[mrow.index] = cell.value
+    return out
+
+
+def _int_or(form: "SettingsForm", key: str, fallback: int, *,
+            minimum: int) -> int:
+    try:
+        value = int(float(form.row(key).value))
+    except (KeyError, TypeError, ValueError):
+        return fallback
+    return value if value >= minimum else fallback
 
 
 def _to_text(value: object) -> str:
@@ -198,6 +460,16 @@ class SettingsForm:
 
     def keys(self) -> list[str]:
         return list(self._rows)
+
+    @property
+    def fields(self) -> dict[int, object]:
+        """NDJSON 필드 비트들 — 보드가 `cfg_field` 로 알려 준 것 (규격 §7.3).
+
+        🔴 비트 목록을 호스트가 들고 있지 않다. 어떤 필드가 있는지, 무슨
+           이름인지, 기본으로 켜져 있는지 전부 보드가 말한다. 그래야 펌웨어가
+           필드를 늘려도 화면이 따라간다.
+        """
+        return dict(self._schema.fields)
 
     # ------------------------------------------------------------- 편집
 

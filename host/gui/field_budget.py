@@ -77,6 +77,57 @@ class Budget:
         return self.capacity_bytes_per_s - self.bytes_per_s
 
 
+#: 마스크로 끌 수 없는 필드들 (규격 §7.1). 표본에 언제나 들어간다.
+ALWAYS_ON = ("schema_ver", "seq", "t", "type")
+
+#: 필드 하나가 실을 **넉넉한** 표본값.
+#:
+#: 🔴 좁은 값으로 재면 실제보다 짧게 나오고, 짧게 나온 만큼이 정확히
+#:    여유가 없을 때 사라진다. 큰 쪽으로 잡는다 —
+#:    raw 는 24 비트 ADC 의 큰 쪽, connector_id 는 J9, time_source 는
+#:    규격의 네 값 중 가장 긴 것.
+_SAMPLE = {
+    "device_id": "board-01",
+    "time_source": "device_clock",
+    "time_quality": 3,
+    "raw": 8_388_607,
+    "unit": "L/min",
+    "status": 0,
+    "capture_counter": 4_294_967_295,
+    "connector_id": 9,
+}
+
+#: 실수 필드 — 자릿수가 `tx.float_digits` 를 따른다.
+_SAMPLE_FLOAT = {"ma": 19.999999, "value": 1234.567891}
+
+#: 모르는 필드에 넣을 자리끼움. 🔴 빼지 않는다 — 빼면 적게 잡는다.
+_UNKNOWN_PLACEHOLDER = "00000000"
+
+
+def sample_record(names, *, float_digits: int = 4) -> dict:
+    """고른 필드들로 **실제로 나갈 만한** 줄 하나를 만든다.
+
+    🔴 어림이 아니라 진짜 레코드를 만든다. `measure_line` 이 그것을 재고,
+       그래야 따옴표·쉼표·자릿수가 빠지지 않는다(모듈 머리말).
+
+    🔴 모르는 이름도 담는다. 보드가 규격을 올려 필드를 추가하면 호스트는
+       그 이름을 모르는데, 그때 빼고 재면 화면이 여유가 있다고 말하면서
+       실제로는 없는 상태가 된다.
+    """
+    rec: dict = {"schema_ver": 3, "seq": 4294967295, "t": 1_700_000_000_000,
+                 "type": "ain"}
+    for name in names:
+        if name in ALWAYS_ON:
+            continue
+        if name in _SAMPLE_FLOAT:
+            rec[name] = round(_SAMPLE_FLOAT[name], float_digits)
+        elif name in _SAMPLE:
+            rec[name] = _SAMPLE[name]
+        else:
+            rec[name] = _UNKNOWN_PLACEHOLDER
+    return rec
+
+
 def capacity_bytes_per_s(baud: int) -> float:
     """8N1 에서 초당 보낼 수 있는 바이트 수.
 

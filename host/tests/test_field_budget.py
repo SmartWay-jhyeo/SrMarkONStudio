@@ -12,6 +12,7 @@ from host.gui.field_budget import (
     compute_budget,
     format_bytes_per_s,
     measure_line,
+    sample_record,
 )
 
 
@@ -36,6 +37,47 @@ def test_capacity_accounts_for_start_and_stop_bits():
 
 def test_capacity_scales_with_baud():
     assert capacity_bytes_per_s(2_000_000) == 200_000.0
+
+
+# ----------------------------------------------------------------- 표본 줄
+
+def test_sample_always_carries_the_fields_that_cannot_be_turned_off():
+    """규격 §7.1 — `schema_ver` · `seq` · `t` · `type` 은 마스크로 못 끈다."""
+    rec = sample_record([])
+    assert set(rec) == {"schema_ver", "seq", "t", "type"}
+
+
+def test_sample_carries_exactly_what_was_selected():
+    rec = sample_record(["ma", "connector_id"])
+    assert "ma" in rec and "connector_id" in rec
+    assert "raw" not in rec and "unit" not in rec
+
+
+def test_an_unknown_field_is_counted_not_dropped():
+    """🔴 모르는 필드를 조용히 빼면 **적게** 잡는다.
+
+    보드가 규격을 올려 필드를 추가하면 호스트는 그 이름을 모른다. 그때
+    빼고 재면 화면은 여유가 있다고 말하는데 실제로는 없다 — 이 모듈이
+    막으려는 실패가 정확히 그것이다. 모르면 넉넉히 잡는다.
+    """
+    known = measure_line(sample_record(["ma"]))
+    unknown = measure_line(sample_record(["ma", "frobnicate"]))
+    assert unknown > known
+
+
+def test_more_float_digits_make_a_longer_line():
+    """🔴 자릿수가 전선을 먹는다. `tx.float_digits` 를 올리면 그만큼 늘어난다."""
+    short = measure_line(sample_record(["ma", "value"], float_digits=2))
+    long = measure_line(sample_record(["ma", "value"], float_digits=6))
+    assert long > short
+
+
+def test_sample_is_not_optimistic_about_width():
+    """🔴 넉넉한 값으로 잰다. 좁은 표본으로 재면 실제보다 작게 나오고,
+       작게 나온 만큼이 정확히 여유가 없을 때 문제가 된다."""
+    rec = sample_record(["raw", "connector_id"])
+    assert rec["raw"] >= 8_000_000        # 24비트 ADC 의 큰 쪽
+    assert rec["connector_id"] >= 9       # J9 — 커넥터 번호의 큰 쪽
 
 
 # ----------------------------------------------------------------- 줄 길이

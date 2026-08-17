@@ -9,6 +9,10 @@ from host.gui.settings_form import (
     Widget,
     build_row,
     group_label,
+    channel_ranges,
+    channel_units,
+    matrix_of,
+    telemetry_shape,
 )
 from tools.simulator.config_store import default_store
 from tools.simulator.device_sim import DeviceSim
@@ -55,8 +59,18 @@ def test_form_is_built_only_from_the_catalog(form):
     펌웨어를 단계로 올리므로 2단계에서 항목이 늘고 3단계에서 또 는다.
     호스트에 목록을 박아 두면 그때마다 GUI 를 다시 배포해야 하고, 보드마다
     펌웨어 버전이 다르면 맞출 방법이 없다.
+
+    🔴 그래서 개수를 **여기에도 적지 않는다.** 예전에는 `== 45` 였는데,
+       보드에 항목이 늘 때마다 이 시험이 깨졌다 — 하드코딩하지 말라는
+       시험이 정작 목록 길이를 하드코딩하고 있었다. 카탈로그가 스스로
+       말하는 수(`cfg_end` 의 `count`)와 대조한다.
     """
-    assert len(form.keys()) == 45
+    # `parse_catalog` 이 `cfg_end` 의 count 와 실제 줄 수를 이미 대조한다
+    # (config_schema §160) — 여기서는 폼이 그 항목들을 하나도 빠뜨리거나
+    # 더하지 않았는지만 본다.
+    schema = parse_catalog(_catalog_lines())
+    assert len(form.keys()) == len(schema.items)
+    assert sorted(form.keys()) == sorted(schema.items)
     assert "tx.period_ms" in form.keys()
 
 
@@ -292,6 +306,164 @@ def test_float_values_do_not_leak_repr_noise():
     row = build_row(item)
     assert row.default == "0.3"
     assert row.value == "4"
+
+
+# ------------------------------------------------------------------ 표 접기
+
+def _group(form: SettingsForm, name: str):
+    return next(g for g in form.groups if g.name == name)
+
+
+def test_repeated_items_fold_into_a_table(form):
+    """🔴 45개 항목 중 35개가 7채널 × 5속성이다. 그건 폼이 아니라 **표**다.
+
+    세로로 35줄을 쌓으면 스크롤이 길어지는 것도 문제지만, 더 큰 문제는
+    "J5 의 영점이 J6 보다 큰가" 를 볼 수 없다는 것이다. 채널끼리 비교하는
+    것이 이 화면의 주된 용도인데.
+    """
+    m = matrix_of(_group(form, "ain"))
+    assert m is not None
+    assert len(m.rows) == 7
+    assert len(m.columns) == 5
+
+
+def test_table_rows_and_columns_are_named_from_the_labels(form):
+    """🔴 열 제목을 하드코딩하지 않는다.
+
+    보드가 준 라벨이 `J3 영점` · `J4 영점` 처럼 생겼으므로, 한 채널의
+    라벨들이 **공통으로 가진 앞부분**이 행 이름이고 나머지가 열 이름이다.
+    보드가 라벨을 바꾸면 화면도 따라간다.
+    """
+    m = matrix_of(_group(form, "ain"))
+    assert [r.label for r in m.rows] == [f"J{i}" for i in range(3, 10)]
+    assert m.column_labels[0] == "사용"
+    assert "영점" in m.column_labels
+
+
+def test_table_cells_line_up_with_their_column(form):
+    m = matrix_of(_group(form, "ain"))
+    zero = m.column_labels.index("영점")
+    for row in m.rows:
+        assert row.cells[zero] is not None
+        assert row.cells[zero].key.endswith(".zero")
+
+
+def test_scalars_beside_a_repeating_set_do_not_block_the_table(form):
+    """🔴 그룹에 반복되지 않는 항목이 섞여 있어도 반복분은 접는다.
+
+    LED 그룹이 그렇다 — `체인 LED 수`·`밝기` 는 하나뿐이고 J21~J24 의
+    R·G·B 는 반복이다. 예전 규칙("하나라도 어긋나면 표가 아니다")은 이
+    그룹을 12줄로 늘어놓았다. 섞였다고 반복을 못 접을 이유가 없다.
+    """
+    m = matrix_of(_group(form, "led"))
+    assert m is not None
+    assert [r.label for r in m.rows] == [f"J{i}" for i in range(21, 25)]
+    assert len(m.columns) == 3                      # 빨강·초록·파랑
+    assert sorted(r.key for r in m.leftovers) == ["led.brightness",
+                                                  "led.count"]
+
+
+def test_a_group_that_does_not_repeat_stays_a_form(form):
+    """🔴 전송·ADC 는 표로 접을 것이 없다. 억지로 접으면 한 줄짜리
+       표가 되어 폼보다 읽기 나쁘다."""
+    assert matrix_of(_group(form, "tx")) is None
+    assert matrix_of(_group(form, "adc")) is None
+    assert matrix_of(_group(form, "dev")) is None
+
+
+def test_two_of_a_kind_is_not_a_table():
+    """🔴 반복이 적으면 표가 이득이 아니다. 헤더 줄이 본문보다 길어진다."""
+    from host.gui.settings_form import Group
+
+    rows = [
+        build_row(ConfigItem(key=f"x{i}.a", group="x", vtype="u8",
+                             default=1, current=1, label=f"X{i} 가"))
+        for i in range(2)
+    ] + [
+        build_row(ConfigItem(key=f"x{i}.b", group="x", vtype="u8",
+                             default=1, current=1, label=f"X{i} 나"))
+        for i in range(2)
+    ]
+    assert matrix_of(Group(name="x", rows=rows)) is None
+
+
+def test_a_missing_cell_leaves_a_hole_not_a_shifted_row():
+    """🔴 어떤 채널에만 있는 속성이 있어도 열이 밀리지 않는다.
+
+    밀리면 J5 의 영점 자리에 J6 의 스케일이 들어가고, 그 표는 조용히
+    거짓말을 한다. 없는 칸은 비워 둔다.
+    """
+    from host.gui.settings_form import Group
+
+    rows = [
+        build_row(ConfigItem(key="y0.a", group="y", vtype="u8",
+                             default=1, current=1, label="Y0 가")),
+        build_row(ConfigItem(key="y0.b", group="y", vtype="u8",
+                             default=1, current=1, label="Y0 나")),
+        build_row(ConfigItem(key="y1.a", group="y", vtype="u8",
+                             default=1, current=1, label="Y1 가")),
+        build_row(ConfigItem(key="y2.a", group="y", vtype="u8",
+                             default=1, current=1, label="Y2 가")),
+        build_row(ConfigItem(key="y2.b", group="y", vtype="u8",
+                             default=1, current=1, label="Y2 나")),
+    ]
+    m = matrix_of(Group(name="y", rows=rows))
+    assert m is not None
+    assert [c.key if c else None for c in m.rows[1].cells] == ["y1.a", None]
+
+
+# ------------------------------------------------------- 전송 모양
+
+def test_telemetry_shape_counts_only_the_channels_that_are_on(form):
+    """대역폭은 켜진 채널 수에 곱해진다 — 꺼진 것을 세면 겁만 준다."""
+    shape = telemetry_shape(form)
+    assert shape.channels == 1          # 시뮬레이터 기본값은 J3 하나
+    form.edit("ain1.enabled", "true")
+    assert telemetry_shape(form).channels == 2
+
+
+def test_telemetry_shape_reads_the_spec_named_keys(form):
+    """규격 §7.2 가 이름 지은 항목들 — `tx.period_ms` · `tx.float_digits`."""
+    shape = telemetry_shape(form)
+    assert shape.period_ms == 100
+    assert shape.float_digits == 4
+
+
+def test_telemetry_shape_survives_a_half_typed_number(form):
+    """🔴 사용자가 주기를 지우는 동안 값은 빈 문자열이다.
+
+    그때 예외가 나면 설정 화면이 통째로 죽는다 — 숫자 하나를 지웠을 뿐인데.
+    """
+    form.edit("tx.period_ms", "")
+    shape = telemetry_shape(form)
+    assert shape.period_ms > 0
+
+
+def test_channel_ranges_come_back_as_physical_numbers(form):
+    """🔴 게이지가 `0 – 150 bar` 를 그리려면 설정을 되짚어야 한다.
+
+    보드는 영점·스케일로 들고 있고 사람은 범위로 생각한다. 그 환산은
+    규격 §7.2.1 이 정했으므로 화면이 대신할 수 있다.
+    """
+    form.edit("ain0.zero", "4")
+    form.edit("ain0.scale", "9.375")
+    assert channel_ranges(form)[0] == (0.0, 150.0)
+
+
+def test_a_channel_with_no_scale_has_no_range(form):
+    """스케일이 0 이면 되짚을 수 없다 — 없는 것을 지어내지 않는다."""
+    form.edit("ain0.scale", "0")
+    assert 0 not in channel_ranges(form)
+
+
+def test_channel_units_come_from_the_settings(form):
+    """🔴 `unit` 필드는 기본 마스크에서 꺼져 있어 텔레메트리로 안 온다.
+
+    그래도 사용자는 그것을 설정에 적어 두었다. 화면이 `150` 이 아니라
+    `150 bar` 라고 말할 수 있는 근거가 거기 있다.
+    """
+    form.edit("ain0.unit", "bar")
+    assert channel_units(form)[0] == "bar"
 
 
 def test_imports_no_qt():

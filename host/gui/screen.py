@@ -29,11 +29,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from host.gui.last_known import StateHistory, build_chip_state
+from host.gui.widgets.loop_gauge import LOOP_MAX_MA, LOOP_MIN_MA
 from host.gui.widgets.status_chip import Level, Verification, rail_label
 
 #: AIN0 이 J3 이다 (데이터시트 §5.3).
 CONNECTOR_OFFSET = 3
 AIN_COUNT = 7
+
+#: 채널마다 들고 있는 이력 표본 수.
+#:
+#: 🔴 무한히 자라면 안 된다 — 벤치에 하루 켜 두면 그만큼 먹는다.
+#:    600 은 100 ms 주기에서 1 분이다. 카드의 트레이스 폭이 300 px 남짓이라
+#:    그보다 촘촘해져도 화면에서 구분되지 않는다.
+TRACE_LEN = 600
 
 #: 전원 레일. 순서는 **기동 순서**다 — 5V 가 먼저 올라가고 24V 가 마지막이다.
 #: 화면도 그 순서로 늘어놓아야 사용자가 순차 기동을 눈으로 따라갈 수 있다.
@@ -96,6 +104,79 @@ class ChannelState:
     unit: str = ""
     note: str = ""
 
+    trace: tuple[float | None, ...] = ()
+    """최근 이력. 오래된 것이 앞, 방금 것이 뒤. **레코드 하나가 표본 하나다.**
+
+    🔴 `None` 은 **그때 선이 끊겼다** 는 뜻이다(연결 끊김). 직전 값을 복사해
+       채우지 않는다 — 선은 매끈해지지만 화면이 오지 않은 값을 온 것처럼
+       그리게 된다.
+
+    🔴 채널마다 길이가 다를 수 있다. 수집 주기가 채널마다 따로이기 때문이다
+       (`ainN.period_ms`). 길이를 억지로 맞추려고 조용한 채널에 구멍을
+       채우면 **오지도 않은 시각**을 화면이 지어내게 된다.
+    """
+
+    span: tuple[float, float] | None = None
+    """이 채널 센서의 물리량 범위 — (4 mA 일 때, 20 mA 일 때).
+
+    🔴 **설정이지 텔레메트리가 아니다.** 사용자가 정한 것이고, 값이 잠깐
+       끊겼다고 사라지지 않는다. 게이지가 `0 – 150 bar` 눈금을 그리는 근거다.
+    """
+
+    trace_t: tuple[int | None, ...] = ()
+    """`trace` 와 같은 길이의, 보드가 찍은 시각(ms).
+
+    🔴 화면이 시각을 **지어내지 않는다**(설계 원칙 2). 주기를 100 ms 로
+       가정해 인덱스에 곱하면 주기를 바꾸는 순간 화면이 조용히 틀린 시각을
+       말한다. 규격 §7.1 에 따라 `t` 는 마스크와 무관하게 항상 실리므로
+       가정할 이유가 없다.
+
+    🔴 공유 크로스헤어가 이 위에 서 있다. 일곱 계기를 같은 순간으로
+       돌려세우는 기준은 인덱스가 아니라 **이 시각**이다.
+    """
+
+
+@dataclass(frozen=True)
+class Collection:
+    """수집이 지금 어떻게 되고 있나 — 카드 일곱 장을 한 줄로 요약한 것.
+
+    🔴 여기 있는 수는 전부 **온 것에서** 센다. 설정값은 요청이고 이것은
+       실제다. 둘이 다르면 그 차이가 곧 사용자가 알아야 할 사실이다.
+    """
+
+    total: int = AIN_COUNT
+    live: int = 0
+    broken: int = 0
+    over: int = 0
+    interval_ms: float | None = None
+
+
+def summarize(channels: tuple[ChannelState, ...]) -> Collection:
+    """채널들을 한 줄 요약으로.
+
+    🔴 값이 안 오는 채널을 고장으로 세지 않는다 (설계 원칙 3 — 센서 미연결은
+       정상 상태다). 비활성 커넥터를 고장으로 세면 화면이 늘 빨갛고,
+       그러면 진짜 고장이 묻힌다.
+    """
+    live = broken = over = 0
+    gaps: list[int] = []
+    for ch in channels:
+        if ch.ma is None:
+            continue
+        live += 1
+        if ch.ma < LOOP_MIN_MA:
+            broken += 1
+        elif ch.ma > LOOP_MAX_MA:
+            over += 1
+        stamps = [t for t in ch.trace_t if t is not None]
+        gaps += [b - a for a, b in zip(stamps, stamps[1:]) if b > a]
+
+    gaps.sort()
+    #: 중앙값을 쓴다 — 한 번 늦은 것이 평균을 끌고 가면 안 된다.
+    interval = float(gaps[len(gaps) // 2]) if gaps else None
+    return Collection(total=len(channels) or AIN_COUNT, live=live,
+                      broken=broken, over=over, interval_ms=interval)
+
 
 @dataclass(frozen=True)
 class ScreenState:
@@ -103,6 +184,12 @@ class ScreenState:
 
     identity: Identity = field(default_factory=Identity)
     mode: str = ""
+    ctl_mode: str = "ACTIVE"
+    """제어 모드 (규격 §6.4). `mode` 와 **다른 축**이다.
+
+    🔴 화면이 이것을 눈에 띄게 말해야 한다. 테스트인 줄 알고 공정을 돌리거나
+       운전 중인 줄 모르고 밸브를 흔드는 것이 이 시스템에서 가장 나쁜 사고다.
+    """
     link: Link = field(default_factory=Link)
     reachable: bool = False
     rails: tuple[RailState, ...] = ()
@@ -152,7 +239,9 @@ def build_rails(values: dict[str, bool], *, reachable: bool,
 
 def build_screen(previous: ScreenState, *, identity: Identity, mode: str,
                  error, rail_values: dict[str, bool], records,
-                 history: StateHistory,
+                 history: StateHistory, ctl_mode: str = "ACTIVE",
+                 ranges: dict[int, tuple[float, float]] | None = None,
+                 units: dict[int, str] | None = None,
                  now_s: float | None = None) -> ScreenState:
     """워커 결과 하나를 **다음 화면 상태**로.
 
@@ -172,17 +261,22 @@ def build_screen(previous: ScreenState, *, identity: Identity, mode: str,
     return ScreenState(
         identity=identity,
         mode=mode,
+        ctl_mode=ctl_mode,
         link=link,
         reachable=reachable,
         rails=build_rails(rail_values, reachable=reachable,
                           history=history, now_s=now),
         channels=build_channels(records, reachable=reachable,
-                                previous=previous.channels),
+                                previous=previous.channels, ranges=ranges,
+                                units=units),
     )
 
 
 def build_channels(records, *, reachable: bool,
-                   previous: tuple[ChannelState, ...] = ()) -> tuple[ChannelState, ...]:
+                   previous: tuple[ChannelState, ...] = (),
+                   ranges: dict[int, tuple[float, float]] | None = None,
+                   units: dict[int, str] | None = None,
+                   ) -> tuple[ChannelState, ...]:
     """텔레메트리 레코드를 채널 상태로.
 
     🔴 채널 장애 격리 — 레코드가 오지 않은 채널은 **건드리지 않는다.**
@@ -193,9 +287,24 @@ def build_channels(records, *, reachable: bool,
        그것이 지금 값으로 읽힌다.
     """
     base = {ch.index: ch for ch in (previous or empty_channels())}
+    # 🔴 범위는 설정이라 레코드와 무관하게 매번 다시 얹는다. 값이 안 온
+    #    채널도, 연결이 끊긴 동안에도 눈금은 그대로여야 한다.
+    spans = ranges or {}
+    labels = units or {}
+    for i in base:
+        base[i] = replace(base[i], span=spans.get(i),
+                          unit=labels.get(i, base[i].unit))
+
     if not reachable:
+        # 🔴 현재값은 지우고 **이력은 남긴다.** 현재값을 계속 띄우면 지금
+        #    값으로 읽히지만, 이력은 과거라 남겨도 거짓말이 아니다 —
+        #    오히려 "끊기기 직전에 이랬다" 가 필요한 정보다.
         return tuple(
-            ChannelState(i, f"J{i + CONNECTOR_OFFSET}") for i in sorted(base)
+            ChannelState(i, f"J{i + CONNECTOR_OFFSET}",
+                         span=base[i].span,
+                         trace=_gap(base[i].trace),
+                         trace_t=_gap_t(base[i].trace, base[i].trace_t))
+            for i in sorted(base)
         )
 
     for rec in records or ():
@@ -208,13 +317,57 @@ def build_channels(records, *, reachable: bool,
         if index not in base:
             continue
         ma = rec.get("ma")
+        ma = float(ma) if isinstance(ma, (int, float)) else None
         value = rec.get("value")
+        stamp = rec.get("t")
+        # 🔴 **레코드 하나가 표본 하나다.** 한 스텝에 두 개가 오면 둘 다
+        #    쌓는다. 스텝당 하나만 담았더니, 워커 주기(100 ms)와 텔레메트리
+        #    주기(100 ms)가 겹치는 스텝에서 절반이 조용히 버려졌고 화면은
+        #    보드가 실제보다 느린 것처럼 그렸다.
+        #
+        #    채널마다 길이가 달라져도 상관없다 — 시각을 맞추는 일은
+        #    인덱스가 아니라 보드가 찍은 `t` 가 한다.
         base[index] = replace(
             base[index],
-            ma=float(ma) if isinstance(ma, (int, float)) else None,
+            ma=ma,
             level=Level.OK if not rec.get("status", 0) else Level.WARN,
             verification=Verification.VERIFIED,
             value=float(value) if isinstance(value, (int, float)) else None,
-            unit=str(rec.get("unit", "")),
+            # 🔴 레코드가 단위를 안 실었으면 **덮지 않는다.** 기본 마스크에서
+            #    꺼져 있는 필드라(규격 §7.2), 덮으면 설정에서 채워 둔 단위를
+            #    매 레코드마다 지우게 된다.
+            unit=(str(rec["unit"]) if "unit" in rec
+                  else base[index].unit),
+            trace=_push(base[index].trace, ma),
+            trace_t=_push(base[index].trace_t,
+                          stamp if isinstance(stamp, int) else None),
         )
+
     return tuple(base[i] for i in sorted(base))
+
+
+def _push(seq: tuple, value) -> tuple:
+    return (seq + (value,))[-TRACE_LEN:]
+
+
+def _gap(trace: tuple[float | None, ...]) -> tuple[float | None, ...]:
+    """끊긴 자리를 하나만 남긴다.
+
+    🔴 워커는 끊긴 동안에도 초당 열 번 돈다. 스텝마다 구멍을 넣으면 1 분 뒤
+       트레이스가 통째로 `None` 이 되어 마지막으로 알던 값이 사라진다.
+    """
+    if trace and trace[-1] is None:
+        return trace
+    return _push(trace, None)
+
+
+def _gap_t(trace: tuple[float | None, ...],
+           trace_t: tuple[int | None, ...]) -> tuple[int | None, ...]:
+    """시각 쪽도 값 쪽과 **똑같이** 민다.
+
+    🔴 판정 기준은 `trace` 다. 둘이 따로 판단하면 길이가 어긋나고, 그때
+       커서가 한 칸 옆의 시각을 읽는다.
+    """
+    if trace and trace[-1] is None:
+        return trace_t
+    return _push(trace_t, None)

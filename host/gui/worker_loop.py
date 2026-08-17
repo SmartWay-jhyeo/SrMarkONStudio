@@ -19,6 +19,8 @@ class StepResult:
     results: list[Result] = field(default_factory=list)
     heartbeat_sent: bool = False
     mode: str = "RUN"
+    #: 제어 모드 (규격 §6.4). 접속 모드와 **다른 축**이다.
+    ctl_mode: str = "ACTIVE"
     #: 하트비트 전송이 실패한 경우.
     heartbeat_error: str | None = None
     #: 텔레메트리 수신이 실패한 경우.
@@ -112,6 +114,7 @@ class WorkerLoop:
 
         out.records, out.records_discontinuity = self._collect_records()
         out.mode = getattr(self.service, "mode", "RUN")
+        out.ctl_mode = getattr(self.service, "ctl_mode", "ACTIVE")
         return out
 
     def _collect_records(self) -> tuple[list, bool]:
