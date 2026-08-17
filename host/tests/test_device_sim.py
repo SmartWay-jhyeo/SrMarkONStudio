@@ -2,7 +2,13 @@ from host.core.config_schema import parse_catalog
 from host.core.framing import build_command, parse_line
 from host.core.records import parse_record
 from tools.simulator.config_store import default_store
-from tools.simulator.device_sim import HB_TIMEOUT_MS, DeviceSim, Mode
+from host.core.errors import Reason
+from tools.simulator.device_sim import (
+    HB_TIMEOUT_MS,
+    CtlMode,
+    DeviceSim,
+    Mode,
+)
 
 
 def _sim() -> DeviceSim:
@@ -322,3 +328,105 @@ def test_tick_emits_hb_once_per_second():
     sim = _sim()
     assert any(ln.startswith("$HB") for ln in sim.tick(1000))
     assert not any(ln.startswith("$HB") for ln in sim.tick(1500))
+
+
+# --------------------------------------------------------- 제어 모드 (§6.4)
+
+def _config_sim() -> DeviceSim:
+    """하트비트를 넣어 CONFIG 로 만든 시뮬레이터."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    return sim
+
+
+def test_boots_in_active_control_mode():
+    """🔴 부팅 기본값은 ACTIVE 다. 보드는 혼자서도 제 일을 해야 한다."""
+    assert _sim().ctl_mode == CtlMode.ACTIVE
+
+
+def test_test_mode_needs_someone_watching():
+    """🔴 RUN 에서는 TEST 로 못 들어간다.
+
+    사람이 보지 않는데 테스트일 수 없다. TEST 의 안전장치가 하트비트
+    데드맨이므로, 하트비트 없이 TEST 에 들어가면 그 안전장치가 없다.
+    """
+    sim = _sim()                                   # RUN
+    ack = _sack(sim.feed(build_command("MODE", "TEST")))
+    assert ack.args[-1] == Reason.MODE
+    assert sim.ctl_mode == CtlMode.ACTIVE
+
+
+def test_entering_and_leaving_test_mode():
+    sim = _config_sim()
+    assert _sack(sim.feed(build_command("MODE", "TEST"))).args[-1] == "OK"
+    assert sim.ctl_mode == CtlMode.TEST
+    assert _sack(sim.feed(build_command("MODE", "ACTIVE"))).args[-1] == "OK"
+    assert sim.ctl_mode == CtlMode.ACTIVE
+
+
+def test_an_unknown_control_mode_is_rejected():
+    sim = _config_sim()
+    ack = _sack(sim.feed(build_command("MODE", "PROBING")))
+    assert ack.args[-1] == Reason.RANGE
+    assert sim.ctl_mode == CtlMode.ACTIVE
+
+
+def test_stat_reports_both_axes():
+    """🔴 두 축은 독립이다. 호스트가 둘 다 감시할 수 있어야 한다."""
+    sim = _config_sim()
+    sim.feed(build_command("MODE", "TEST"))
+    rec = parse_record(next(ln for ln in sim.feed(build_command("STAT"))
+                            if ln.startswith("{")))
+    assert rec["mode"] == Mode.CONFIG
+    assert rec["ctl_mode"] == CtlMode.TEST
+
+
+def test_test_mode_does_not_save_outputs():
+    """🔴 벤치에서 밸브를 한 번 열어 본 것이 플래시에 남으면 안 된다."""
+    sim = _config_sim()
+    sim.feed(build_command("MODE", "TEST"))
+    sim.feed(build_command("CFG", "SET", "pwr.24v", "true"))
+    sim.feed(build_command("CFG", "SAVE"))
+    assert sim.store.saved_value("pwr.24v") is not True
+
+
+def test_active_mode_saves_outputs():
+    sim = _config_sim()
+    sim.feed(build_command("CFG", "SET", "pwr.24v", "true"))
+    sim.feed(build_command("CFG", "SAVE"))
+    assert sim.store.saved_value("pwr.24v") is True
+
+
+def test_losing_the_host_ends_the_test_and_drops_the_outputs():
+    """🔴 하트비트가 이미 데드맨이다. 사람이 안 보면 테스트 출력은 꺼진다."""
+    sim = _config_sim()
+    sim.feed(build_command("MODE", "TEST"))
+    sim.feed(build_command("CFG", "SET", "pwr.24v", "true"))
+    assert sim.store.get("pwr.24v") is True
+
+    sim.tick(HB_TIMEOUT_MS + 1)                    # 호스트가 사라졌다
+
+    assert sim.mode == Mode.RUN
+    assert sim.ctl_mode == CtlMode.ACTIVE
+    assert sim.store.get("pwr.24v") is False
+
+
+def test_the_safe_state_is_the_default_not_zero():
+    """🔴 안전 상태는 "전부 꺼짐" 이 아니라 **정의된 상태**다.
+
+    `pwr.5v` 의 기본값은 켜짐이다 — 쿨링 팬과 ADS1256 의 아날로그 전원이
+    거기 걸려 있다. 테스트를 끝냈다고 팬을 세우면 안 된다.
+    """
+    sim = _config_sim()
+    sim.feed(build_command("MODE", "TEST"))
+    sim.feed(build_command("CFG", "SET", "pwr.5v", "false"))
+    sim.tick(HB_TIMEOUT_MS + 1)
+    assert sim.store.get("pwr.5v") is True
+
+
+def test_active_mode_keeps_outputs_when_the_host_leaves():
+    """운전 중이면 호스트가 사라져도 출력은 그대로다 — 보드가 혼자 돈다."""
+    sim = _config_sim()
+    sim.feed(build_command("CFG", "SET", "pwr.24v", "true"))
+    sim.tick(HB_TIMEOUT_MS + 1)
+    assert sim.store.get("pwr.24v") is True

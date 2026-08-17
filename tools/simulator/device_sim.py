@@ -26,8 +26,21 @@ AIN_CHANNELS = 7
 
 
 class Mode:
+    """접속 모드 — 하트비트로 **관측**된다 (규격 §6.2)."""
+
     CONFIG = "CONFIG"
     RUN = "RUN"
+
+
+class CtlMode:
+    """제어 모드 — `$MODE` 로 **선언**된다 (규격 §6.4).
+
+    🔴 `Mode` 와 다른 축이다. 같은 명령(밸브 열기)이 벤치에서는 배선 확인이고
+       운전 중에는 공정을 돌리는 일이라, 항목의 성질로는 구분할 수 없다.
+    """
+
+    TEST = "TEST"
+    ACTIVE = "ACTIVE"
 
 
 #: CONFIG 모드에서만 받는 $CFG 하위 명령 (규격 §4)
@@ -50,15 +63,48 @@ class DeviceSim:
         self._last_hb_tx_ms = 0
         self._last_emit_ms = 0
         self._boot_ms = 0
+        # 🔴 부팅 기본값은 ACTIVE 다 (규격 §6.4). 보드는 혼자서도 제 일을
+        #    해야 하고, 테스트는 사람이 명시적으로 들어가는 상태다.
+        self._ctl_mode = CtlMode.ACTIVE
 
     # ------------------------------------------------------------------ 모드
     @property
     def mode(self) -> str:
+        """접속 모드 — 하트비트로 **관측**된다 (규격 §6.2)."""
         if self._last_hb_rx_ms is None:
             return Mode.RUN
         if self._now_ms - self._last_hb_rx_ms > HB_TIMEOUT_MS:
             return Mode.RUN
         return Mode.CONFIG
+
+    @property
+    def ctl_mode(self) -> str:
+        """제어 모드 — `$MODE` 로 **선언**된다 (규격 §6.4).
+
+        🔴 접속 모드와 다른 축이다. 하나는 "사람이 보고 있나", 다른 하나는
+           "이 명령이 무슨 뜻인가" 다. 한 변수에 섞지 않는다.
+        """
+        return self._ctl_mode
+
+    def _on_mode(self, args: tuple[str, ...]) -> list[str]:
+        want = (args[0].upper() if args else "")
+        if want not in (CtlMode.TEST, CtlMode.ACTIVE):
+            return [self._sack("MODE", "ERR", Reason.RANGE)]
+
+        # 🔴 TEST 는 CONFIG 안에서만 산다. TEST 의 안전장치가 하트비트
+        #    데드맨이므로, 하트비트 없이 들어가면 그 장치가 없는 상태가 된다.
+        if want == CtlMode.TEST and self.mode != Mode.CONFIG:
+            return [self._sack("MODE", "ERR", Reason.MODE)]
+
+        if want != self._ctl_mode:
+            self._leave_test_if_needed(want)
+            self._ctl_mode = want
+        return [self._sack("MODE", "OK")]
+
+    def _leave_test_if_needed(self, going_to: str) -> None:
+        """TEST 를 벗어나면 출력을 안전 상태로 되돌린다 (규격 §6.4)."""
+        if self._ctl_mode == CtlMode.TEST and going_to != CtlMode.TEST:
+            self.store.revert_outputs()
 
     # ------------------------------------------------------------- 수신 처리
     def feed(self, line: str) -> list[str]:
@@ -84,6 +130,7 @@ class DeviceSim:
             "ID": self._on_id,
             "STAT": self._on_stat,
             "CFG": self._on_cfg,
+            "MODE": self._on_mode,
         }.get(cmd.verb)
 
         if handler is None:
@@ -114,6 +161,7 @@ class DeviceSim:
             self._json(
                 type="stat",
                 mode=self.mode,
+                ctl_mode=self.ctl_mode,
                 fw=self.fw,
                 board_rev=self.board_rev,
                 # 🔴 `t` 의 기준점을 호스트가 알 수 있게 여기서 알려준다.
@@ -167,7 +215,10 @@ class DeviceSim:
                 return [self._sack("CFG", "OK")]
 
             if sub == "SAVE":
-                self.store.save()
+                # 🔴 TEST 에서는 출력 항목을 건너뛴다 (규격 §6.4). 벤치에서
+                #    배선을 보려고 밸브를 한 번 열어 본 것이 플래시에 남아
+                #    다음 부팅에 되살아나면 안 된다.
+                self.store.save(skip_outputs=self._ctl_mode == CtlMode.TEST)
                 return [self._sack("CFG", "OK")]
 
             if sub == "RESET":
@@ -184,6 +235,14 @@ class DeviceSim:
         """시각을 진행시키고 이번에 내보낼 줄들을 반환한다."""
         self._now_ms = now_ms
         out: list[str] = []
+
+        # 🔴 호스트가 사라지면 테스트도 끝난다 (규격 §6.4). 하트비트가 이미
+        #    데드맨이므로 방아쇠를 새로 만들지 않는다 — 그리고 그것이 옳은
+        #    방아쇠다. 하트비트는 케이블이 아니라 **저쪽에서 사람이 보고
+        #    있는지**를 알려 준다.
+        if self._ctl_mode == CtlMode.TEST and self.mode != Mode.CONFIG:
+            self.store.revert_outputs()
+            self._ctl_mode = CtlMode.ACTIVE
 
         if now_ms - self._last_hb_tx_ms >= HB_EMIT_PERIOD_MS:
             self._last_hb_tx_ms = now_ms

@@ -96,6 +96,13 @@ class SimConfigItem:
     #: 참이면 값 변경 시도를 INTERLOCK 으로 거부한다 (현재값과 같으면 통과)
     interlocked: bool = False
 
+    #: 참이면 이 항목이 **실제 출력을 움직인다** (전원 레일·밸브·LED).
+    #:
+    #: 🔴 TEST 제어 모드에서는 저장되지 않고, 모드를 벗어날 때 기본값으로
+    #:    돌아간다 (규격 §6.4). 항목 이름으로 짐작하지 않도록 보드가
+    #:    카탈로그에 실어 보낸다.
+    out: bool = False
+
 
 class ConfigStore:
     """설정 항목 보관, 검증, 영속."""
@@ -107,6 +114,9 @@ class ConfigStore:
         self.load_failed = False
         #: load() 가 거부하고 기본값을 유지한 키들
         self.rejected_keys: list[str] = []
+        #: 마지막 save() 가 남긴 값들 — "플래시에 무엇이 들어 있나".
+        #: 🔴 TEST 에서 출력을 건너뛰었는지 확인할 방법이 이것뿐이다.
+        self._saved: dict[str, object] = {}
 
     # ------------------------------------------------------------------ 조회
     def get(self, key: str) -> object:
@@ -175,15 +185,47 @@ class ConfigStore:
             item.current = item.default
         self.dirty = True
 
+    def revert_outputs(self) -> list[str]:
+        """출력 항목만 기본값으로. 되돌린 키들을 돌려준다 (규격 §6.4).
+
+        🔴 "안전 상태" 는 전부 꺼짐이 아니라 **각 항목의 기본값**이다.
+           `pwr.5v` 의 기본값은 켜짐이고, 거기에 쿨링 팬과 ADS1256 의
+           아날로그 전원이 걸려 있다 — 테스트를 끝냈다고 팬을 세우면 안 된다.
+        """
+        changed = []
+        for key, item in self.items.items():
+            if item.out and item.current != item.default:
+                item.current = item.default
+                changed.append(key)
+        if changed:
+            self.dirty = True
+        return changed
+
     # ---------------------------------------------------------------- 영속화
-    def save(self) -> None:
-        if self.path is None:
-            self.dirty = False
-            return
-        payload = {k: i.current for k, i in self.items.items()}
-        self.path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+    def saved_value(self, key: str) -> object:
+        """마지막 `save()` 가 남긴 값. 없으면 `None`.
+
+        플래시에 무엇이 들어 있는지를 시험과 화면이 물어볼 수 있어야 한다 —
+        TEST 에서 출력을 건너뛰었는지 확인할 방법이 그것뿐이다.
+        """
+        return self._saved.get(key)
+
+    def save(self, *, skip_outputs: bool = False) -> None:
+        """🔴 `skip_outputs` 는 TEST 제어 모드에서 참이다 (규격 §6.4).
+
+        벤치에서 배선을 보려고 밸브를 한 번 열어 본 것이 플래시에 남아
+        다음 부팅에 되살아나면 안 된다.
+        """
+        keep = {
+            k: i.current for k, i in self.items.items()
+            if not (skip_outputs and i.out)
+        }
+        self._saved.update(keep)
+        if self.path is not None:
+            self.path.write_text(
+                json.dumps(self._saved, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         self.dirty = False
 
     def load(self) -> None:
@@ -264,6 +306,11 @@ class ConfigStore:
                 "ro": item.readonly,
                 "label": item.label,
             }
+            # 🔴 출력 항목만 표시한다. 대부분의 항목에 붙지 않는 필드를
+            #    전부에 실으면 카탈로그가 그만큼 길어지고, 카탈로그는
+            #    115200 에서 몇 초씩 걸린다.
+            if item.out:
+                rec["out"] = True
             if item.minimum is not None:
                 rec["min"] = item.minimum
             if item.maximum is not None:
@@ -438,19 +485,89 @@ def default_store(path: Path | None = None) -> ConfigStore:
         #    고정이므로 사용자가 핀을 알아야 할 이유가 없고, 알려 주면 임의로
         #    바꿀 수 있다는 인상을 준다.
         SimConfigItem("pwr.24v", "pwr", "bool", False, False,
-                      label="24V 전원"),
+                      label="24V 전원", out=True),
         SimConfigItem("pwr.14v9", "pwr", "bool", False, False,
-                      label="14.9V 전원"),
+                      label="14.9V 전원", out=True),
         SimConfigItem(
             # 🔴 5V 도 끌 수 있다 (사용자 확정 2026-08-14). 막지 않는 대신
             #    무엇이 함께 멈추는지 note 가 말하고, 화면이 그 문구를
             #    그대로 띄운다(규격 §7.3).
-            "pwr.5v", "pwr", "bool", True, True, label="5V 전원",
+            "pwr.5v", "pwr", "bool", True, True, label="5V 전원", out=True,
             note="끄면 쿨링 팬·아날로그 수집·WS2812 가 함께 멈춘다",
         ),
         SimConfigItem("pwr.seq_delay_ms", "pwr", "u16", 500, 500,
                       minimum=0, maximum=5000, unit="ms", label="레일 기동 간격"),
+
+        # ── 디지털 출력 (데이터시트 §5.7) ──────────────────────────
+        #
+        # 🔴 MCU GPIO 가 커넥터에 직결이다 — 버퍼도 직렬저항도 클램프도
+        #    없다. 핀당 20 mA 가 상한이라 밸브를 직접 못 구동하고, 외부
+        #    옵토커플러/드라이버 모듈이 반드시 붙는다. 그 사실을 note 로
+        #    실어 보내 화면이 그대로 띄우게 한다.
+        #
+        # 🔴 보드는 3채널이지만 하우징 설계는 2채널로 확정됐다(§5.7). 남는
+        #    한 채널을 감추지 않는다 — 보드에 있는 것은 보드가 말한다.
+        SimConfigItem("sol.j18", "sol", "bool", False, False,
+                      label="J18 출력", out=True,
+                      note="외부 옵토·드라이버 필요 — 핀당 20 mA 가 상한이다"),
+        SimConfigItem("sol.j19", "sol", "bool", False, False,
+                      label="J19 출력", out=True,
+                      note="외부 옵토·드라이버 필요 — 핀당 20 mA 가 상한이다"),
+        SimConfigItem("sol.j20", "sol", "bool", False, False,
+                      label="J20 출력", out=True,
+                      note="외부 옵토·드라이버 필요 — 핀당 20 mA 가 상한이다"),
+
+        # ── WS2812 LED 체인 (데이터시트 §5.8) ──────────────────────
+        SimConfigItem(
+            "led.count", "led", "u8", 0, 0, minimum=0, maximum=4,
+            label="체인 LED 수", out=True,
+            note="J21 부터 순서대로 채운다 — 중간이 비면 뒤쪽이 동작하지 않는다",
+        ),
+        SimConfigItem(
+            "led.brightness", "led", "u8", 64, 64, minimum=0, maximum=255,
+            label="밝기", out=True,
+            note="5V 레일이 꺼져 있으면 LED 가 켜지지 않는다",
+        ),
     ]
+
+    # 🔴 색을 0xRRGGBB 한 덩이로 두지 않는다. 그러면 화면에 생짜 숫자가
+    #    떠서 손으로 계산해야 한다 — 필드 마스크가 `698` 로 보이던 것과
+    #    같은 문제다. R·G·B 세 항목으로 두면 각각 0~255 이고, 반복 구조라
+    #    화면이 표로 접는다.
+    for lamp in range(21, 25):                   # J21 ~ J24
+        items += [
+            SimConfigItem(f"led{lamp}.r", "led", "u8", 0, 0,
+                          minimum=0, maximum=255, label=f"J{lamp} 빨강", out=True),
+            SimConfigItem(f"led{lamp}.g", "led", "u8", 0, 0,
+                          minimum=0, maximum=255, label=f"J{lamp} 초록", out=True),
+            SimConfigItem(f"led{lamp}.b", "led", "u8", 0, 0,
+                          minimum=0, maximum=255, label=f"J{lamp} 파랑", out=True),
+        ]
+
+    # ── I2C 센서 포트 (데이터시트 §5.4) ────────────────────────────
+    #
+    # 🔴 짝 커넥터는 **같은 버스**다. J10·J11 은 물리적으로 같은 I2C3 에
+    #    병렬로 붙어 있어 같은 주소를 함께 쓰면 충돌한다. 그 사실을 포트마다
+    #    실어 보낸다 — 화면이 경고할 유일한 근거다.
+    _I2C_BUS = {10: "I2C3", 11: "I2C3", 12: "I2C5",
+                13: "I2C5", 14: "I2C1", 15: "I2C1"}
+    for port, bus in _I2C_BUS.items():
+        items += [
+            # 🔴 버스를 **열로** 준다. 포트마다 "J10·J11 은 같은 버스" 라고
+            #    풀어 쓰면 표에 같은 문장이 여섯 번 반복돼 정작 값이 안
+            #    읽힌다. 어느 포트가 한 버스인지는 열을 훑으면 보인다.
+            SimConfigItem(f"i2c{port}.bus", "i2c", "str", bus, bus,
+                          maximum=7, readonly=True, label=f"J{port} 버스",
+                          note="같은 버스에 물린 두 포트는 주소가 겹치면 안 된다"),
+            SimConfigItem(f"i2c{port}.enabled", "i2c", "bool", False, False,
+                          label=f"J{port} 사용"),
+            # 7비트 주소의 쓸 수 있는 구간. 0x00~0x07 과 0x78~0x7F 은 예약이다.
+            SimConfigItem(f"i2c{port}.addr", "i2c", "u8", 0, 0,
+                          minimum=0x08, maximum=0x77, label=f"J{port} 주소"),
+            SimConfigItem(f"i2c{port}.period_ms", "i2c", "u16", 200, 200,
+                          minimum=10, maximum=60000, unit="ms",
+                          label=f"J{port} 주기"),
+        ]
 
     for ch in range(7):
         connector = ch + 3                       # AIN0 → J3
