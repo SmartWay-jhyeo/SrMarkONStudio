@@ -179,13 +179,35 @@ static void spi_init(void)
     HAL_NVIC_EnableIRQ(SPI4_IRQn);
 }
 
+/* 마이크로초 바쁜 대기.
+ *
+ * 🔴 SysTick 이나 타이머를 쓰지 않는다. 여기는 SPI 완료 인터럽트 안이고,
+ *    쉬어야 하는 시간이 7 us 다 — SPI 한 바이트(500 kHz 에서 16 us)보다
+ *    짧다. 타이머로 갔다 오면 그 왕복이 더 길고, 상태머신을 인터럽트
+ *    바깥으로 끌어내는 큰 수술이 된다.
+ *
+ * 🔴 DWT 사이클 카운터를 쓰지 않고 루프로 센다. DWT 는 디버거가 붙어 있지
+ *    않으면 켜져 있지 않을 수 있고(TRCENA), 그 경우 조용히 0 을 돌려주며
+ *    지연이 통째로 사라진다 — 지금 고치려는 바로 그 증상으로 되돌아간다.
+ *
+ * 클럭은 64 MHz(main.c SystemClock_Config). 한 바퀴에 최소 3사이클로 보아
+ * 넉넉히 잡는다 — 남는 것은 무해하고 모자라면 값이 틀린다. */
+static void io_delay_us(void *ctx, uint32_t us)
+{
+    (void)ctx;
+    volatile uint32_t n = us * (64u / 3u + 1u);
+    while (n--) {
+        __asm volatile ("nop");
+    }
+}
+
 void mk_ads_io_init(MkAds *a)
 {
     s_ads = a;
     gpio_init();
     spi_init();
 
-    MkAdsIo io = { io_cs, io_transfer, NULL };
+    MkAdsIo io = { io_cs, io_transfer, io_delay_us, NULL };
     /* 🔴 DRDY 타임아웃을 500 ms 로 둔다. 가장 느린 DRATE(2.5 SPS)의 정착이
      *    400.18 ms 이므로(ADS1256.pdf p.20 Table 13) 그보다 넉넉해야 한다.
      *    이보다 짧게 잡으면 느린 설정에서 정상 변환을 고장으로 오인한다. */

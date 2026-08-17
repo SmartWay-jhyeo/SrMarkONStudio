@@ -59,14 +59,34 @@
 typedef struct {
     void (*cs)(void *ctx, int low);
     void (*transfer)(void *ctx, const uint8_t *tx, uint8_t *rx, size_t n);
+    /* 🔴 SCLK 을 **쉬게** 한다. 보낼 것이 없는데도 필요한 시간이 있다 —
+     *    아래 t6·t11 을 볼 것. 바이트를 더 보내는 것으로는 대신할 수 없다.
+     *    그것도 SCLK 이기 때문이다.
+     *
+     *    NULL 이어도 된다. 그때는 쉬지 않는다 — 옛 호출부가 죽지 않게. */
+    void (*delay_us)(void *ctx, uint32_t us);
     void *ctx;
 } MkAdsIo;
+
+/* ADS1256 데이터시트 (SBAS288K) p.6 "TIMING CHARACTERISTICS FOR FIGURE 1".
+ * 이 보드의 크리스털은 7.68 MHz 이므로 tCLKIN = 130.2 ns.
+ *
+ *   t6  = 50 tCLKIN = 6.51 us
+ *         "Delay from last SCLK edge for DIN to first SCLK rising edge for
+ *          DOUT: RDATA, RDATAC, RREG Commands"
+ *   t11 = 24 tCLKIN = 3.13 us   (SYNC 뒤 다음 명령까지)
+ *
+ * 🔴 올림해서 쓴다. 모자라면 조용히 틀린 값이 나오고, 남는 몇 마이크로초는
+ *    16.8 ms 짜리 변환에서 아무 의미가 없다. */
+#define MK_ADS_T6_US        7u
+#define MK_ADS_T11_SYNC_US  4u
 
 typedef enum {
     MK_ADS_IDLE = 0,    /* 다음 채널을 시작할 때를 기다린다 */
     MK_ADS_SETUP,       /* WREG MUX + SYNC + WAKEUP 전송 중 */
     MK_ADS_CONVERTING,  /* DRDY 를 기다린다 (여기가 t18) */
-    MK_ADS_READING,     /* RDATA + 3바이트 수신 중 */
+    MK_ADS_RDATA_SENT,  /* RDATA 를 보냈다. t6 를 쉰 뒤 데이터를 읽는다 */
+    MK_ADS_READING,     /* 데이터 3바이트 수신 중 */
 } MkAdsState;
 
 typedef struct {

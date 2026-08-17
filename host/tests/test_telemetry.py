@@ -3,6 +3,7 @@ import json
 from tools.simulator.config_store import default_store
 from tools.simulator.telemetry import (
     ADS1256_FULL_SCALE,
+    FULL_SCALE_V,
     build_ain_record,
     ma_to_value,
     raw_to_ma,
@@ -47,14 +48,29 @@ def test_connector_id_maps_channel_to_j_number():
 
 
 def test_raw_to_ma_at_20ma_full_loop():
-    """20 mA × 120 Ω = 2.40 V. VREF 2.5 V 기준 코드로 환산한 값."""
-    raw = round(2.40 / 2.5 * ADS1256_FULL_SCALE)
+    """20 mA × 120 Ω = 2.40 V.
+
+    🔴 만재는 VREF 가 아니라 **2·VREF** 다 — ADS1256.pdf p.11 "full-scale
+       input range is ±2VREF (for PGA = 1)".
+
+       이 시험은 잘못된 상수(2.5)를 **손으로 다시 적어** 계산하고 있었다.
+       구현과 시험이 같은 오해를 나눠 가지면 둘이 늘 일치하므로 영원히
+       통과한다. 실기기에서 4 mA 신호가 1.99 mA 로 나올 때까지 아무도 몰랐다.
+       그래서 여기서는 구현이 쓰는 상수를 그대로 가져다 쓴다.
+    """
+    raw = round(2.40 / FULL_SCALE_V * ADS1256_FULL_SCALE)
     assert abs(raw_to_ma(raw) - 20.0) < 0.01
 
 
 def test_raw_to_ma_at_4ma():
-    raw = round(0.48 / 2.5 * ADS1256_FULL_SCALE)
+    raw = round(0.48 / FULL_SCALE_V * ADS1256_FULL_SCALE)
     assert abs(raw_to_ma(raw) - 4.0) < 0.01
+
+
+def test_full_scale_is_twice_the_reference():
+    """🔴 위 두 시험이 구현 상수를 빌려 쓰므로, 그 상수 자체는 여기서 못
+       박는다. 안 그러면 상수가 틀려도 둘 다 통과한다."""
+    assert FULL_SCALE_V == 5.0
 
 
 def test_ma_to_value_applies_zero_and_scale():

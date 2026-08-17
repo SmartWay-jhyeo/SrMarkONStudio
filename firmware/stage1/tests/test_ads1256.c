@@ -26,6 +26,12 @@ typedef struct {
     int     n;
     int     cs_low;
     int     cs_changes;
+    /* 🔴 지연도 기록한다. ADS1256 은 명령과 데이터 사이에 **SCLK 이 쉬는
+     *    시간**을 요구하는데(t6·t11), 그것은 보낸 바이트로는 드러나지
+     *    않는다. 기록하지 않으면 시험이 통과하면서 실기기에서만 값이 튄다
+     *    — 실제로 그랬다 [2026-08-17]. */
+    uint32_t delay_us[MAX_XFER];
+    int      n_delay;
 } Fake;
 
 static Fake FK;
@@ -38,6 +44,12 @@ static void fake_cs(void *ctx, int low)
     Fake *f = (Fake *)ctx;
     if (f->cs_low != low) { f->cs_changes++; }
     f->cs_low = low;
+}
+
+static void fake_delay(void *ctx, uint32_t us)
+{
+    Fake *f = (Fake *)ctx;
+    if (f->n_delay < MAX_XFER) { f->delay_us[f->n_delay++] = us; }
 }
 
 static void fake_transfer(void *ctx, const uint8_t *tx, uint8_t *rx, size_t n)
@@ -55,7 +67,7 @@ static void fake_transfer(void *ctx, const uint8_t *tx, uint8_t *rx, size_t n)
 static void setup(int64_t now)
 {
     memset(&FK, 0, sizeof FK);
-    MkAdsIo io = { fake_cs, fake_transfer, &FK };
+    MkAdsIo io = { fake_cs, fake_transfer, fake_delay, &FK };
     mk_ads_init(&A, &io, TX, RX, sizeof TX, 500);
     for (int i = 0; i < 4; i++) {
         mk_ads_attach_queue(&A, i, QBUF[i], 8);
@@ -79,11 +91,90 @@ static void drive_setup(int64_t now)
  *    결함으로 오해할 뻔했다. */
 static void deliver(int32_t code, int64_t now)
 {
-    RX[0] = 0xFF;                               /* 명령 나가는 동안의 쓰레기 */
-    RX[1] = (uint8_t)((code >> 16) & 0xFF);
-    RX[2] = (uint8_t)((code >> 8) & 0xFF);
-    RX[3] = (uint8_t)(code & 0xFF);
+    /* RDATA 전송 완료 → 드라이버가 t6 를 쉬고 데이터 3바이트를 시작한다. */
     mk_ads_on_spi_done(&A, now);
+
+    RX[0] = (uint8_t)((code >> 16) & 0xFF);
+    RX[1] = (uint8_t)((code >> 8) & 0xFF);
+    RX[2] = (uint8_t)(code & 0xFF);
+    mk_ads_on_spi_done(&A, now);
+}
+
+
+/* ---- 데이터시트가 요구하는 쉬는 시간 ------------------------------------ */
+
+static uint32_t total_delay(void)
+{
+    uint32_t sum = 0;
+    for (int i = 0; i < FK.n_delay; i++) { sum += FK.delay_us[i]; }
+    return sum;
+}
+
+static void test_t6_gap_before_reading_data(void)
+{
+    /* 🔴 ADS1256 데이터시트 (SBAS288K) p.6, Timing Characteristics:
+     *
+     *      t6  "Delay from last SCLK edge for DIN to first SCLK rising edge
+     *           for DOUT: RDATA, RDATAC, RREG Commands"   MIN 50 tCLKIN
+     *
+     *    이 보드의 크리스털은 7.68 MHz 이므로 50 x 130.2ns = 6.51us 다.
+     *
+     *    SCLK 이 500 kHz 라 한 주기가 2us 뿐이다. RDATA 에 데이터 3바이트를
+     *    이어 붙이면 간격이 2us 밖에 안 되어 **3배 넘게 모자란다.**
+     *
+     *    지키지 않으면 칩이 DOUT 을 아직 안 실은 상태에서 클럭을 받는다.
+     *    ADS1256 의 7.68 MHz 는 우리 클럭과 비동기라, 얼마나 실렸는지가
+     *    매번 달라진다 — 값이 무작위로 튄다. 실기기에서 그 증상을 봤다
+     *    [2026-08-17]. 잡음처럼 보이지만 잡음이 아니다. */
+    setup(0);
+    mk_ads_tick(&A, 100);
+    drive_setup(100);
+
+    int before = FK.n_delay;
+    mk_ads_on_drdy(&A, 117);          /* RDATA 를 보낸다 */
+    mk_ads_on_spi_done(&A, 118);      /* RDATA 완료 → 데이터 읽기 시작 */
+
+    CHECK(FK.n_delay > before, "RDATA 와 데이터 사이에 쉰다");
+    uint32_t gap = 0;
+    for (int i = before; i < FK.n_delay; i++) { gap += FK.delay_us[i]; }
+    CHECK(gap >= 7u, "쉬는 시간이 t6(6.51us) 이상이다");
+    CHECK(FK.n == 5 && FK.len[4] == 3u, "그 뒤에 데이터 3바이트를 읽는다");
+}
+
+static void test_t11_gap_after_sync(void)
+{
+    /* 🔴 같은 표의 t11: SYNC 뒤 다음 명령의 첫 SCLK 상승까지 24 tCLKIN
+     *    = 3.13us. WAKEUP 을 바로 붙이면 SYNC 가 먹지 않아 변환이 예전
+     *    채널의 것으로 남는다. */
+    setup(0);
+    mk_ads_tick(&A, 100);
+    mk_ads_on_spi_done(&A, 100);      /* WREG 완료 → SYNC 전송 */
+    int before = FK.n_delay;
+    mk_ads_on_spi_done(&A, 100);      /* SYNC 완료 → WAKEUP 전송 */
+
+    uint32_t gap = 0;
+    for (int i = before; i < FK.n_delay; i++) { gap += FK.delay_us[i]; }
+    CHECK(gap >= 4u, "SYNC 와 WAKEUP 사이가 t11(3.13us) 이상이다");
+}
+
+static void test_delay_is_optional(void)
+{
+    /* 🔴 delay 를 안 준 io 로도 죽지 않아야 한다. 시험용 가짜나 옛 호출부가
+     *    NULL 을 두고 갈 수 있는데, 거기서 널 역참조가 나면 원인이 이
+     *    타이밍과 무관해 보인다. */
+    memset(&FK, 0, sizeof FK);
+    MkAdsIo io = { fake_cs, fake_transfer, NULL, &FK };
+    MkAds a;
+    mk_ads_init(&a, &io, TX, RX, sizeof TX, 500);
+    mk_ads_attach_queue(&a, 0, QBUF[0], 8);
+    mk_ads_configure(&a, 0, 1, 100, 0);
+    mk_ads_tick(&a, 100);
+    for (int i = 0; i < 3; i++) { mk_ads_on_spi_done(&a, 100); }
+    mk_ads_on_drdy(&a, 117);
+    mk_ads_on_spi_done(&a, 118);
+    mk_ads_on_spi_done(&a, 119);
+    CHECK(1, "delay 가 NULL 이어도 살아 있다");
+    (void)total_delay();
 }
 
 /* ---- 시험 --------------------------------------------------------------- */
@@ -143,9 +234,12 @@ static void test_drdy_starts_the_read(void)
     mk_ads_tick(&A, 100);
     drive_setup(100);
     mk_ads_on_drdy(&A, 117);
-    CHECK(mk_ads_state(&A) == MK_ADS_READING, "DRDY 가 읽기를 연다");
+    CHECK(mk_ads_state(&A) == MK_ADS_RDATA_SENT,
+          "DRDY 가 읽기를 연다 — 먼저 RDATA 만 나간다");
     CHECK(FK.n == 4 && FK.bytes[3][0] == MK_ADS_CMD_RDATA, "RDATA 를 보낸다");
-    CHECK(FK.len[3] == 4, "명령 1 + 데이터 3 바이트");
+    /* 🔴 RDATA 만 홀로 나가야 한다. 데이터 3바이트를 이어 붙이면 SCLK 이
+     *    쉬지 않아 t6 를 지킬 수 없다. */
+    CHECK(FK.len[3] == 1, "RDATA 는 혼자 나간다 — 데이터는 t6 뒤에");
 }
 
 static void test_sample_lands_in_the_queue(void)
@@ -404,6 +498,9 @@ int main(void)
     test_setup_sequence_matches_the_datasheet();
     test_does_not_block_while_converting();
     test_drdy_starts_the_read();
+    test_t6_gap_before_reading_data();
+    test_t11_gap_after_sync();
+    test_delay_is_optional();
     test_sample_lands_in_the_queue();
     test_timestamp_is_the_drdy_moment();
     test_negative_code_is_sign_extended();

@@ -19,6 +19,13 @@ static void io_transfer(MkAds *a, size_t n)
     }
 }
 
+static void io_delay(MkAds *a, uint32_t us)
+{
+    if (a->io.delay_us) {
+        a->io.delay_us(a->io.ctx, us);
+    }
+}
+
 void mk_ads_init(MkAds *a, const MkAdsIo *io,
                  uint8_t *tx, uint8_t *rx, size_t buf_cap,
                  int64_t drdy_timeout_ms)
@@ -120,6 +127,10 @@ static void send_setup_step(MkAds *a)
         io_transfer(a, 1u);
         break;
     default:
+        /* 🔴 SYNC 뒤에는 t11(24 tCLKIN = 3.13us)을 쉬어야 다음 명령이
+         *    받아들여진다. 붙여 보내면 SYNC 가 먹지 않아, 변환이 방금 고른
+         *    채널이 아니라 이전 채널 것으로 남는다. */
+        io_delay(a, MK_ADS_T11_SYNC_US);
         a->tx[0] = MK_ADS_CMD_WAKEUP;
         io_transfer(a, 1u);
         break;
@@ -195,14 +206,35 @@ void mk_ads_on_spi_done(MkAds *a, int64_t now_ms)
         }
         break;
 
+    case MK_ADS_RDATA_SENT:
+        /* 🔴 여기서 쉰다. RDATA 를 보낸 것과 데이터를 클럭하는 것 사이에
+         *    t6(6.51us)가 필요하다 — 데이터시트 SBAS288K p.6.
+         *
+         *    한 번의 4바이트 전송으로 붙여 보내면 간격이 SCLK 한 주기(500
+         *    kHz 에서 2us)뿐이라 3배 넘게 모자란다. 그러면 칩이 DOUT 을 아직
+         *    안 실은 채로 클럭을 받고, ADS1256 의 7.68 MHz 는 우리와 비동기라
+         *    얼마나 실렸는지가 매번 달라진다 — 값이 무작위로 튄다. 잡음처럼
+         *    보이지만 잡음이 아니다 [실증 2026-08-17]. */
+        io_delay(a, MK_ADS_T6_US);
+        a->state = MK_ADS_READING;
+        if (a->tx == NULL || a->buf_cap < 3u) {
+            finish(a, now_ms);
+            break;
+        }
+        a->tx[0] = 0u;
+        a->tx[1] = 0u;
+        a->tx[2] = 0u;
+        io_transfer(a, 3u);
+        break;
+
     case MK_ADS_READING: {
-        /* rx[0] 은 RDATA 명령을 내보내는 동안 받은 쓰레기다. 뒤 3바이트가
-         * 24비트 2의 보수. */
+        /* 이제 rx[0..2] 가 그대로 24비트 2의 보수다 — 앞에 명령 바이트가
+         * 섞이지 않는다. */
         int32_t code = 0;
-        if (a->rx != NULL && a->buf_cap >= 4u) {
-            code = ((int32_t)a->rx[1] << 16)
-                 | ((int32_t)a->rx[2] << 8)
-                 |  (int32_t)a->rx[3];
+        if (a->rx != NULL && a->buf_cap >= 3u) {
+            code = ((int32_t)a->rx[0] << 16)
+                 | ((int32_t)a->rx[1] << 8)
+                 |  (int32_t)a->rx[2];
             if (code & 0x00800000) {         /* 부호 확장 */
                 code |= (int32_t)0xFF000000;
             }
@@ -232,20 +264,19 @@ void mk_ads_on_drdy(MkAds *a, int64_t now_ms)
          *    상태를 안 보고 반응하면 SETUP 도중에 읽기를 시작해 버린다. */
         return;
     }
-    a->state = MK_ADS_READING;
+    a->state = MK_ADS_RDATA_SENT;
     /* 🔴 획득 시각을 여기서 못박는다. 뒤로 갈수록 SPI·DMA·스케줄링 지연이
      *    섞이므로, 이 순간이 이 값이 가장 정확한 마지막 지점이다. */
     a->started_ms = now_ms;
 
-    if (a->tx == NULL || a->buf_cap < 4u) {
+    if (a->tx == NULL || a->buf_cap < 3u) {
         finish(a, now_ms);
         return;
     }
+    /* 🔴 RDATA 만 홀로 보낸다. 데이터 3바이트를 이어 붙이면 그 사이에
+     *    SCLK 이 쉬지 않아 t6 를 지킬 수 없다. */
     a->tx[0] = MK_ADS_CMD_RDATA;
-    a->tx[1] = 0u;
-    a->tx[2] = 0u;
-    a->tx[3] = 0u;
-    io_transfer(a, 4u);
+    io_transfer(a, 1u);
 }
 
 MkAdsState mk_ads_state(const MkAds *a)         { return a->state; }

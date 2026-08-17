@@ -62,11 +62,20 @@ static void setup(void)
 
 static void test_raw_to_ma_matches_the_shunt(void)
 {
-    /* 데이터시트 §5.3 — 120 Ω 션트, 기준 2.5 V, 만재 2^23-1.
-     *   20 mA -> 2.40 V -> 코드 8053063
-     *    4 mA -> 0.48 V -> 코드 1610612 */
-    float ma20 = mk_telem_raw_to_ma(8053063);
-    float ma4  = mk_telem_raw_to_ma(1610612);
+    /* 120 Ω 0.1% 션트, 외부 기준 2.5 V(ADR4525), 단일단, PGA=1.
+     *
+     * 🔴 만재는 VREF 가 아니라 **2·VREF** 다.
+     *
+     *      ADS1256.pdf p.11: "full-scale input range is ±2VREF (for PGA = 1)"
+     *      ADS1256.pdf p.23: LSB = 2VREF/(PGA(2^23 − 1))
+     *
+     *    처음에 VREF 로 두어 실기기에서 4 mA 짜리 신호가 1.99 mA 로 나왔다
+     *    [실증 2026-08-17]. 딱 절반이라 "센서가 이상한가" 로 보이기 쉽다.
+     *
+     *   20 mA -> 2.40 V -> 코드 2.40/5.0 x 8388607 = 4026531
+     *    4 mA -> 0.48 V -> 코드 0.48/5.0 x 8388607 =  805306 */
+    float ma20 = mk_telem_raw_to_ma(4026531);
+    float ma4  = mk_telem_raw_to_ma(805306);
     CHECK(ma20 > 19.99f && ma20 < 20.01f, "만재 근처가 20 mA");
     CHECK(ma4 > 3.99f && ma4 < 4.01f, "살아 있는 0 점이 4 mA");
     CHECK(mk_telem_raw_to_ma(0) == 0.0f, "0 코드는 0 mA — 4 mA 미만은 단선");
@@ -94,7 +103,7 @@ static void test_empty_queue_sends_nothing(void)
 static void test_record_shape(void)
 {
     setup();
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1772200855875LL, 8053063);
+    mk_queue_push(mk_ads_queue(&ADS, 0), 1772200855875LL, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
 
     CHECK(N == 1, "한 줄");
@@ -102,7 +111,7 @@ static void test_record_shape(void)
     CHECK_HAS(LINES[0], "\"type\":\"ain\"", "type");
     CHECK_HAS(LINES[0], "\"t\":1772200855875", "획득 시각이 그대로 실린다");
     CHECK_HAS(LINES[0], "\"connector_id\":3", "채널 0 은 J3");
-    CHECK_HAS(LINES[0], "\"raw\":8053063", "원본이 실린다");
+    CHECK_HAS(LINES[0], "\"raw\":4026531", "원본이 실린다");
     CHECK_HAS(LINES[0], "\"ma\":20.0", "전류 환산");
     CHECK(LINES[0][strlen(LINES[0]) - 1] == '\n', "줄바꿈으로 끝난다");
 }
@@ -134,7 +143,7 @@ static void test_field_mask_selects(void)
     }
     set_u32("tx.fields", only_ma);
 
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 8053063);
+    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
 
     CHECK_HAS(LINES[0], "\"ma\":", "켠 필드는 실린다");
@@ -154,7 +163,7 @@ static void test_value_follows_the_spec_formula(void)
     z->cur.f = 4.0f;
     s->cur.f = 9.375f;
 
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 8053063);
+    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
     CHECK_HAS(LINES[0], "\"value\":150.0", "20 mA 가 150 bar 로");
 }
@@ -163,7 +172,7 @@ static void test_float_digits_is_honoured(void)
 {
     setup();
     set_u32("tx.float_digits", 2u);
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 8053063);
+    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
     CHECK(strstr(LINES[0], "\"ma\":20.00,") != NULL
           || strstr(LINES[0], "\"ma\":20.0,") != NULL,
@@ -226,7 +235,8 @@ static void emit_samples(void)
 {
     setup();
     /* 4 · 12 · 20 mA 에 해당하는 코드 */
-    static const int32_t CODES[] = { 1610612, 4026531, 8053063 };
+    /* 4 mA · 12 mA · 20 mA 에 해당하는 코드 (만재 2xVREF). */
+    static const int32_t CODES[] = { 805306, 2415918, 4026531 };
     for (size_t k = 0; k < sizeof CODES / sizeof *CODES; k++) {
         mk_queue_push(mk_ads_queue(&ADS, 0), 1000 + (int)k, CODES[k]);
     }

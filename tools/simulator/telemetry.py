@@ -21,6 +21,16 @@ ADS1256_FULL_SCALE = (1 << 23) - 1
 SHUNT_OHMS = 120.0
 VREF_V = 2.5
 
+#: 🔴 만재 입력은 VREF 가 아니라 **2·VREF** 다 (PGA=1).
+#:
+#:     ADS1256.pdf p.11: "full-scale input range is ±2VREF (for PGA = 1)"
+#:     ADS1256.pdf p.23: LSB = 2VREF/(PGA(2^23 − 1))
+#:
+#: VREF 로 두면 모든 값이 정확히 절반이 된다. 실기기에서 4 mA 신호가
+#: 1.99 mA 로 보였다 [실증 2026-08-17]. 배수가 딱 2 라 눈치채기 어렵고,
+#: 시뮬레이터도 같은 식이면 대조로도 안 걸린다 — 실제로 안 걸렸다.
+FULL_SCALE_V = 2.0 * VREF_V
+
 #: AIN0 은 J3 에 대응 (데이터시트 §5.3)
 CONNECTOR_OFFSET = 3
 
@@ -29,7 +39,7 @@ _BIT_OF = {name: bit for bit, name, _d, _l in FIELD_BITS}
 
 def raw_to_ma(raw: int) -> float:
     """ADS1256 원시 코드를 루프 전류(mA)로 환산한다."""
-    volts = raw / ADS1256_FULL_SCALE * VREF_V
+    volts = raw / ADS1256_FULL_SCALE * FULL_SCALE_V
     return volts / SHUNT_OHMS * 1000.0
 
 
