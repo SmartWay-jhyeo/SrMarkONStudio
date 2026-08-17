@@ -5,6 +5,10 @@
 /* 단일 종단 입력: PSEL = AINn, NSEL = AINCOM(8). 데이터시트 MUX 레지스터. */
 #define AINCOM   0x08u
 
+/* 레지스터 부호 변환. 정의는 아래에 있고 mk_ads_init 이 먼저 쓴다. */
+static uint8_t pga_code(uint32_t gain);
+static uint8_t drate_code(uint32_t sps);
+
 static void io_cs(MkAds *a, int low)
 {
     if (a->io.cs) {
@@ -40,6 +44,13 @@ void mk_ads_init(MkAds *a, const MkAdsIo *io,
     a->drdy_timeout_ms = drdy_timeout_ms;
     a->state = MK_ADS_IDLE;
     a->cur = -1;
+    /* 🔴 칩의 리셋값을 그대로 두지 않는다. ADCON 0x20 은 CLKOUT 켜짐,
+     *    DRATE 0xF0 은 30,000 SPS 다(데이터시트 p.31·p.32 Reset Value).
+     *    첫 바퀴에 반드시 한 번 써서 화면에 뜬 값과 칩을 맞춘다 — 안 그러면
+     *    "60 SPS 라고 떠 있는데 칩은 30 kSPS" 인 상태가 조용히 유지된다. */
+    a->adcon = pga_code(1u);
+    a->drate = drate_code(60u);
+    a->chip_dirty = 1u;
     for (int i = 0; i < MK_ADS_CHANNELS; i++) {
         mk_queue_init(&a->ch[i].q, NULL, 0);
     }
@@ -108,6 +119,63 @@ static int pick_next(const MkAds *a, int64_t now_ms)
     return best;
 }
 
+/* PGA 배율 -> ADCON 비트[2:0] (데이터시트 p.31).
+ *
+ * 🔴 상위 비트를 0 으로 둔다. ADCON 리셋값 0x20 은 CLK=01 이라 D0/CLKOUT 으로
+ *    7.68 MHz 가 나가는데, "When not using CLKOUT, it is recommended that it
+ *    be turned off"(p.31). 안 쓰는 클럭이 나가면 잡음만 는다. */
+static uint8_t pga_code(uint32_t gain)
+{
+    switch (gain) {
+    case 1:  return 0u;
+    case 2:  return 1u;
+    case 4:  return 2u;
+    case 8:  return 3u;
+    case 16: return 4u;
+    case 32: return 5u;
+    case 64: return 6u;
+    /* 🔴 모르는 값에 큰 이득을 주지 않는다. 64배로 잘못 가면 입력이 즉시
+     *    포화해 "센서가 이상하다" 로 보인다. */
+    default: return 0u;
+    }
+}
+
+/* 초당 표본수 -> DRATE 레지스터 값 (데이터시트 p.32).
+ *
+ * 🔴 임의 계산이 아니라 표다. "Make sure to select a valid setting as the
+ *    invalid settings may produce unpredictable results"(p.32). */
+static uint8_t drate_code(uint32_t sps)
+{
+    switch (sps) {
+    case 2:    return 0x03u;   /* 2.5 SPS — 카탈로그가 정수라 2 로 적혀 있다 */
+    case 5:    return 0x13u;
+    case 10:   return 0x23u;
+    case 15:   return 0x33u;
+    case 25:   return 0x43u;
+    case 30:   return 0x53u;
+    case 50:   return 0x63u;
+    case 60:   return 0x72u;
+    case 100:  return 0x82u;
+    case 500:  return 0x92u;
+    case 1000: return 0xA1u;
+    case 2000: return 0xB0u;
+    case 3750: return 0xC0u;
+    case 7500: return 0xD0u;
+    default:   return 0x72u;   /* 60 SPS */
+    }
+}
+
+void mk_ads_set_chip(MkAds *a, uint32_t pga_gain, uint32_t drate_sps)
+{
+    uint8_t adcon = pga_code(pga_gain);
+    uint8_t drate = drate_code(drate_sps);
+    if (adcon != a->adcon || drate != a->drate) {
+        a->adcon = adcon;
+        a->drate = drate;
+        a->chip_dirty = 1u;
+    }
+}
+
 /* SETUP 의 한 걸음을 보낸다. 데이터시트의 "멀티플렉서 사이클링" 절차:
  *   MUX 갱신 -> SYNC -> WAKEUP -> (변환) -> RDATA */
 static void send_setup_step(MkAds *a)
@@ -116,7 +184,24 @@ static void send_setup_step(MkAds *a)
         return;
     }
     switch (a->setup_step) {
-    case 0:                                  /* WREG MUX */
+    case 0:
+        /* 🔴 칩 설정이 밀려 있으면 STATUS 부터 DRATE 까지 한 번에 쓴다.
+         *    WREG 는 연속 레지스터를 이어 쓸 수 있으므로(데이터시트 p.34)
+         *    MUX 가 그 사이에 끼어 전송이 늘지 않는다.
+         *
+         *    매번 쓰지 않는 이유는 ACAL 이다. 설정이 바뀌면 자동 재교정이
+         *    도는데, 칩이 값을 정말 비교하는지 WREG 마다 도는지에 설계를
+         *    걸 이유가 없다. */
+        if (a->chip_dirty && a->buf_cap >= 6u) {
+            a->tx[0] = (uint8_t)(MK_ADS_CMD_WREG | MK_ADS_REG_STATUS);
+            a->tx[1] = 3u;                   /* n-1 = 3 -> 4개 */
+            a->tx[2] = MK_ADS_STATUS_INIT;
+            a->tx[3] = (uint8_t)(((uint8_t)a->cur << 4) | AINCOM);
+            a->tx[4] = a->adcon;
+            a->tx[5] = a->drate;
+            io_transfer(a, 6u);
+            break;
+        }
         a->tx[0] = (uint8_t)(MK_ADS_CMD_WREG | MK_ADS_REG_MUX);
         a->tx[1] = 0x00u;                    /* n-1 = 0 -> 1개 */
         a->tx[2] = (uint8_t)(((uint8_t)a->cur << 4) | AINCOM);
@@ -196,6 +281,10 @@ void mk_ads_on_spi_done(MkAds *a, int64_t now_ms)
     switch (a->state) {
     case MK_ADS_SETUP:
         if (a->setup_step < 2u) {
+            if (a->setup_step == 0u) {
+                /* 칩 설정을 실어 보냈다. 다시 밀릴 때까지 안 쓴다. */
+                a->chip_dirty = 0u;
+            }
             a->setup_step++;
             send_setup_step(a);
         } else {

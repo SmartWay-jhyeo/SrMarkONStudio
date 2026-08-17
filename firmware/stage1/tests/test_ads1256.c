@@ -177,6 +177,94 @@ static void test_delay_is_optional(void)
     (void)total_delay();
 }
 
+
+/* ---- 칩 설정 (PGA · 데이터율) -------------------------------------------- */
+
+static void test_chip_config_is_written_before_the_first_sample(void)
+{
+    /* 🔴 리셋 직후 칩은 CLKOUT 켜짐 · 30,000 SPS 다(데이터시트 p.31·p.32
+     *    Reset Value). 우리가 안 쓰면 화면에 60 SPS 라고 떠 있어도 칩은
+     *    30 kSPS 로 돈다 — 값이 나오기는 하니 아무도 눈치채지 못한다.
+     *    실제로 그 상태로 한참 갔다 [2026-08-17]. */
+    setup(0);
+    mk_ads_tick(&A, 100);
+
+    CHECK(FK.n == 1, "첫 전송 하나");
+    CHECK(FK.bytes[0][0] == (MK_ADS_CMD_WREG | 0x00u),
+          "STATUS(0x00) 부터 쓴다");
+    CHECK(FK.bytes[0][1] == 3u, "n-1 = 3 -> STATUS·MUX·ADCON·DRATE 넷");
+    CHECK(FK.len[0] == 6u, "명령 2 + 데이터 4 바이트");
+    CHECK(FK.bytes[0][2] == 0x04u, "STATUS: ACAL=1 (설정이 바뀌면 자동 재교정)");
+}
+
+static void test_chip_config_is_not_rewritten_when_unchanged(void)
+{
+    /* 🔴 매 표본마다 다시 쓰지 않는다. ACAL 이 켜져 있어 값이 바뀌면
+     *    자동 재교정이 도는데, 칩이 정말 값을 비교하는지 WREG 마다 도는지에
+     *    설계를 걸 이유가 없다. 바뀔 때만 쓴다. */
+    setup(0);
+    mk_ads_tick(&A, 100);
+    drive_setup(100);
+    mk_ads_on_drdy(&A, 117);
+    deliver(1000, 130);
+
+    int before = FK.n;
+    mk_ads_tick(&A, 200);
+    CHECK(FK.n == before + 1, "다음 바퀴도 전송 하나로 시작한다");
+    CHECK(FK.bytes[before][0] == (MK_ADS_CMD_WREG | MK_ADS_REG_MUX),
+          "이번엔 MUX 만 쓴다");
+    CHECK(FK.len[before] == 3u, "MUX 만이면 3바이트");
+}
+
+static void test_pga_and_drate_use_the_datasheet_codes(void)
+{
+    /* 데이터시트 p.31 ADCON: PGA 비트[2:0] 000=1 001=2 010=4 ... 110=64
+     *              p.32 DRATE: 60 SPS = 01110010b = 0x72
+     *
+     * 🔴 ADCON 의 CLK 비트를 0 으로 둔다. 리셋값은 01(=fCLKIN 출력)인데,
+     *    "When not using CLKOUT, it is recommended that it be turned off"
+     *    (p.31). 안 쓰는 클럭이 나가면 잡음만 는다. */
+    setup(0);
+    mk_ads_set_chip(&A, 8u, 60u);
+    mk_ads_tick(&A, 100);
+    CHECK(FK.bytes[0][4] == 0x03u, "PGA 8배 -> ADCON 0x03 (CLKOUT 꺼짐)");
+    CHECK(FK.bytes[0][5] == 0x72u, "60 SPS -> DRATE 0x72");
+
+    setup(0);
+    mk_ads_set_chip(&A, 64u, 2u);
+    mk_ads_tick(&A, 100);
+    CHECK(FK.bytes[0][4] == 0x06u, "PGA 64배 -> 0x06");
+    CHECK(FK.bytes[0][5] == 0x03u, "2.5 SPS -> 0x03 (카탈로그엔 정수 2)");
+}
+
+static void test_changing_the_setting_rewrites_the_chip(void)
+{
+    setup(0);
+    mk_ads_set_chip(&A, 1u, 60u);
+    mk_ads_tick(&A, 100);
+    drive_setup(100);
+    mk_ads_on_drdy(&A, 117);
+    deliver(1000, 130);
+
+    mk_ads_set_chip(&A, 16u, 100u);
+    int before = FK.n;
+    mk_ads_tick(&A, 200);
+    CHECK(FK.len[before] == 6u, "설정이 바뀌면 다시 쓴다");
+    CHECK(FK.bytes[before][4] == 0x04u, "PGA 16배");
+    CHECK(FK.bytes[before][5] == 0x82u, "100 SPS -> 0x82");
+}
+
+static void test_unknown_setting_falls_back_quietly(void)
+{
+    /* 🔴 모르는 값에 큰 이득을 넣지 않는다. 64배로 잘못 가면 입력이 즉시
+     *    포화해 "센서가 이상하다" 로 보인다. 모르면 1배다. */
+    setup(0);
+    mk_ads_set_chip(&A, 7u, 12345u);
+    mk_ads_tick(&A, 100);
+    CHECK(FK.bytes[0][4] == 0x00u, "모르는 이득은 1배로");
+    CHECK(FK.bytes[0][5] == 0x72u, "모르는 데이터율은 60 SPS 로");
+}
+
 /* ---- 시험 --------------------------------------------------------------- */
 
 static void test_idle_until_due(void)
@@ -198,9 +286,13 @@ static void test_setup_sequence_matches_the_datasheet(void)
     mk_ads_configure(&A, 0, 0, 0, 0);
     mk_ads_tick(&A, 100);
 
-    CHECK(FK.n == 1 && FK.len[0] == 3, "먼저 WREG 3바이트");
-    CHECK(FK.bytes[0][0] == (MK_ADS_CMD_WREG | MK_ADS_REG_MUX), "WREG|MUX");
-    CHECK(FK.bytes[0][2] == ((3u << 4) | 0x08u), "PSEL=AIN3, NSEL=AINCOM");
+    /* 🔴 첫 바퀴에는 칩 설정(STATUS·ADCON·DRATE)이 함께 나간다. MUX 는 그
+     *    묶음 안에 들어 있다 — WREG 가 연속 레지스터를 이어 쓰기 때문이다.
+     *    그래서 MUX 가 세 번째 데이터 바이트 자리에 온다. */
+    CHECK(FK.n == 1 && FK.len[0] == 6, "먼저 WREG 6바이트 (칩 설정 포함)");
+    CHECK(FK.bytes[0][0] == (MK_ADS_CMD_WREG | MK_ADS_REG_STATUS),
+          "WREG|STATUS 부터");
+    CHECK(FK.bytes[0][3] == ((3u << 4) | 0x08u), "PSEL=AIN3, NSEL=AINCOM");
 
     mk_ads_on_spi_done(&A, 100);
     CHECK(FK.n == 2 && FK.bytes[1][0] == MK_ADS_CMD_SYNC, "다음은 SYNC");
@@ -501,6 +593,11 @@ int main(void)
     test_t6_gap_before_reading_data();
     test_t11_gap_after_sync();
     test_delay_is_optional();
+    test_chip_config_is_written_before_the_first_sample();
+    test_chip_config_is_not_rewritten_when_unchanged();
+    test_pga_and_drate_use_the_datasheet_codes();
+    test_changing_the_setting_rewrites_the_chip();
+    test_unknown_setting_falls_back_quietly();
     test_sample_lands_in_the_queue();
     test_timestamp_is_the_drdy_moment();
     test_negative_code_is_sign_extended();

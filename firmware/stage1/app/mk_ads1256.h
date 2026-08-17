@@ -44,7 +44,20 @@
 #define MK_ADS_CMD_RDATA    0x01u
 #define MK_ADS_CMD_SYNC     0xFCu
 #define MK_ADS_CMD_WREG     0x50u
+#define MK_ADS_REG_STATUS   0x00u
 #define MK_ADS_REG_MUX      0x01u
+#define MK_ADS_REG_ADCON    0x02u
+#define MK_ADS_REG_DRATE    0x03u
+
+/* STATUS (데이터시트 p.30): bit3 ORDER=0(MSB 먼저) · bit2 ACAL=1 · bit1 BUFEN=0
+ *
+ * 🔴 ACAL 을 켠다. "self-calibration begins at the completion of the WREG
+ *    command that changes the PGA ... DR ... or BUFEN values" — 설정을 바꾼
+ *    뒤 손으로 교정 명령을 넣는 것을 잊어도 칩이 알아서 맞춘다.
+ *
+ * 🔴 BUFEN 은 끈다. 이 보드의 입력원은 120Ω 션트라 버퍼가 필요 없고,
+ *    버퍼를 켜면 입력 전압 범위가 AVDD-2V 로 좁아진다. */
+#define MK_ADS_STATUS_INIT  0x04u
 
 /* 이 층이 바깥에 시키는 일. 전부 **즉시 돌아와야 한다** — 여기서 기다리면
  * 비차단으로 만든 의미가 없다.
@@ -118,6 +131,11 @@ typedef struct MkAds {
     /* 🔴 SETUP 은 명령 세 개를 잇달아 보낸다. 몇 번째를 보냈는지 들고
      *    있어야 완료 인터럽트가 어디로 이어질지 안다. */
     uint8_t      setup_step;
+
+    /* 칩 레지스터로 나갈 값. 바뀔 때만 쓴다 — mk_ads_set_chip 참조. */
+    uint8_t      adcon;
+    uint8_t      drate;
+    uint8_t      chip_dirty;
 } MkAds;
 
 /* 초기화. buf 는 최소 4바이트, DMA 가 닿는 곳이어야 한다. */
@@ -129,6 +147,18 @@ void mk_ads_init(MkAds *a, const MkAdsIo *io,
 void mk_ads_attach_queue(MkAds *a, int ch, MkSample *buf, uint16_t cap);
 
 /* 설정을 반영한다. period_ms 가 0 이면 채널을 끈 것으로 본다. */
+/* 칩 전체에 걸리는 설정 — 증폭률과 데이터율.
+ *
+ * 🔴 채널별이 아니라 칩 하나에 하나다. ADS1256 은 PGA·DRATE 를 채널마다
+ *    따로 두지 못한다.
+ *
+ * pga_gain 은 배율(1·2·4·8·16·32·64), drate_sps 는 초당 표본수를 그대로
+ * 넘긴다 — 카탈로그에 있는 값 그대로다. 레지스터 부호로 바꾸는 것은 여기서
+ * 한다. 모르는 값이 오면 조용히 안전한 쪽(1배 · 60 SPS)으로 간다.
+ *
+ * 값이 바뀌었을 때만 실제로 칩에 쓴다. 매번 부르면 된다. */
+void mk_ads_set_chip(MkAds *a, uint32_t pga_gain, uint32_t drate_sps);
+
 void mk_ads_configure(MkAds *a, int ch, int enabled, uint16_t period_ms,
                       int64_t now_ms);
 

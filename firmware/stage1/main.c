@@ -134,6 +134,18 @@ static void sync_rails(MkRailCtl *rc, MkConfig *cfg, int64_t now_ms)
 
 static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
 {
+    /* 🔴 칩 전체 설정(증폭률·데이터율)을 밀어 넣는다.
+     *
+     *    이것이 없어서 화면에는 60 SPS 라고 떠 있는데 칩은 리셋 기본값인
+     *    30,000 SPS 로 돌고 있었다 [2026-08-17]. 값은 나오니 아무도 눈치채지
+     *    못하고, 필요 이상으로 잡음만 컸다. 설정과 칩을 잇는 선이 아예
+     *    없었던 것 — ain*.enabled 때와 같은 종류의 빠짐이다. */
+    MkCfgItem *pga = mk_cfg_find(cfg, "adc.pga");
+    MkCfgItem *dr  = mk_cfg_find(cfg, "adc.drate");
+    mk_ads_set_chip(ads,
+                    pga != NULL ? pga->cur.u : 1u,
+                    dr  != NULL ? dr->cur.u  : 60u);
+
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
         char key[24];
         int n = 0;
