@@ -25,6 +25,7 @@
 #include "bsp/mk_ads_io.h"
 #include "bsp/mk_time.h"
 #include "app/mk_railctl.h"
+#include "app/mk_telem.h"
 #include "bsp/mk_rails.h"
 #include "mk_config.h"
 #include "mk_flash.h"
@@ -66,6 +67,7 @@ static void emit(void *ctx, const char *line, size_t len)
 static MkConfig s_cfg;
 static MkAds    s_ads;
 static MkRailCtl s_rails;
+static MkTelem   s_telem;
 static int      s_led_on;
 
 /* 채널별 표본 저장소.
@@ -202,6 +204,11 @@ int main(void)
         mk_ads_attach_queue(&s_ads, ch, s_samples[ch], SAMPLES_PER_CHANNEL);
     }
     mk_hostlink_attach_ads(&link, &s_ads);
+    /* 🔴 수집 사슬의 마지막 조각. 이것이 없으면 큐가 차고
+     *    drops 만 오르며 호스트는 한 줄도 못 받는다 —
+     *    실기기에서 4초를 들어도 0건이었다. */
+    mk_telem_init(&s_telem, &s_cfg, &s_ads, fields, n_fields,
+                  DEVICE_ID);
     mk_hostlink_attach_rails(&link, &s_rails);
 
     char rx[MK_RX_LINE_MAX];
@@ -235,6 +242,7 @@ int main(void)
         sync_rails(&s_rails, &s_cfg, now);
 
         mk_ads_tick(&s_ads, now);
+        mk_telem_tick(&s_telem, now, emit, NULL);
 
         /* 살아 있음 표시. 모드에 따라 주기를 바꿔 눈으로 구분한다.
          *   RUN    2초에 한 번 (느리게)

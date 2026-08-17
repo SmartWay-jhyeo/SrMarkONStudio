@@ -40,6 +40,7 @@ C_SRC = \
   app/mk_queue.c \
   app/mk_ads1256.c \
   app/mk_railctl.c \
+  app/mk_telem.c \
   bsp/mk_time.c \
   bsp/mk_rails.c \
   bsp/mk_ads_io.c \
