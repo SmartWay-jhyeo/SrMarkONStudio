@@ -155,6 +155,38 @@ def test_no_pin_names_on_the_wire():
         assert not found, f"전선에 핀 이름이 실렸다 {found}: {ln[:120]}"
 
 
+def test_loop_ends_in_the_spec_match_the_code():
+    """규격 §7.2.1 의 `scale = (v20 - v4) / 16` 과 코드의 두 끝점이 같은가.
+
+    🔴 16 은 20 − 4 다. 문서에서 이 숫자를 고치고 코드를 안 고치면(또는
+       반대면) 화면이 물리량을 조용히 틀리게 환산한다 — 값이 그럴듯해서
+       아무도 눈치채지 못하는 종류의 어긋남이다.
+    """
+    from host.core.scaling import LOOP_MAX_MA, LOOP_MIN_MA, LOOP_SPAN_MA
+
+    text = _spec_text()
+    block = text[text.index("#### 7.2.1"):text.index("### 7.3")]
+    assert "scale = (v20 - v4) / 16" in block
+    assert LOOP_SPAN_MA == 16
+    assert (LOOP_MIN_MA, LOOP_MAX_MA) == (4.0, 20.0)
+
+
+def test_the_worked_example_in_the_spec_is_still_true():
+    """규격이 든 예(0~150 bar → scale 9.375)를 코드로 다시 계산해 본다.
+
+    문서의 예시는 사람이 읽고 믿는 것이라, 틀리면 그대로 잘못 설정된다.
+    """
+    from host.core.scaling import zero_scale_for
+
+    text = _spec_text()
+    block = text[text.index("#### 7.2.1"):text.index("### 7.3")]
+    numbers = re.search(
+        r"0~150 bar 센서 → `zero=([\d.]+)`, `scale=([\d.]+)`", block)
+    assert numbers, "규격의 예시 문장이 바뀌었다 — 시험도 함께 고칠 것"
+    assert zero_scale_for(0.0, 150.0) == (float(numbers.group(1)),
+                                          float(numbers.group(2)))
+
+
 def test_heartbeat_timeout_matches():
     """§6.2 의 3000 ms 와 시뮬레이터의 상수가 같아야 한다."""
     from tools.simulator import device_sim
