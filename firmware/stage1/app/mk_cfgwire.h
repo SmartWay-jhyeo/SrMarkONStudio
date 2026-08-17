@@ -74,7 +74,7 @@ typedef struct {
  *    그것이 설계 원칙 4 위반이었다 — 설정은 사용자가 원하는 것이지 보드가
  *    낸 것이 아니다. 이제 rails 를 인자로 받는다. */
 int mk_cfgwire_stat(int64_t now_ms,
-                    const char *mode, const char *fw, const char *board_rev,
+                    const char *mode, const char *ctl_mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
                     const MkRailState *rails,

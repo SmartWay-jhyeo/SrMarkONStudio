@@ -61,8 +61,10 @@ from tools.simulator.device_sim import DeviceSim  # noqa: E402
 #:   unit     값 뒤에 붙는 글자
 #:   choices  콤보의 항목들
 #:   default  $CFG,RESET 이 돌아갈 자리
-COMPARED = ("vtype", "readonly", "minimum", "maximum", "unit", "choices",
-            "default")
+#:   out      TEST 에서 저장 안 됨·모드 이탈 시 복귀 (규격 §6.4). 한쪽만
+#:            표시하면 한 구현은 밸브를 되돌리고 다른 구현은 남긴다
+COMPARED = ("vtype", "readonly", "out", "minimum", "maximum", "unit",
+            "choices", "default")
 
 
 def _find_binary() -> Path:

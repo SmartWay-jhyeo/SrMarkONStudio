@@ -195,7 +195,20 @@ static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
             emit_sack_ok(h, "CFG");
             return;
         }
-        if (h->save(h->save_ctx) != 0) {
+        /* 🔴 TEST 에서는 출력 항목을 기본값으로 바꿔 놓고 저장한다
+         *    (규격 §6.4). 벤치에서 배선을 보려고 밸브를 한 번 열어 본 것이
+         *    Flash 에 남아 다음 부팅에 되살아나면 안 된다. 저장이 끝나면
+         *    화면에 떠 있는 값으로 되돌려 놓는다 — 테스트는 계속된다. */
+        MkValue backup[MK_CFG_MAX_OUT];
+        size_t stashed = 0;
+        if (h->ctl_mode == MK_CTL_TEST) {
+            stashed = mk_cfg_outputs_stash(h->cfg, backup, MK_CFG_MAX_OUT);
+        }
+        int rc = h->save(h->save_ctx);
+        if (stashed) {
+            mk_cfg_outputs_unstash(h->cfg, backup, stashed);
+        }
+        if (rc != 0) {
             emit_sack_err(h, "CFG", "BUSY");
             return;
         }
@@ -211,6 +224,40 @@ static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
     }
 
     emit_sack_err(h, "CFG", "UNSUPPORTED");
+}
+
+/* `$MODE,<TEST|ACTIVE>` — 제어 모드 전환 (규격 §6.4). */
+static void on_mode(MkHostlink *h, const MkCommand *c, int64_t now_ms)
+{
+    if (c->argc < 1) {
+        emit_sack_err(h, "MODE", "RANGE");
+        return;
+    }
+
+    MkCtlMode want;
+    if (strcmp(c->args[0], "TEST") == 0) {
+        want = MK_CTL_TEST;
+    } else if (strcmp(c->args[0], "ACTIVE") == 0) {
+        want = MK_CTL_ACTIVE;
+    } else {
+        emit_sack_err(h, "MODE", "RANGE");
+        return;
+    }
+
+    /* 🔴 TEST 는 CONFIG 안에서만 산다. TEST 의 안전장치가 하트비트
+     *    데드맨이므로, 하트비트 없이 들어가면 그 장치가 없는 상태가 된다. */
+    if (want == MK_CTL_TEST && mk_hostlink_mode(h, now_ms) != MK_MODE_CONFIG) {
+        emit_sack_err(h, "MODE", "MODE");
+        return;
+    }
+
+    if (want != h->ctl_mode) {
+        if (h->ctl_mode == MK_CTL_TEST && h->cfg != NULL) {
+            mk_cfg_outputs_to_default(h->cfg);
+        }
+        h->ctl_mode = want;
+    }
+    emit_sack_ok(h, "MODE");
 }
 
 /* 규격 §7.4 — `$STAT` 은 stat 레코드 한 줄 뒤에 $SACK 를 보낸다.
@@ -288,6 +335,7 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
     int n = mk_cfgwire_stat(
         now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
+        h->ctl_mode == MK_CTL_TEST ? "TEST" : "ACTIVE",
         h->fw, h->board_rev, (uint32_t)now_ms,
         /* 🔴 1단계에는 GNSS 도 PPS 도 없다. `t` 는 부팅 후 경과 ms 이고
          *    UTC 가 아니다 — 호스트가 이것을 시각으로 저장하면 안 된다.
@@ -380,6 +428,11 @@ void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
         return;
     }
 
+    if (strcmp(c.verb, "MODE") == 0) {
+        on_mode(h, &c, now_ms);
+        return;
+    }
+
     /* 규격 §5 — 알아들었으나 이 펌웨어가 아직 구현하지 않은 명령.
      * 조용히 버리면 죽은 링크와 구분되지 않는다. */
     emit_sack_err(h, c.verb, "UNSUPPORTED");
@@ -387,6 +440,24 @@ void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
 
 void mk_hostlink_tick(MkHostlink *h, int64_t now_ms)
 {
+    /* 🔴 호스트가 사라지면 테스트도 끝난다 (규격 §6.4).
+     *
+     *    하트비트가 이미 데드맨이므로 방아쇠를 새로 만들지 않는다. 그리고
+     *    그것이 옳은 방아쇠다 — 하트비트는 케이블이 꽂혔는지가 아니라
+     *    저쪽에서 사람이 보고 있는지를 알려 준다. 사람이 안 보면 테스트
+     *    출력은 꺼져야 한다. */
+    /* 🔴 전이를 따로 기억하지 않는다. TEST 는 CONFIG 에서만 들어갈 수
+     *    있으므로 "TEST 인데 RUN" 자체가 이미 호스트를 잃었다는 뜻이다.
+     *    직전 모드를 들고 비교하면 그 변수를 갱신하는 첫 tick 이 언제
+     *    오느냐에 답이 달라진다 — 실제로 시험이 그것을 잡았다. */
+    if (h->ctl_mode == MK_CTL_TEST
+            && mk_hostlink_mode(h, now_ms) != MK_MODE_CONFIG) {
+        if (h->cfg != NULL) {
+            mk_cfg_outputs_to_default(h->cfg);
+        }
+        h->ctl_mode = MK_CTL_ACTIVE;
+    }
+
     /* 시뮬레이터(device_sim.tick)와 같은 조건이다 — `>=`. 부팅 직후
      * (now_ms 0, last_hb_tx_ms 0)에는 내보내지 않고 1000 ms 부터 시작한다. */
     if (now_ms - h->last_hb_tx_ms >= MK_HB_INTERVAL_MS) {
@@ -408,4 +479,9 @@ MkMode mk_hostlink_mode(const MkHostlink *h, int64_t now_ms)
         return MK_MODE_RUN;
     }
     return MK_MODE_CONFIG;
+}
+
+MkCtlMode mk_hostlink_ctl_mode(const MkHostlink *h)
+{
+    return h->ctl_mode;
 }

@@ -53,6 +53,15 @@ class ConfigItem:
     maximum: float | None = None
     unit: str = ""
     readonly: bool = False
+    out: bool = False
+    """이 항목이 실제 출력을 움직인다 (규격 §7.3).
+
+    🔴 TEST 제어 모드에서 저장되지 않고 모드를 벗어날 때 기본값으로
+       돌아간다(§6.4). 호스트가 키 이름으로 짐작하지 않도록 보드가
+       알려 준다 — `sol` 이라는 글자를 보고 판단하면 펌웨어가 이름을
+       바꾸는 순간 조용히 틀린다.
+    """
+
     label: str = ""
     note: str = ""
     choices: tuple = ()
@@ -181,6 +190,7 @@ def parse_catalog(lines: Iterable[str]) -> ConfigSchema:
                 maximum=rec.get("max"),
                 unit=rec.get("unit", ""),
                 readonly=bool(rec.get("ro", False)),
+                out=bool(rec.get("out", False)),
                 label=rec.get("label", ""),
                 note=rec.get("note", ""),
                 choices=tuple(rec.get("choices", ())),

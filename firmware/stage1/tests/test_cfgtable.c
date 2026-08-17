@@ -217,7 +217,10 @@ static void test_pack_unpack_round_trips(void)
 {
     /* 🔴 포인터를 그대로 굽지 않는다는 계약(mk_cfgtable.h)을 지키는지 본다.
      *    값만 담기므로, 담았다 되돌리면 값이 그대로여야 한다. */
-    static unsigned char blob[2048];
+    /* 🔴 크기를 여기서 어림하지 않는다. `app/` 이 선언한 상한을 그대로
+     *    쓴다 — 2048 로 적어 두었더니 항목이 86 개가 되면서 시험이 먼저
+     *    깨졌고, 정작 확인하려던 것(값이 살아 돌아오는가)은 못 봤다. */
+    static unsigned char blob[MK_CFG_BLOB_MAX];
     setup();
     CHECK(mk_cfgtable_blob_size() <= sizeof blob, "덩어리가 버퍼에 들어간다");
 

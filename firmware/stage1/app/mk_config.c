@@ -311,6 +311,59 @@ void mk_cfg_reset(MkConfig *cfg)
     cfg->dirty = 1u;
 }
 
+size_t mk_cfg_outputs_to_default(MkConfig *cfg)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < cfg->count; i++) {
+        MkCfgItem *it = &cfg->items[i];
+        if (!it->out) {
+            continue;
+        }
+        /* 이미 기본값이면 dirty 를 세우지 않는다 — 아무것도 안 바뀌었는데
+         * Flash 를 지웠다 쓰면 수명만 깎는다. */
+        if (memcmp(&it->cur, &it->def, sizeof it->cur) != 0) {
+            it->cur = it->def;
+            cfg->dirty = 1u;
+            n++;
+        }
+    }
+    return n;
+}
+
+size_t mk_cfg_outputs_stash(MkConfig *cfg, MkValue *backup, size_t cap)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < cfg->count; i++) {
+        if (cfg->items[i].out) {
+            n++;
+        }
+    }
+    /* 🔴 절반만 바꾸면 복원이 불가능해진다. 자리가 모자라면 손대지 않는다. */
+    if (n > cap) {
+        return 0;
+    }
+
+    n = 0;
+    for (size_t i = 0; i < cfg->count; i++) {
+        MkCfgItem *it = &cfg->items[i];
+        if (it->out) {
+            backup[n++] = it->cur;
+            it->cur = it->def;
+        }
+    }
+    return n;
+}
+
+void mk_cfg_outputs_unstash(MkConfig *cfg, const MkValue *backup, size_t n)
+{
+    size_t k = 0;
+    for (size_t i = 0; i < cfg->count && k < n; i++) {
+        if (cfg->items[i].out) {
+            cfg->items[i].cur = backup[k++];
+        }
+    }
+}
+
 int mk_cfg_dirty(const MkConfig *cfg)
 {
     return cfg->dirty != 0u;

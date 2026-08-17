@@ -370,7 +370,7 @@ static void test_tick_does_not_depend_on_mode(void)
 
 /* ---- $CFG (2단계) ------------------------------------------------------ */
 
-static MkCfgItem CFG_ITEMS[3];
+static MkCfgItem CFG_ITEMS[4];
 static MkConfig  CFG_STORE;
 static int       saves;
 static int       save_fails;
@@ -380,10 +380,15 @@ static const MkFieldBit CFG_FIELDS[] = {
     { 3, "raw",       1, "ADS1256 원시 카운트" },
 };
 
+/* 🔴 저장되는 **순간의** 값을 붙든다. 저장이 끝나면 화면 값으로 되돌아
+ *    오므로, 나중에 표를 들여다보면 무엇이 Flash 로 갔는지 알 수 없다. */
+static unsigned saved_out;
+
 static int fake_save(void *ctx)
 {
     (void)ctx;
     saves++;
+    saved_out = CFG_ITEMS[3].cur.u;
     return save_fails ? -1 : 0;
 }
 
@@ -392,6 +397,7 @@ static void setup_cfg(MkHostlink *h, Sink *s)
     setup(h, s);
     saves = 0;
     save_fails = 0;
+    saved_out = 0u;
     memset(CFG_ITEMS, 0, sizeof CFG_ITEMS);
 
     CFG_ITEMS[0] = (MkCfgItem){ .key = "tx.period_ms", .group = "tx",
@@ -414,8 +420,15 @@ static void setup_cfg(MkHostlink *h, Sink *s)
     CFG_ITEMS[2].def.s[0] = '1';
     CFG_ITEMS[2].cur.s[0] = '1';
 
+    /* 🔴 출력 항목을 하나 둔다. 제어 모드(규격 §6.4)가 무엇을 되돌리는지
+     *    보려면 out=1 인 항목이 있어야 한다 — 없으면 TEST 를 드나들어도
+     *    아무 일이 없어 시험이 헛돈다. */
+    CFG_ITEMS[3] = (MkCfgItem){ .key = "pwr.24v", .group = "pwr",
+                                .vtype = MK_VT_BOOL, .out = 1,
+                                .label = "24V 전원" };
+
     CFG_STORE.items = CFG_ITEMS;
-    CFG_STORE.count = 3;
+    CFG_STORE.count = 4;
     CFG_STORE.dirty = 0;
 
     mk_hostlink_attach_config(h, &CFG_STORE, CFG_FIELDS, 2, fake_save, NULL);
@@ -448,10 +461,10 @@ static void test_cfg_list_emits_catalog_then_sack(void)
     setup_cfg(&h, &s);
     sink_reset(&s);
     feed(&h, "CFG,LIST", 1000);
-    CHECK(s.n == 3 + 2 + 1 + 1, "item 3 + field 2 + end 1 + SACK 1");
+    CHECK(s.n == 4 + 2 + 1 + 1, "item 4 + field 2 + end 1 + SACK 1");
     CHECK(s.lines[0][0] == '{', "첫 줄은 NDJSON");
     CHECK(strstr(s.lines[0], "\"type\":\"cfg_item\"") != NULL, "cfg_item");
-    CHECK(strstr(s.lines[5], "\"count\":5") != NULL, "cfg_end 의 합계");
+    CHECK(strstr(s.lines[6], "\"count\":6") != NULL, "cfg_end 의 합계");
     CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "마지막은 SACK,CFG,OK");
 }
 
@@ -854,6 +867,118 @@ static void run_scenario(void)
     }
 }
 
+
+/* ---- 제어 모드 (규격 §6.4) ---------------------------------------------- */
+
+static void test_boots_in_active_control_mode(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    /* 🔴 보드는 혼자서도 제 일을 해야 한다. 테스트는 사람이 명시적으로
+     *    들어가는 상태다. */
+    CHECK(mk_hostlink_ctl_mode(&h) == MK_CTL_ACTIVE, "부팅 기본값은 ACTIVE");
+}
+
+static void test_test_mode_needs_someone_watching(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+
+    /* 하트비트 없이 = RUN. TEST 의 안전장치가 하트비트 데드맨이므로,
+     * 여기서 들어가면 그 장치가 없는 상태가 된다. */
+    sink_reset(&s);
+    feed(&h, "MODE,TEST", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,MODE,ERR,MODE"), "RUN 에서는 거부");
+    CHECK(mk_hostlink_ctl_mode(&h) == MK_CTL_ACTIVE, "모드가 안 바뀐다");
+}
+
+static void test_entering_and_leaving_test_mode(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+
+    sink_reset(&s);
+    feed(&h, "MODE,TEST", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,MODE,OK"), "CONFIG 에서는 들어간다");
+    CHECK(mk_hostlink_ctl_mode(&h) == MK_CTL_TEST, "TEST 다");
+
+    sink_reset(&s);
+    feed(&h, "MODE,ACTIVE", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,MODE,OK"), "되돌아간다");
+    CHECK(mk_hostlink_ctl_mode(&h) == MK_CTL_ACTIVE, "ACTIVE 다");
+}
+
+static void test_unknown_control_mode_is_rejected(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+
+    sink_reset(&s);
+    feed(&h, "MODE,PROBING", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,MODE,ERR,RANGE"), "모르는 모드는 RANGE");
+    CHECK(mk_hostlink_ctl_mode(&h) == MK_CTL_ACTIVE, "모드가 안 바뀐다");
+}
+
+static void test_leaving_test_drops_the_outputs(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "MODE,TEST", 1000);
+    feed(&h, "CFG,SET,pwr.24v,true", 1000);
+    CHECK(CFG_ITEMS[3].cur.u == 1u, "테스트 중에는 켜진다");
+
+    feed(&h, "MODE,ACTIVE", 1000);
+    /* 🔴 벤치에서 배선 보려고 연 밸브가 그대로 남으면 안 된다. */
+    CHECK(CFG_ITEMS[3].cur.u == 0u, "모드를 벗어나면 기본값으로");
+}
+
+static void test_losing_the_host_ends_the_test(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "MODE,TEST", 1000);
+    feed(&h, "CFG,SET,pwr.24v,true", 1000);
+
+    /* 🔴 하트비트가 이미 데드맨이다. 사람이 안 보면 테스트 출력은 꺼진다. */
+    mk_hostlink_tick(&h, 1000 + MK_HB_TIMEOUT_MS + 1);
+
+    CHECK(mk_hostlink_ctl_mode(&h) == MK_CTL_ACTIVE, "테스트가 끝났다");
+    CHECK(CFG_ITEMS[3].cur.u == 0u, "출력이 내려갔다");
+}
+
+static void test_active_mode_keeps_outputs_when_the_host_leaves(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "CFG,SET,pwr.24v,true", 1000);
+
+    mk_hostlink_tick(&h, 1000 + MK_HB_TIMEOUT_MS + 1);
+
+    /* 운전 중이면 보드가 혼자 돈다 — 호스트가 사라져도 출력은 그대로다. */
+    CHECK(CFG_ITEMS[3].cur.u == 1u, "ACTIVE 에서는 유지된다");
+}
+
+static void test_test_mode_does_not_save_outputs(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "MODE,TEST", 1000);
+    feed(&h, "CFG,SET,pwr.24v,true", 1000);
+
+    saved_out = 2;                       /* 아무 값도 아닌 표식 */
+    feed(&h, "CFG,SAVE", 1000);
+    /* 🔴 저장되는 순간의 값이 기본값이어야 한다. */
+    CHECK(saved_out == 0u, "출력은 기본값으로 저장된다");
+    /* 저장이 끝나면 화면에 떠 있는 값으로 돌아온다 — 테스트는 계속된다. */
+    CHECK(CFG_ITEMS[3].cur.u == 1u, "저장 뒤에도 테스트 값은 그대로");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--scenario") == 0) {
@@ -899,6 +1024,14 @@ int main(int argc, char **argv)
     test_cfg_unknown_subcommand();
     test_tick_emits_hb_at_1hz();
     test_tick_does_not_depend_on_mode();
+    test_boots_in_active_control_mode();
+    test_test_mode_needs_someone_watching();
+    test_entering_and_leaving_test_mode();
+    test_unknown_control_mode_is_rejected();
+    test_leaving_test_drops_the_outputs();
+    test_losing_the_host_ends_the_test();
+    test_active_mode_keeps_outputs_when_the_host_leaves();
+    test_test_mode_does_not_save_outputs();
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
     return failures ? 1 : 0;
 }

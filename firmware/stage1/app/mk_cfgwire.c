@@ -79,6 +79,12 @@ void mk_cfgwire_list(const MkConfig *cfg,
         if (it->label) {
             mk_json_str(&j, "label", it->label);
         }
+        /* 🔴 출력 항목만 표시한다 (규격 §7.3). 대부분에 붙지 않는 필드를
+         *    전부에 실으면 카탈로그가 그만큼 길어지는데, 115200 에서
+         *    카탈로그 한 번이 이미 몇 초다. */
+        if (it->out) {
+            mk_json_bool(&j, "out", 1);
+        }
         /* 🔴 없는 것을 0 으로 실어 보내지 않는다. 화면이 "최소 0" 이라고
          *    잘못 말한다. 순서는 시뮬레이터와 같게 둔다 — 두 카탈로그를
          *    나란히 놓고 볼 일이 많다. */
@@ -134,7 +140,8 @@ void mk_cfgwire_list(const MkConfig *cfg,
 }
 
 int mk_cfgwire_stat(int64_t now_ms,
-                    const char *mode, const char *fw, const char *board_rev,
+                    const char *mode, const char *ctl_mode,
+                    const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
                     const MkRailState *rails,
@@ -145,6 +152,8 @@ int mk_cfgwire_stat(int64_t now_ms,
     mk_json_begin(&j, out, cap);
     common(&j, now_ms, "stat");
     mk_json_str(&j, "mode", mode);
+    /* 🔴 두 축이며 서로 독립이다 (규격 §6.4). 호스트가 둘 다 감시한다. */
+    mk_json_str(&j, "ctl_mode", ctl_mode);
     mk_json_str(&j, "fw", fw);
     mk_json_str(&j, "board_rev", board_rev);
     mk_json_str(&j, "time_source", time_source);

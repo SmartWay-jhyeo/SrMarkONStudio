@@ -27,6 +27,19 @@ typedef enum {
     MK_MODE_CONFIG
 } MkMode;
 
+/* 제어 모드 — 규격 §6.4. `MkMode` 와 **다른 축**이다.
+ *
+ * 🔴 저쪽은 하트비트로 관측되고 이쪽은 `$MODE` 로 선언된다. 한 변수에
+ *    섞으면 정해지는 방식이 뒤엉킨다.
+ *
+ *    필요한 이유: 같은 명령(밸브 열기)이 벤치에서는 배선 확인이고 운전
+ *    중에는 공정을 돌리는 일이다. 항목이 같고 의도가 다르므로 항목의
+ *    성질로는 구분할 수 없다. */
+typedef enum {
+    MK_CTL_ACTIVE = 0,   /* 부팅 기본값 — 보드는 혼자서도 제 일을 한다 */
+    MK_CTL_TEST
+} MkCtlMode;
+
 /* 한 줄을 내보낸다. 줄끝(`\r\n` 또는 `\n`)은 이미 붙어 있다. */
 typedef void (*MkEmit)(void *ctx, const char *line, size_t len);
 
@@ -60,6 +73,10 @@ typedef struct {
     /* 레일 제어기. 붙어 있으면 $STAT 의 rails 가 **실제 명령 상태**를
      * 싣는다. 없으면 전부 false 다 — 설정표를 대신 읽지 않는다. */
     struct MkRailCtl *rails;
+
+    /* 제어 모드 (규격 §6.4). `mk_hostlink_tick` 이 CONFIG->RUN 전이를
+     * 보고 스스로 ACTIVE 로 되돌린다. */
+    MkCtlMode   ctl_mode;
 
     int64_t     last_hb_rx_ms;   /* 검증을 통과한 $HB 를 마지막으로 받은 시각 */
     int64_t     last_hb_tx_ms;   /* 우리가 $HB 를 마지막으로 보낸 시각 */
@@ -105,5 +122,8 @@ void mk_hostlink_tick(MkHostlink *h, int64_t now_ms);
 /* 지금 모드. 시각을 넣는 이유는 마지막 수신 이후 흐른 시간으로 판정하기
  * 때문이다 — 상태를 저장하지 않으므로 tick 을 놓쳐도 답이 바뀌지 않는다. */
 MkMode mk_hostlink_mode(const MkHostlink *h, int64_t now_ms);
+
+/* 지금 제어 모드 (규격 §6.4). */
+MkCtlMode mk_hostlink_ctl_mode(const MkHostlink *h);
 
 #endif /* MK_HOSTLINK_H */

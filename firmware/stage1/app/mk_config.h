@@ -14,10 +14,29 @@
 
 #include "mk_framing.h"   /* MK_ARG_MAX */
 
-/* 설정 항목 개수. 늘리면 저장 영역 크기도 따라간다. */
-#define MK_CFG_MAX_ITEMS   64
+/* 설정 항목 개수. 늘리면 저장 영역 크기도 따라간다.
+ *
+ * 🔴 96 으로 올린 이유: 디지털 출력 3 · LED 14 · I2C 24 가 늘어 86 이 됐다.
+ *    mk_cfgtable.c 의 _Static_assert 가 이 값과 Flash staging 버퍼를 함께
+ *    본다 — 항목만 늘리고 버퍼를 안 키우면 $CFG,SAVE 가 ERR,BUSY 로
+ *    떨어지는데, 실기기에서 그것을 겪고 나서야 알았다. */
+#define MK_CFG_MAX_ITEMS   96
 #define MK_CFG_KEY_MAX     MK_ARG_MAX
 #define MK_CFG_STR_MAX     MK_ARG_MAX
+
+/* 저장 덩어리가 쓸 수 있는 최대 바이트 (머리말 포함).
+ *
+ * 🔴 **app 이 선언하고 bsp 가 맞춘다.** 반대로 두면 `app/` 이 `bsp/` 를
+ *    알아야 하고, 그러면 호스트에서 컴파일되지 않는다 — 이 경계가 단위
+ *    시험의 전제다(CLAUDE.md §0).
+ *
+ *    2048 이었는데 항목이 86 개가 되면서 넘쳤다(86 × 24 + 32 = 2096).
+ *    실기기에서는 $CFG,SAVE 가 ERR,BUSY 로 떨어지는 형태로 나타난다. */
+#define MK_CFG_BLOB_MAX    4096u
+
+/* 출력 항목(`out`)의 최대 개수. TEST 에서 $CFG,SAVE 가 잠깐 빼 둘 자리다.
+ * 지금은 전원 3 · 밸브 3 · LED 14 = 20 개. */
+#define MK_CFG_MAX_OUT     32u
 
 typedef enum {
     MK_VT_BOOL = 0,
@@ -67,6 +86,13 @@ typedef struct {
      *    INTERLOCK 이 이긴다. 사용자가 왜 안 되는지 알아야 하기 때문이다. */
     uint8_t     readonly;
     uint8_t     interlocked;
+    /* 🔴 이 항목이 **실제 출력을 움직인다** (전원 레일·밸브·LED).
+     *
+     *    TEST 제어 모드에서 저장되지 않고, 모드를 벗어날 때 기본값으로
+     *    돌아간다 (규격 §6.4). 호스트가 키 이름으로 짐작하지 않도록
+     *    카탈로그에 실어 보낸다 — `sol` 이라는 글자를 보고 판단하면
+     *    이름을 바꾸는 순간 조용히 틀린다. */
+    uint8_t     out;
     const char *label;
     const char *note;
     /* enum 의 허용값. 개수가 0 이면 enum 이 아니다. */
@@ -106,6 +132,20 @@ int mk_cfg_format(const MkCfgItem *item, char *out, size_t cap);
 
 /* 전부 기본값으로. */
 void mk_cfg_reset(MkConfig *cfg);
+
+/* 출력 항목(`out`)만 기본값으로. 되돌린 개수를 반환한다 (규격 §6.4).
+ *
+ * 🔴 "안전 상태" 는 전부 꺼짐이 아니라 **각 항목의 기본값**이다.
+ *    `pwr.5v` 의 기본값은 켜짐이고 거기 쿨링 팬과 ADS1256 의 아날로그
+ *    전원이 걸려 있다 — 테스트를 끝냈다고 팬을 세우면 안 된다. */
+size_t mk_cfg_outputs_to_default(MkConfig *cfg);
+
+/* 출력 항목의 현재값을 backup 으로 빼내고 기본값을 채운다. TEST 에서
+ * $CFG,SAVE 가 출력을 저장하지 않게 하는 데 쓴다. 반환은 담은 개수.
+ * cap 이 모자라면 아무것도 하지 않고 0 을 돌려준다 — 절반만 바꾸면
+ * 복원이 불가능해진다. */
+size_t mk_cfg_outputs_stash(MkConfig *cfg, MkValue *backup, size_t cap);
+void   mk_cfg_outputs_unstash(MkConfig *cfg, const MkValue *backup, size_t n);
 
 /* 🔴 값이 바뀌었는지. SAVE 가 필요한지 판단하는 데 쓴다 — 바뀐 것이
  *    없는데 Flash 를 지웠다 쓰면 수명만 깎는다. */

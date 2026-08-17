@@ -1,5 +1,6 @@
 #include "mk_flash.h"
 
+#include "mk_config.h"   /* MK_CFG_BLOB_MAX — 필요한 양은 설정표가 안다 */
 #include "mk_crc.h"
 #include "stm32h7xx_hal.h"
 
@@ -46,11 +47,14 @@ int mk_flash_save(const void *data, size_t len)
 {
     /* 머리 + 본문을 32 바이트 배수로 맞춘 버퍼에 모은다.
      *
-     * 🔴 설정 45항목 × MkValue 24바이트 = 1,080 바이트다. 처음에 512 로
-     *    잡았다가 실기기에서 $CFG,SAVE 가 ERR,BUSY 로 떨어졌다 — 크기를
-     *    어림으로 정한 대가다. 항목이 더 늘어날 것을 감안해 넉넉히 잡되,
+     * 🔴 크기를 여기서 어림하지 않는다. 처음에 512 로 잡았다가 실기기에서
+     *    $CFG,SAVE 가 ERR,BUSY 로 떨어졌고, 2048 로 올린 뒤에도 항목이
+     *    86 개가 되면서 또 넘쳤다. 필요한 양은 설정표가 아는 것이므로
+     *    `app/` 이 선언한 상한을 그대로 쓴다 — mk_cfgtable.c 의
+     *    _Static_assert 가 같은 상수를 보고 컴파일 때 막는다.
+     *
      *    넘치면 조용히 자르지 않고 실패한다. */
-    static uint8_t staging[2048] __attribute__((aligned(32)));
+    static uint8_t staging[MK_CFG_BLOB_MAX] __attribute__((aligned(32)));
     const size_t need = sizeof(MkFlashHeader) + len;
 
     if (need > sizeof staging) {

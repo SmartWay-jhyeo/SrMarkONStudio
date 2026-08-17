@@ -216,11 +216,14 @@ class ConfigStore:
         벤치에서 배선을 보려고 밸브를 한 번 열어 본 것이 플래시에 남아
         다음 부팅에 되살아나면 안 된다.
         """
-        keep = {
-            k: i.current for k, i in self.items.items()
-            if not (skip_outputs and i.out)
-        }
-        self._saved.update(keep)
+        # 🔴 출력 항목은 **기본값으로** 남긴다. 이전 저장값을 지키는 편이
+        #    친절해 보이지만, 그러려면 "플래시에 뭐가 있었나" 를 따로 들고
+        #    있어야 하고 펌웨어에는 그런 자리가 없다. 두 구현이 갈리느니
+        #    한 규칙으로 간다 — 테스트에서 만진 출력은 저장되지 않는다.
+        self._saved.update({
+            k: (i.default if (skip_outputs and i.out) else i.current)
+            for k, i in self.items.items()
+        })
         if self.path is not None:
             self.path.write_text(
                 json.dumps(self._saved, ensure_ascii=False, indent=2),
@@ -561,9 +564,12 @@ def default_store(path: Path | None = None) -> ConfigStore:
                           note="같은 버스에 물린 두 포트는 주소가 겹치면 안 된다"),
             SimConfigItem(f"i2c{port}.enabled", "i2c", "bool", False, False,
                           label=f"J{port} 사용"),
-            # 7비트 주소의 쓸 수 있는 구간. 0x00~0x07 과 0x78~0x7F 은 예약이다.
+            # 🔴 0 은 "미지정" 이다. 7비트 주소에서 실제로 쓸 수 있는 구간은
+            #    0x08~0x77 이지만, 하한을 0x08 로 두면 기본값 0 이 범위 밖이
+            #    되어 $CFG,RESET 이 스스로 어긋난 값으로 되돌린다.
             SimConfigItem(f"i2c{port}.addr", "i2c", "u8", 0, 0,
-                          minimum=0x08, maximum=0x77, label=f"J{port} 주소"),
+                          minimum=0, maximum=0x77, label=f"J{port} 주소",
+                          note="0 = 미지정. 쓸 수 있는 7비트 주소는 0x08~0x77"),
             SimConfigItem(f"i2c{port}.period_ms", "i2c", "u16", 200, 200,
                           minimum=10, maximum=60000, unit="ms",
                           label=f"J{port} 주기"),
