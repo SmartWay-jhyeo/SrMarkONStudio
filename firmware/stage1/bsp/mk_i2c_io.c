@@ -2,9 +2,33 @@
 
 #include "stm32h7xx_hal.h"
 
-/* 🔴 전송 타임아웃. 슬레이브가 클럭을 늘려 잡는 경우까지만 기다린다 —
- *    길게 잡으면 슈퍼루프가 그만큼 선다. 100 kHz 에서 3바이트가 약
- *    0.4 ms 이므로 5 ms 면 12배 여유다. */
+/* 🔴 전송 타임아웃 — 이것이 최악 블로킹 시간이 **아니다**.
+ *
+ *    이 값은 START 이후, 즉 슬레이브가 클럭을 늘려 잡는 각 바이트 단계
+ *    에서만 적용된다. 100 kHz 에서 3바이트가 약 0.4 ms 이므로 5 ms 면
+ *    12배 여유다.
+ *
+ *    하지만 HAL_I2C_Master_Transmit/Receive·HAL_I2C_Mem_Read 는 그
+ *    전에 버스 BUSY 를 먼저 기다리는데, 그 대기는 우리가 넘긴
+ *    XFER_TIMEOUT_MS 가 아니라 HAL 에 박힌 고정 매크로를 쓴다:
+ *
+ *      #define I2C_TIMEOUT_BUSY (25U)   // stm32h7xx_hal_i2c.c:344
+ *      I2C_WaitOnFlagUntilTimeout(hi2c, I2C_FLAG_BUSY, SET,
+ *                                 I2C_TIMEOUT_BUSY, tickstart);
+ *      (Master_Transmit 1133행 · Master_Receive 1273행 · Mem_Read 2682행 —
+ *       Cube FW_H7 V1.13.0 stm32h7xx_hal_i2c.c)
+ *
+ *    즉 버스가 눌린 채로(전원 없는 센서가 SDA 를 Low 로 잡고 있다든가,
+ *    배선 불량) 호출이 시작되면 최악 블로킹은 5 ms 가 아니라
+ *    **25 ms + 5 ms = 30 ms** 다.
+ *
+ *    지금은 받아들일 만하다 — mk_i2c_tick() 이 한 바퀴에 포트 하나만
+ *    진행하므로 30 ms 는 한 바퀴에 최대 한 번뿐이고, ADS1256 수집은
+ *    DRDY 인터럽트 + DMA 라 그 30 ms 동안에도 표본을 잃지 않는다.
+ *
+ *    버스 잠김을 스스로 풀거나(SCL 토글) 선행 BUSY 검사를 넣는 것은
+ *    계획서 §14 가 "실제로 겪은 뒤에 넣는다" 로 미뤄 둔 항목이다 —
+ *    아직 겪지 않았으므로 여기서는 넣지 않는다. */
 #define XFER_TIMEOUT_MS   5u
 
 /* 🔴 여섯 핀 모두 AF4 다 (DS13313 Rev 1, Table 8 — PA8·PC9 p.73·77,
