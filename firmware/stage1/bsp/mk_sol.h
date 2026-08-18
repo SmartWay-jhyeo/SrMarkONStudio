@@ -26,6 +26,12 @@
  * 🔴 ISR 은 판단하지 않는다. 핀 상태와 시각(`mk_time_ms()`)만 잡아
  *    `mk_solctl_on_edge()` 로 넘기고 즉시 나온다. 디바운스·극성 반전은
  *    app/mk_solctl.c 의 슈퍼루프 쪽이 한다.
+ *
+ * 🔴 상태의 근거는 레벨이다(사용자 확정 2026-08-18). `mk_sol_read()` 가
+ *    `MkSolRead` 콜백으로 `mk_solctl_init()` 에 등록되어, 슈퍼루프가 매
+ *    바퀴 이 함수로 세 핀을 직접 읽는다 — 엣지(ISR)를 하나 놓쳐도 다음
+ *    안정 구간에서 레벨이 스스로 회복시킨다. ISR 은 여전히 "언제 바뀌었나"
+ *    의 정밀 시각만 댄다.
  */
 #ifndef MK_SOL_H
 #define MK_SOL_H
@@ -39,6 +45,11 @@
  * `sc` 는 이 함수가 들고 계속 살아 있어야 한다 — ISR 이 이 포인터로
  * 콜백한다. */
 void mk_sol_init(MkSolCtl *sc);
+
+/* 채널 하나의 raw 핀 레벨을 즉시 읽어 돌려준다(0/1) — `MkSolRead` 서명과
+ * 맞는다. main.c 가 `mk_solctl_init(&s_sol, mk_sol_read, NULL)` 로 등록해,
+ * `mk_solctl_tick()` 이 매 바퀴 이 함수를 불러 상태의 근거로 삼는다. */
+int mk_sol_read(void *ctx, MkSolCh ch);
 
 /* EXTI4 인터럽트에서 부른다(stm32h7xx_it.c) — PA4(J18) 전용선. */
 void mk_sol_exti4_isr(void);

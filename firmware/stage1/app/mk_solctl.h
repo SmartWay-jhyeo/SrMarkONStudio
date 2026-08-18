@@ -15,10 +15,19 @@
  *    전선에 나가는 유일한 뜻이다. 옵토가 로우 액티브라는 하드웨어 사실이
  *    호스트까지 새어 나오면 안 된다(설계 원칙 1과 같은 결).
  *
- * 🔴 ISR 은 판단하지 않는다. bsp/mk_sol.c 가 핀 상태(raw)와 시각만 잡아
- *    `mk_solctl_on_edge()` 로 큐에 넣고 즉시 나온다. 디바운스·극성 반전은
- *    전부 `mk_solctl_tick()` 이 슈퍼루프에서 한다 — 이 저장소가 ADS1256
- *    에서 지킨 규칙과 같다(수집은 인터럽트, 판단은 슈퍼루프).
+ * 🔴 상태의 근거는 **핀 레벨**이지 엣지가 아니다(사용자 확정 2026-08-18 —
+ *    "엣지만 보는게 아니라 그 상태를 읽어야 하는거야 엣지는 딱 감지하려고
+ *    하는거고"). `mk_solctl_tick()` 이 매 바퀴 `read()` 로 세 핀을 직접
+ *    읽어 디바운스와 확정을 그 값에 건다. 엣지 큐(`mk_solctl_on_edge()`)는
+ *    남아 있지만 역할이 다르다 — 상태를 바꾸는 근거가 아니라 **그 상태가
+ *    "언제" 바뀌었는지**를 정밀하게 대는 자료다. 폴링만으로는 두 tick
+ *    사이 어느 순간에 바뀌었는지 알 수 없다(폴링 주기 안에서 뭉개진다).
+ *
+ *    그래서 매 tick 은 두 근거를 합친다: 큐에 쌓인 엣지가 있으면 그
+ *    시각을 쓰고(정밀), 없는데도 폴링된 레벨이 지금 후보와 다르면(엣지를
+ *    놓쳤다는 뜻) 그 tick 의 시각으로 새 후보를 연다(폴링 시각, 정밀도는
+ *    떨어지지만 상태는 맞다). ISR 은 여전히 판단하지 않는다 —
+ *    `mk_solctl_on_edge()` 는 raw 값과 시각을 큐에 넣기만 한다.
  *
  * 🔴 극성 반전은 `flip_polarity()`(mk_solctl.c) **한 곳**에서만 한다.
  *    두 곳에서 뒤집으면 원래대로 돌아오고, 화면이 모든 것을 반대로
@@ -48,8 +57,15 @@ typedef enum {
 typedef struct {
     unsigned connector_id;   /* 18·19·20 */
     uint8_t  state;          /* 이미 반전된 값 — 1 = 켜짐 */
-    int64_t  t_ms;           /* 엣지를 잡은 시각 */
+    int64_t  t_ms;           /* 엣지를 잡은 시각. 엣지를 놓쳤으면 대신
+                               * 폴링 시각이다 — mk_solctl_tick() 주석. */
 } MkSolOut;
+
+/* 핀 하나의 raw 레벨을 즉시 돌려준다(0/1). bsp 가 HAL_GPIO_ReadPin 으로
+ * 구현한다 — mk_railctl.h 의 MkRailSet 과 같은 자리다(출력은 콜백으로
+ * 내보내고, 입력은 콜백으로 읽어 들인다). 매 tick 마다 불리므로 즉시
+ * 돌아와야 한다. */
+typedef int (*MkSolRead)(void *ctx, MkSolCh ch);
 
 /* 🔴 태그를 둔다(익명 struct 가 아니다). mk_hostlink.h·mk_telem.h 가
  *    `struct MkSolCtl *` 로 전방 선언해 HAL 처럼 무거운 include 없이
@@ -64,10 +80,19 @@ typedef struct MkSolCtl {
     MkQueue  q[MK_SOL_COUNT];
     MkSample q_buf[MK_SOL_COUNT][MK_SOL_QUEUE_CAP];
 
+    /* 매 tick 세 핀을 읽는 콜백. NULL 이면(주로 시험) 레벨 폴링을 건너뛰고
+     * 예전처럼 엣지 큐만 본다 — "폴링을 빼면 자가회복이 깨진다"는 되돌림
+     * 시험이 바로 이 경로를 쓴다(tests/test_sol.c). */
+    MkSolRead read;
+    void     *ctx;
+
     /* 디바운스 중인 후보값. */
     uint8_t  has_candidate[MK_SOL_COUNT];
     uint8_t  candidate[MK_SOL_COUNT];        /* raw(0/1), 반전 전 */
-    int64_t  candidate_t_ms[MK_SOL_COUNT];   /* 후보가 이 값으로 굳기 시작한 시각 */
+    int64_t  candidate_t_ms[MK_SOL_COUNT];   /* 후보가 이 값으로 굳기 시작한 시각.
+                                               * 엣지에서 왔으면 정밀, 폴링에서
+                                               * 왔으면(엣지를 놓쳤으면) 그
+                                               * tick 의 now_ms 다. */
 
     /* 확정된(반전 후) 상태. $STAT 이 이것을 읽는다. */
     uint8_t  confirmed_valid[MK_SOL_COUNT];
@@ -80,26 +105,40 @@ typedef struct MkSolCtl {
     uint32_t out_dropped;   /* out 버퍼가 넘친 횟수 — 정상 경로로는 안 온다 */
 } MkSolCtl;
 
-void mk_solctl_init(MkSolCtl *sc);
+/* `read`(bsp 의 핀 읽기)를 등록한다. `ctx` 는 그대로 `read` 에 돌려준다.
+ * `read` 를 NULL 로 주면(호스트 시험 대부분) 레벨 폴링 없이 예전처럼
+ * 엣지 큐만으로 디바운스한다 — mk_solctl_tick() 의 되돌림 시험이 이 경로를
+ * 확인한다. */
+void mk_solctl_init(MkSolCtl *sc, MkSolRead read, void *ctx);
 
 /* 채널 -> 커넥터 번호(18~20). 범위 밖이면 0. */
 unsigned mk_sol_connector_of(MkSolCh ch);
 
 /* 🔴 ISR 이 부른다. 판단하지 않는다 — raw 핀 상태와 시각을 큐에 넣기만
  *    한다. 큐가 가득 차 있으면 mk_queue_push() 의 규칙대로 가장 오래된
- *    것을 버리고 drops 를 센다(mk_queue_drops 로 조회). */
+ *    것을 버리고 drops 를 센다(mk_queue_drops 로 조회). 이제 상태를
+ *    바꾸는 근거는 아니다 — mk_solctl_tick() 이 그날 그 채널의 폴링된
+ *    레벨과 맞는지만 이 큐로 확인해 "언제" 를 정밀하게 잡는 데 쓴다. */
 void mk_solctl_on_edge(MkSolCtl *sc, MkSolCh ch, int raw_level, int64_t t_ms);
 
-/* 🔴 부팅 때 한 번, bsp 가 실제 핀을 동기적으로 읽어서 부른다. ISR 을
- *    거치지 않고 즉시 확정 상태를 세운다 — 디바운스를 기다리지 않는다.
- *    이 호출은 **레코드를 내지 않는다**. 규격 §7.6 이 "막 연결한 호스트는
- *    지금 상태를 모른다, `$STAT` 이 그 공백을 채운다"고 못박은 대로,
- *    초기값은 텔레메트리가 아니라 `$STAT` 으로만 전해진다. */
+/* 🔴 부팅 때 한 번, bsp 가 실제 핀을 동기적으로 읽어서 부른다. 매 tick
+ *    레벨을 폴링하는 지금도 이 함수가 남아 있는 이유는 하나다 — 첫
+ *    `mk_solctl_tick()` 이 돌 때까지 기다리면 그 사이(부팅 직후 첫
+ *    디바운스 구간)에는 `$STAT` 이 "아직 모름"을 답하게 된다. `prime()`
+ *    은 디바운스 없이 즉시 확정해 그 공백을 없앤다. 이 호출은 **레코드를
+ *    내지 않는다** — 규격 §7.6 이 "막 연결한 호스트는 지금 상태를 모른다,
+ *    `$STAT` 이 그 공백을 채운다"고 못박은 대로, 초기값은 텔레메트리가
+ *    아니라 `$STAT` 으로만 전해진다. */
 void mk_solctl_prime(MkSolCtl *sc, MkSolCh ch, int raw_level, int64_t t_ms);
 
-/* 큐를 비우고 디바운스를 진행한다. `sol.debounce_ms` 설정값(없으면 5)
- * 만큼 후보가 안정되면 상태를 확정하고, 이전과 다르면 레코드를 하나
- * 쌓는다. 매 바퀴 불러도 된다. */
+/* 큐를 비우고(정밀 시각 확보) `read` 로 세 핀의 지금 레벨을 폴링해
+ * (등록돼 있으면) 디바운스를 진행한다. `sol.debounce_ms` 설정값(없으면
+ * 5) 만큼 후보가 안정되면 상태를 확정하고, 이전과 다르면 레코드를 하나
+ * 쌓는다. 매 바퀴 불러도 된다.
+ *
+ * 🔴 폴링된 레벨이 지금 후보와 다르면(엣지를 놓쳤다는 뜻) 이 tick 의
+ *    시각으로 새 후보를 연다 — 정밀도는 폴링 주기만큼 떨어지지만, 엣지를
+ *    영영 하나 잃어도 다음 안정 구간에서 반드시 회복한다. */
 void mk_solctl_tick(MkSolCtl *sc, MkConfig *cfg, int64_t now_ms);
 
 /* 나갈 레코드를 하나 꺼낸다. 있으면 1, 없으면 0. */

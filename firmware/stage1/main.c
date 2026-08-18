@@ -305,8 +305,14 @@ int main(void)
      *    큐를 먼저 비운 뒤에 mk_sol_init() 을 부른다. mk_sol_init() 은 핀을
      *    열자마자 실제 레벨을 동기적으로 읽어 mk_solctl_prime() 으로 초기
      *    상태를 세우므로, 순서가 바뀌면 prime() 이 아직 초기화 안 된
-     *    구조체에 쓰게 된다. */
-    mk_solctl_init(&s_sol);
+     *    구조체에 쓰게 된다.
+     *
+     *    `mk_sol_read` 를 여기서 등록한다 — 상태의 근거는 엣지가 아니라
+     *    레벨이므로(같은 날 확정), mk_solctl_tick() 이 매 바퀴 이 콜백으로
+     *    세 핀을 직접 읽어 디바운스를 건다. GPIO 는 뒤이은 mk_sol_init() 이
+     *    여는데, 여기서는 함수 포인터만 저장할 뿐 아직 부르지 않으므로
+     *    순서가 문제되지 않는다. */
+    mk_solctl_init(&s_sol, mk_sol_read, NULL);
     mk_sol_init(&s_sol);
     mk_ws2812_io_init();
 

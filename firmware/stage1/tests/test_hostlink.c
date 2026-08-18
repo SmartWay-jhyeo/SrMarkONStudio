@@ -746,7 +746,7 @@ static void test_stat_reports_real_din_state(void)
     MkHostlink h; Sink s;
 
     setup_cfg(&h, &s);
-    mk_solctl_init(&sol);
+    mk_solctl_init(&sol, NULL, NULL);   /* 레벨 폴링 없음 — prime() 만 본다 */
     mk_solctl_prime(&sol, MK_SOL_J18, 0, 0);   /* raw LOW  -> state 1 */
     mk_solctl_prime(&sol, MK_SOL_J19, 1, 0);   /* raw HIGH -> state 0 */
     mk_solctl_prime(&sol, MK_SOL_J20, 1, 0);

@@ -70,6 +70,20 @@ void mk_sol_init(MkSolCtl *sc)
     HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 }
 
+int mk_sol_read(void *ctx, MkSolCh ch)
+{
+    (void)ctx;
+    /* 🔴 이 함수가 상태의 근거다 — `mk_solctl_tick()` 이 매 바퀴 여기를
+     *    거쳐 세 핀을 직접 읽는다. ISR(mk_sol_exti4_isr·mk_sol_exti9_5_isr)
+     *    은 "언제 바뀌었나"의 정밀 시각만 대는 보조 자료로 남는다. */
+    switch (ch) {
+    case MK_SOL_J18: return read_raw(PIN_J18);
+    case MK_SOL_J19: return read_raw(PIN_J19);
+    case MK_SOL_J20: return read_raw(PIN_J20);
+    default:         return 0;
+    }
+}
+
 void mk_sol_exti4_isr(void)
 {
     if (__HAL_GPIO_EXTI_GET_IT(PIN_J18) == RESET) {

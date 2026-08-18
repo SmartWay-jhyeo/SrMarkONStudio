@@ -408,7 +408,7 @@ static void test_din_records_share_the_sequence_with_ain(void)
 {
     setup();
     static MkSolCtl SOL;
-    mk_solctl_init(&SOL);
+    mk_solctl_init(&SOL, NULL, NULL);   /* 레벨 폴링 없음 — out 을 직접 채운다 */
     mk_telem_attach_sol(&T, &SOL);
     mk_queue_push(mk_ads_queue(&ADS, 0), 500, 4000000);   /* ain 쪽에도 한 건 */
 
@@ -435,7 +435,7 @@ static void test_din_record_shape(void)
 {
     setup();
     static MkSolCtl SOL;
-    mk_solctl_init(&SOL);
+    mk_solctl_init(&SOL, NULL, NULL);   /* 레벨 폴링 없음 — out 을 직접 채운다 */
     mk_telem_attach_sol(&T, &SOL);
 
     SOL.out[0] = (MkSolOut){ .connector_id = 20u, .state = 0u, .t_ms = 4242 };
@@ -460,7 +460,7 @@ static void test_din_is_not_gated_by_tx_period(void)
     setup();
     set_u32("tx.period_ms", 10000u);
     static MkSolCtl SOL;
-    mk_solctl_init(&SOL);
+    mk_solctl_init(&SOL, NULL, NULL);   /* 레벨 폴링 없음 — out 을 직접 채운다 */
     mk_telem_attach_sol(&T, &SOL);
 
     SOL.out[0] = (MkSolOut){ .connector_id = 19u, .state = 1u, .t_ms = 10 };
@@ -539,7 +539,7 @@ static void emit_din(void)
 {
     setup();
     static MkSolCtl SOL;
-    mk_solctl_init(&SOL);
+    mk_solctl_init(&SOL, NULL, NULL);   /* 레벨 폴링 없음 — out 을 직접 채운다 */
     mk_telem_attach_sol(&T, &SOL);
 
     /* 1) 켜짐, J18 */

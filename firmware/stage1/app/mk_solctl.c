@@ -14,12 +14,14 @@ static uint8_t flip_polarity(uint8_t raw)
     return raw ? 0u : 1u;
 }
 
-void mk_solctl_init(MkSolCtl *sc)
+void mk_solctl_init(MkSolCtl *sc, MkSolRead read, void *ctx)
 {
     memset(sc, 0, sizeof *sc);
     for (int c = 0; c < MK_SOL_COUNT; c++) {
         mk_queue_init(&sc->q[c], sc->q_buf[c], MK_SOL_QUEUE_CAP);
     }
+    sc->read = read;
+    sc->ctx  = ctx;
 }
 
 unsigned mk_sol_connector_of(MkSolCh ch)
@@ -72,8 +74,24 @@ void mk_solctl_tick(MkSolCtl *sc, MkConfig *cfg, int64_t now_ms)
             }
         }
 
+        /* 🔴 상태의 근거는 레벨이다 — 큐에서 나온 후보를 실제 핀과
+         *    대조한다. 엣지 큐가 정확했으면(정상 경로) 아래 raw 는 이미
+         *    위에서 잡은 candidate 와 같아 아무 일도 안 한다. 다르면
+         *    엣지를 놓친 것이다 — PRIMASK 경합, 인터럽트 지연, 잡음으로
+         *    씹힌 엣지가 전부 여기로 모인다. 놓친 시각은 알 수 없으니
+         *    이 tick 의 now_ms 로 새 후보를 연다: 정밀도는 잃어도 다음
+         *    안정 구간에서 반드시 회복한다(사용자 확정 2026-08-18). */
+        if (sc->read != NULL) {
+            uint8_t raw = (uint8_t)(sc->read(sc->ctx, (MkSolCh)c) != 0);
+            if (!sc->has_candidate[c] || raw != sc->candidate[c]) {
+                sc->has_candidate[c]  = 1u;
+                sc->candidate[c]      = raw;
+                sc->candidate_t_ms[c] = now_ms;
+            }
+        }
+
         if (!sc->has_candidate[c]) {
-            continue;   /* 엣지도 prime 도 아직 없다 — 볼 것이 없다 */
+            continue;   /* 엣지도 폴링도 prime 도 아직 없다 — 볼 것이 없다 */
         }
         if ((now_ms - sc->candidate_t_ms[c]) < (int64_t)debounce_ms) {
             continue;   /* 아직 안정되지 않았다 */
