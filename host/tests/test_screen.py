@@ -347,6 +347,21 @@ def test_build_screen_carries_the_error_into_the_link():
     assert "타임아웃" in state.link.text
 
 
+def test_build_screen_seeds_i2c_cards_from_the_configured_ports():
+    """🔴 `ranges`·`units` 와 같은 배선이다 (host/gui/screen.py:243-278) —
+    설정에서 온 것을 `build_screen` 이 받아 `build_sensors` 로 내린다."""
+    h = StateHistory()
+    state = build_screen(
+        ScreenState(channels=empty_channels()),
+        identity=Identity(port="sim"), mode="RUN", error=None,
+        rail_values={}, records=[], history=h, now_s=0.0,
+        i2c_ports={10: (2, True)},
+    )
+    assert len(state.sensors) == 7
+    assert {s.connector for s in state.sensors} == {
+        "J10", "J11", "J12", "J13", "J14", "J15"}
+
+
 def test_build_screen_is_pure_enough_to_repeat():
     """🔴 같은 입력으로 두 번 부르면 같은 화면이 나와야 한다.
 

@@ -11,6 +11,7 @@ from host.gui.settings_form import (
     group_label,
     channel_ranges,
     channel_units,
+    i2c_ports,
     matrix_of,
     telemetry_shape,
 )
@@ -436,6 +437,22 @@ def test_telemetry_shape_reads_the_spec_named_keys(form):
     shape = telemetry_shape(form)
     assert shape.period_ms == 100
     assert shape.float_digits == 4
+
+
+# ------------------------------------------------------------- I2C 포트
+
+def test_i2c_ports_default_to_none_and_disabled(form):
+    """🔴 시뮬레이터 기본값은 여섯 포트 전부 종류 없음·꺼짐이다. 대시보드가
+    카드를 몇 장 세울지는 이 값에서 정해진다."""
+    ports = i2c_ports(form)
+    assert set(ports) == {10, 11, 12, 13, 14, 15}
+    assert ports[10] == (0, False)
+
+
+def test_i2c_ports_read_kind_and_enabled_from_the_form(form):
+    form.edit("i2c10.kind", "2")
+    form.edit("i2c10.enabled", "true")
+    assert i2c_ports(form)[10] == (2, True)
 
 
 def test_telemetry_shape_survives_a_half_typed_number(form):

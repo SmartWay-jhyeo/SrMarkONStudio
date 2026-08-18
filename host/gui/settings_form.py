@@ -272,6 +272,9 @@ def group_label(name: str) -> str:
 COL_ZERO = "zero"
 COL_SCALE = "scale"
 COL_UNIT = "unit"
+#: I2C 포트 표의 열 이름 (`i2cN.kind` · `i2cN.enabled`).
+COL_KIND = "kind"
+COL_ENABLED = "enabled"
 
 KEY_FIELD_MASK = "tx.fields"
 KEY_PERIOD_MS = "tx.period_ms"
@@ -365,6 +368,37 @@ def channel_units(form: "SettingsForm") -> dict[int, str]:
             cell = mrow.cells[ui]
             if cell is not None and cell.value:
                 out[mrow.index] = cell.value
+    return out
+
+
+def i2c_ports(form: "SettingsForm") -> dict[int, tuple[int, bool]]:
+    """I2C 포트 번호(10~15) → (종류, 사용 여부).
+
+    🔴 대시보드가 카드를 몇 장 세울지는 이 값에서 정해진다 — `channel_ranges`
+       처럼 화면(`host/gui/screen.py`)에 그대로 건넨다. 종류가 무엇을
+       뜻하는지(온습도가 카드 두 장인지 등)는 여기서 판단하지 않는다 —
+       이 함수는 폼에서 값을 뽑기만 한다.
+    """
+    out: dict[int, tuple[int, bool]] = {}
+    for group in form.groups:
+        matrix = matrix_of(group)
+        if matrix is None or COL_KIND not in matrix.columns:
+            continue
+        if COL_ENABLED not in matrix.columns:
+            continue
+        ki = matrix.columns.index(COL_KIND)
+        ei = matrix.columns.index(COL_ENABLED)
+        for mrow in matrix.rows:
+            kind_cell = mrow.cells[ki]
+            if kind_cell is None:
+                continue
+            try:
+                kind = int(float(kind_cell.value))
+            except (TypeError, ValueError):
+                continue
+            enabled_cell = mrow.cells[ei]
+            enabled = enabled_cell is not None and enabled_cell.value == "true"
+            out[mrow.index] = (kind, enabled)
     return out
 
 

@@ -35,6 +35,7 @@ from host.gui.settings_form import (
     SettingsForm,
     channel_ranges,
     channel_units,
+    i2c_ports,
 )
 from host.gui.qt.rail import Rail
 from host.gui.last_known import StateHistory
@@ -207,6 +208,12 @@ class MainWindow(QMainWindow):
         form = self._settings.form
         return channel_units(form) if form is not None else {}
 
+    def _i2c_ports(self) -> dict[int, tuple[int, bool]]:
+        """I2C 포트별 (종류, 사용 여부). 레일 값과 같은 이유로 설정
+        화면에서 읽는다 — 화면에 그려진 값이 곧 보드에 보낸 값이다."""
+        form = self._settings.form
+        return i2c_ports(form) if form is not None else {}
+
     # ------------------------------------------------------------- 워커
 
     def _on_step(self, result) -> None:
@@ -230,6 +237,7 @@ class MainWindow(QMainWindow):
             history=self._history,
             ranges=self._channel_ranges(),
             units=self._channel_units(),
+            i2c_ports=self._i2c_ports(),
         )
         for view in self._views:
             view.render(self._state)

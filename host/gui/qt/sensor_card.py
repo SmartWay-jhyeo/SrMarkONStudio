@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from host.gui.screen import SensorState
+from host.gui.screen import SensorState, sensor_status_text
 from host.gui.theme import Color, Font, Space
 
 
@@ -123,13 +123,18 @@ class SensorCard(QFrame):
         col.addWidget(self._spark, 1)
 
     def render(self, sensor: SensorState) -> None:
-        self._title.setText(f"{sensor.connector} · {sensor.label}")
-        if sensor.value is None:
-            # 🔴 값이 없으면 비운다. 마지막 값을 계속 띄우면 죽은 센서가
-            #    살아 있는 것처럼 보인다 (규격 §7.5).
-            #    `status=3`(지원 안 함)은 고장이 아니므로 "—" 대신 이유를
-            #    말하고, 색도 FAULT 로 물들이지 않는다.
-            self._value.setText("지원 안 함" if sensor.unsupported else "—")
+        # 🔴 `label` 이 없는 카드가 있다 — 종류를 아직 안 고른 포트
+        #    (`no_kind`). 그때는 "J10 · " 처럼 빈 이름표를 달지 않는다.
+        title = f"{sensor.connector} · {sensor.label}" if sensor.label \
+            else sensor.connector
+        self._title.setText(title)
+
+        text = sensor_status_text(sensor)
+        if text:
+            # 🔴 값이 없는 이유가 여럿이다 — 종류 없음·꺼짐·값 없음·지원
+            #    안 함(`sensor_status_text`). 고장(`broken`)만 FAULT 색을
+            #    쓴다 — 나머지는 사용자가 배선을 뜯을 일이 아니다.
+            self._value.setText(text)
             self._value.setStyleSheet(
                 f"color: {Color.FAULT if sensor.broken else Color.INK_FAINT}; "
                 f"font-family: {Font.MONO}; font-size: {Font.SIZE_XL}pt;")

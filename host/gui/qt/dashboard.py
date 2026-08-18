@@ -260,10 +260,12 @@ class Dashboard(QWidget):
         col.setSpacing(Space.SM)
         # ── I2C 센서 ─────────────────────────────────────────────
         #
-        # 🔴 자리를 미리 잡아 두지 않는다. 아날로그는 채널이 일곱으로 고정
-        #    이지만 I2C 는 무엇이 꽂히느냐에 따라 카드 수가 달라진다 —
-        #    온습도 하나가 카드 둘을 만든다. 빈 카드를 여섯 장 깔아 두면
-        #    화면 절반이 "—" 가 된다.
+        # 🔴 여기서는 자리를 만들지 않는다. 여섯 포트를 항상 세우는 것은
+        #    `host/gui/screen.py` 의 `seed_sensors()` 가 하는 일이고(아날로그
+        #    `empty_channels()` 와 같은 이유 — 설계 원칙 3), Qt 위젯은
+        #    `state.sensors` 에 처음 나타난 키만 골라 만든다. 카드 수는
+        #    포트 종류에 따라 여섯(전부 없음)에서 늘어난다 — 온습도 하나가
+        #    카드 둘을 만들기 때문이다.
         self._sensor_title = SectionTitle("I2C 센서")
         self._sensor_grid = QGridLayout()
         self._sensor_grid.setHorizontalSpacing(Space.MD)

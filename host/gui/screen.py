@@ -245,6 +245,7 @@ def build_screen(previous: ScreenState, *, identity: Identity, mode: str,
                  history: StateHistory, ctl_mode: str = "ACTIVE",
                  ranges: dict[int, tuple[float, float]] | None = None,
                  units: dict[int, str] | None = None,
+                 i2c_ports: dict[int, tuple[int, bool]] | None = None,
                  now_s: float | None = None) -> ScreenState:
     """워커 결과 하나를 **다음 화면 상태**로.
 
@@ -273,7 +274,7 @@ def build_screen(previous: ScreenState, *, identity: Identity, mode: str,
                                 previous=previous.channels, ranges=ranges,
                                 units=units),
         sensors=build_sensors(records, reachable=reachable,
-                              previous=previous.sensors),
+                              previous=previous.sensors, ports=i2c_ports),
     )
 
 
@@ -379,6 +380,29 @@ QUANTITY_UNITS = {
 }
 
 
+#: I2C 센서 포트 (데이터시트 §5.4). J10~J15.
+I2C_PORTS: tuple[int, ...] = (10, 11, 12, 13, 14, 15)
+
+#: 카탈로그 `i2cN.kind` 의 "미지정" 값.
+I2C_KIND_NONE = 0
+
+#: 종류(카탈로그 `i2cN.kind`) → 그 종류가 내는 양들.
+#:
+#: 🔴 카탈로그 열거값의 뜻이다. `tools/simulator/config_store.py` 의
+#:    `I2C_KINDS`(펌웨어 `mk_cfgtable.c` 와 대조돼 있다)와 **순서·개수가
+#:    같아야 한다** — 값이 둘인 종류는 온습도뿐이라는 것은 사용자 확정
+#:    2026-08-17. 어긋나면 대시보드가 엉뚱한 수의 카드를 세운다. CLAUDE.md
+#:    §0 이 말하는 "설정 항목은 두 곳을 함께 고친다" 와 같은 결의 문제라,
+#:    이 표를 고칠 때는 그쪽도 함께 본다.
+I2C_KIND_QUANTITIES: dict[int, tuple[str, ...]] = {
+    I2C_KIND_NONE: (),
+    1: ("lux",),
+    2: ("temp", "humidity"),
+    3: ("temp_object",),
+    4: ("temp",),
+}
+
+
 def quantity_unit(quantity: str) -> str:
     """🔴 모르는 양의 단위는 비워 둔다. 아무 단위나 붙이면 화면이 틀린
        물리량을 말하게 되고, 그건 값이 없는 것보다 나쁘다."""
@@ -402,13 +426,32 @@ class SensorState:
 
     connector: str
     quantity: str
-    label: str
+    label: str = ""
     value: float | None = None
     unit: str = ""
     status: int = 0
 
+    enabled: bool = True
+    """`i2cN.enabled` 설정. 아날로그 채널의 `enabled` 와 같은 자리다.
+
+    🔴 `False` 면 보드가 애초에 레코드를 안 보낸다(규격 §7.5 — 미연결은
+       정상 상태). 화면은 이것을 "값 없음" 이 아니라 "채널 꺼짐" 으로
+       구분해 말해야 한다 — 켜면 잴 수 있다는 뜻이 다르기 때문이다
+       (`host/gui/tare.py` 의 `blocked_reason` 과 같은 구분).
+    """
+
     trace: tuple[float | None, ...] = ()
     trace_t: tuple[int | None, ...] = ()
+
+    @property
+    def no_kind(self) -> bool:
+        """이 포트에 아직 종류를 고르지 않았다 (`i2cN.kind` = 없음).
+
+        🔴 정체가 (커넥터, 양) 짝이므로, 종류가 없는 포트는 양도 없다 —
+           `quantity` 가 빈 문자열이다. 고장도 지원 안 함도 아니고, 그냥
+           아직 "무엇을 잴지" 가 정해지지 않은 자리다.
+        """
+        return self.quantity == ""
 
     @property
     def broken(self) -> bool:
@@ -428,20 +471,94 @@ class SensorState:
         return self.status == 3
 
 
+def sensor_status_text(sensor: SensorState) -> str:
+    """값 자리에 값 대신 무엇을 적을지. 값이 있으면 빈 문자열이다 — 그때는
+    Qt 가 값을 그린다.
+
+    🔴 새 낱말을 짓지 않는다. "채널 꺼짐" · "값 없음" 은 아날로그
+       (`host/gui/tare.py` 의 `blocked_reason`)가 이미 쓰는 말이고,
+       "지원 안 함" 은 이 파일이 이미 쓰던 말이다.
+
+    순서가 뜻을 가진다 — 종류가 없으면 켜졌는지는 안 물어도 되고, 꺼져
+    있으면 값이 왜 없는지는 안 물어도 된다.
+    """
+    if sensor.no_kind:
+        return "종류 없음"
+    if not sensor.enabled:
+        return "채널 꺼짐"
+    if sensor.value is None:
+        return "지원 안 함" if sensor.unsupported else "값 없음"
+    return ""
+
+
+def seed_sensors(ports: dict[int, tuple[int, bool]]) -> tuple[SensorState, ...]:
+    """설정에서 온 포트별 (종류, 사용 여부) 로 카드를 미리 깐다.
+
+    🔴 아날로그의 `empty_channels()` 와 같은 이유다(설계 원칙 3 — 센서
+       미연결은 정상 상태다). 레코드가 하나도 안 와도 여섯 자리가 화면에
+       있어야, "안 꽂았다" 와 "설정을 아직 못 읽었다" 를 구분할 수 있다.
+
+    🔴 `ports` 에 없는 포트는 종류 없음·꺼짐으로 본다 — 카탈로그를 아직
+       못 읽었을 때(`ports={}`)도 여섯 자리는 그대로 있어야 한다.
+    """
+    out: list[SensorState] = []
+    for port in I2C_PORTS:
+        kind, enabled = ports.get(port, (I2C_KIND_NONE, False))
+        connector = f"J{port}"
+        quantities = I2C_KIND_QUANTITIES.get(kind, ())
+        if not quantities:
+            out.append(SensorState(connector=connector, quantity="",
+                                   enabled=enabled))
+        else:
+            for q in quantities:
+                out.append(SensorState(
+                    connector=connector, quantity=q,
+                    label=quantity_label(q), unit=quantity_unit(q),
+                    enabled=enabled))
+    return tuple(out)
+
+
 def build_sensors(records, *, reachable: bool,
                   previous: tuple[SensorState, ...] = (),
+                  ports: dict[int, tuple[int, bool]] | None = None,
                   ) -> tuple[SensorState, ...]:
     """`type` 이 `i2c` 인 레코드를 센서 카드로.
 
     🔴 순서를 지킨다. 처음 본 순서대로 두고 새로 온 것만 뒤에 붙인다 —
        매번 정렬하면 센서가 하나 늘거나 조용해질 때 카드가 자리를 바꾸고,
        값을 읽던 사람이 무엇을 보고 있었는지 잃는다.
+
+    `ports` 는 `host/gui/settings_form.py` 의 `i2c_ports()` 가 뽑아 주는
+    포트별 (종류, 사용 여부)다. **주지 않으면(`None`) 예전처럼 아무것도
+    미리 깔지 않는다** — 기존 호출부(설정을 모르는 시험 등)를 깨지 않기
+    위해서다. 화면(`build_screen`)은 항상 값을 준다.
     """
     order: list[tuple[str, str]] = []
     base: dict[tuple[str, str], SensorState] = {}
+
+    seed_keys: set[tuple[str, str]] | None = None
+    if ports is not None:
+        for s in seed_sensors(ports):
+            key = (s.connector, s.quantity)
+            order.append(key)
+            base[key] = s
+        seed_keys = set(base)
+
     for s in previous:
         key = (s.connector, s.quantity)
-        order.append(key)
+        if seed_keys is not None:
+            if key not in seed_keys:
+                # 🔴 종류가 바뀌어 더 이상 유효하지 않은 카드다. 그대로
+                #    남기면 보드가 다시는 안 낼 양이 화면에 계속 떠 있는다.
+                continue
+            # 시드는 기본값일 뿐이다 — 이력·실측은 이전 상태에서 이어
+            # 받는다. `enabled` 만은 시드(=지금 설정)를 따른다.
+            base[key] = replace(base[key], value=s.value, status=s.status,
+                                unit=s.unit, trace=s.trace,
+                                trace_t=s.trace_t)
+            continue
+        if key not in base:
+            order.append(key)
         base[key] = s
 
     if not reachable:
