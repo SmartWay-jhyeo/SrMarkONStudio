@@ -184,6 +184,47 @@ def test_only_one_file_drives_the_digital_inputs():
     )
 
 
+def test_sol_owner_configures_the_pins_as_interrupt_inputs():
+    """mk_sol.c 가 실제로 입력(EXTI)으로 여는지 — 출력으로 되돌아가지 않았는지.
+
+    🔴 [검토 지적 I5] 위 test_only_one_file_drives_the_digital_inputs 는
+       "PA4·5·6 을 **누가** 언급하는가" 만 본다. mk_sol.c 안에서
+       `GPIO_MODE_IT_RISING_FALLING` 이 `GPIO_MODE_OUTPUT_PP` 로 바뀌거나
+       `HAL_GPIO_WritePin(GPIOA, PIN_J18, ...)` 이 한 줄 생겨도, 그 파일은
+       여전히 이 핀들을 만지는 **유일한** 파일이므로 그 시험은 빨개지지
+       않는다 — "누가" 만 보고 "**어떻게**" 는 안 보기 때문이다.
+
+       오늘(2026-08-18) 바로잡은 실수가 정확히 이 방향이었다 — 방향이
+       출력에서 입력으로 뒤집혔었다. 이 핀들은 커넥터에 직결이라 버퍼도
+       직렬저항도 클램프도 없다(mk_sol.h 상단 주석) — 출력으로 잡으면
+       반대편 포토트랜지스터와 맞서 소리 없이 핀을 손상시킬 수 있다.
+    """
+    code = _strip_comments((FW / "bsp" / SOL_OWNER).read_text(encoding="utf-8"))
+    assert "GPIO_MODE_IT_" in code, (
+        f"{SOL_OWNER} 가 GPIO_MODE_IT_* 를 쓰지 않는다 — 더는 입력(EXTI)이 "
+        f"아니게 됐을 수 있다"
+    )
+    for banned in ("GPIO_MODE_OUTPUT", "GPIO_MODE_AF", "HAL_GPIO_WritePin"):
+        assert banned not in code, (
+            f"{SOL_OWNER} 가 {banned} 를 쓴다 — J18~J20 은 입력이다(사용자 "
+            f"확정 2026-08-18). 출력으로 잡으면 반대편 포토트랜지스터와 맞선다."
+        )
+
+
+def test_sol_owner_does_not_touch_the_led_pin():
+    """역방향 하나 더 — mk_sol.c 가 WS2812(PA7=GPIO_PIN_7)를 언급하지 않는지.
+
+    🔴 [검토 지적 I5] test_i2c_owner_does_not_touch_the_sol_or_led_pins 는
+       mk_i2c_io.c 가 sol·LED 핀을 안 건드리는지만 본다 — GPIOA 를 여는
+       파일이 이제 셋(sol·WS2812·I2C)인데 이 방향의 검사는 I2C 파일에만
+       있었다.
+    """
+    code = _strip_comments((FW / "bsp" / SOL_OWNER).read_text(encoding="utf-8"))
+    assert not re.findall(r"\bGPIO_PIN_7\b", code), (
+        f"{SOL_OWNER} 가 GPIO_PIN_7(PA7 = WS2812)을 언급한다 — LED 체인의 핀이다"
+    )
+
+
 def test_the_digital_input_test_still_exists():
     """엣지가 디바운스를 거쳐 확정 상태·레코드로 옮겨지는지 보는 C 시험이
     지워지지 않았는지.
@@ -284,8 +325,8 @@ def test_i2c_owner_does_not_touch_the_sol_or_led_pins():
     """I2C 파일이 같은 포트의 다른 핀을 건드리지 않는지.
 
     🔴 GPIOA 를 여는 파일이 셋이 됐다(sol · WS2812 · I2C). 핀별 초기화라
-       서로 덮지 않지만, OR 로 묶어 넣는 실수 한 번이면 밸브가 열리거나
-       LED 체인이 죽는다.
+       서로 덮지 않지만, OR 로 묶어 넣는 실수 한 번이면 디지털 입력이
+       못 읽히거나 LED 체인이 죽는다.
     """
     path = FW / "bsp" / I2C_OWNER
     assert path.exists(), f"{I2C_OWNER} 이 없다"
@@ -300,9 +341,10 @@ def test_i2c_owner_does_not_touch_the_sol_or_led_pins():
 #:    or_led_pins 는 mk_i2c_io.c 가 **남의** 핀을 안 건드리는지만 본다 —
 #:    반대로 **다른 파일이 I2C 핀을 건드리는지**는 아무도 안 봤다. 레일이
 #:    GPIOD 에서 받는 검사(test_only_one_file_touches_gpiod ·
-#:    test_rail_pins_only_appear_in_the_owner)와 sol 이 GPIOA 에서 받는
-#:    검사(test_only_one_file_drives_the_digital_outputs)는 둘 다 이
-#:    양방향을 갖췄는데 I2C 만 정방향뿐이었다.
+#:    test_rail_pins_only_appear_in_the_owner)는 이 양방향을 갖췄는데
+#:    I2C 만 정방향뿐이었다 — sol 도 이때는 정방향
+#:    (test_only_one_file_drives_the_digital_inputs)뿐이었고, 역방향은
+#:    검토 지적 I5 로 test_sol_owner_does_not_touch_the_led_pin 이 채웠다.
 #:
 #:    I2C 는 세 포트(A·B·C)에 걸쳐 있어 sol·레일처럼 "포트 하나 + 핀
 #:    번호 집합"으로 못 묶는다 — 포트마다 다른 핀 집합을 쓴다.
