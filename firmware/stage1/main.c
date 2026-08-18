@@ -33,6 +33,7 @@
 #include "bsp/mk_ws2812_io.h"
 #include "bsp/mk_sol.h"
 #include "bsp/mk_i2c_io.h"
+#include "bsp/mk_critsec.h"
 #include "mk_config.h"
 #include "mk_flash.h"
 #include "mk_hostlink.h"
@@ -257,6 +258,13 @@ int main(void)
 {
     HAL_Init();
     SystemClock_Config();
+
+    /* 🔴 [검토 지적 I3] 큐를 쓰는 어떤 초기화보다도 먼저 등록한다.
+     *    mk_queue_push/pop 이 이 훅으로 PRIMASK 임계구역을 얻는다 — 늦게
+     *    등록하면 그 사이에 도는 ISR 이 기본(무보호) 구현으로 count 를
+     *    건드릴 수 있다. */
+    mk_queue_set_critical_section(mk_critsec_enter, mk_critsec_exit);
+
     mk_rails_init();
     mk_uart_init(UART_BAUD);
 

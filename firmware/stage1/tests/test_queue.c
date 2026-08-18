@@ -152,6 +152,88 @@ static void test_timestamp_is_64bit(void)
     CHECK(s.t_ms == epoch, "epoch ms 가 잘리지 않는다");
 }
 
+/* ---- 임계구역 훅 (검토 지적 I3) ------------------------------------------
+ *
+ * 🔴 경합 자체(ISR 이 pop 의 로드-스토어 사이에 끼는 것)는 이 호스트에서
+ *    진짜로 재현하기 어렵다 — 단일 스레드라 두 함수가 동시에 돌 방법이
+ *    없다. 대신 못박는 것은 두 가지다.
+ *
+ *    1) push·pop 이 실제로 진입/이탈 훅을 부르는가 — 이것이 서 있어야
+ *       bsp/mk_critsec.c 가 무엇을 감싸는지가 뜻을 갖는다. 보호를 감싼
+ *       s_crit_enter()/s_crit_exit() 호출을 mk_queue.c 에서 지우면 이
+ *       시험이 즉시 깨진다(되돌림 검사로 실제 확인했다).
+ *    2) 훅이 실제로 꽂혀 있어도(무보호 기본값이 아니어도) FIFO·drops·
+ *       peak 규칙이 그대로인가 — wrapping 자체가 로직을 바꾸지 않았는지. */
+
+static int s_crit_enter_calls;
+static int s_crit_exit_calls;
+
+static void counting_enter(void) { s_crit_enter_calls++; }
+static void counting_exit(void)  { s_crit_exit_calls++; }
+
+static void test_push_and_pop_invoke_the_critical_section(void)
+{
+    setup();
+    s_crit_enter_calls = 0;
+    s_crit_exit_calls = 0;
+    mk_queue_set_critical_section(counting_enter, counting_exit);
+
+    mk_queue_push(&Q, 1, 1);
+    CHECK(s_crit_enter_calls == 1 && s_crit_exit_calls == 1,
+          "push 가 진입·이탈을 정확히 한 번씩 부른다");
+
+    MkSample s;
+    mk_queue_pop(&Q, &s);
+    CHECK(s_crit_enter_calls == 2 && s_crit_exit_calls == 2,
+          "pop 도 진입·이탈을 정확히 한 번씩 부른다");
+
+    /* 🔴 빈 큐로 일찍 돌아가는 경로에서도 이탈을 건너뛰면 안 된다 —
+     *    건너뛰면 다음 진입 때 저장된 PRIMASK 가 어긋난다(mk_critsec.c). */
+    mk_queue_pop(&Q, &s);
+    CHECK(s_crit_enter_calls == 3 && s_crit_exit_calls == 3,
+          "빈 큐에서 일찍 돌아가도 진입·이탈이 짝을 이룬다");
+
+    mk_queue_set_critical_section(NULL, NULL);   /* 다음 시험에 새지 않게 */
+}
+
+static void test_behaviour_is_unchanged_with_hooks_installed(void)
+{
+    setup();
+    mk_queue_set_critical_section(counting_enter, counting_exit);
+
+    for (int i = 0; i < 6; i++) { mk_queue_push(&Q, 1000 + i, i); }   /* 칸은 4개 */
+    CHECK(mk_queue_count(&Q) == 4, "훅이 있어도 칸 수를 넘지 않는다");
+    CHECK(mk_queue_drops(&Q) == 2, "훅이 있어도 넘친 2개를 센다");
+    CHECK(mk_queue_peak(&Q) == 4, "훅이 있어도 최고치가 맞다");
+
+    MkSample s;
+    mk_queue_pop(&Q, &s);
+    CHECK(s.t_ms == 1002, "훅이 있어도 가장 오래된 둘이 버려지고 3번째가 맨 앞");
+
+    MkSample last = {0, 0};
+    while (mk_queue_pop(&Q, &s)) { last = s; }
+    CHECK(last.t_ms == 1005, "훅이 있어도 가장 최근 표본이 살아남는다");
+
+    mk_queue_set_critical_section(NULL, NULL);
+}
+
+static void test_null_hooks_restore_the_noop_default(void)
+{
+    /* 🔴 NULL 을 등록하면 무보호 기본값으로 돌아가야 한다 — 시험끼리
+     *    상태가 새지 않는다는 계약이고, 위 두 시험이 끝에 이걸 쓴다. */
+    setup();
+    mk_queue_set_critical_section(counting_enter, counting_exit);
+    mk_queue_set_critical_section(NULL, NULL);
+
+    s_crit_enter_calls = 0;
+    s_crit_exit_calls = 0;
+    mk_queue_push(&Q, 1, 1);
+    MkSample s;
+    mk_queue_pop(&Q, &s);
+    CHECK(s_crit_enter_calls == 0 && s_crit_exit_calls == 0,
+          "NULL,NULL 등록 뒤에는 훅이 다시 불리지 않는다");
+}
+
 int main(void)
 {
     printf("mk_queue\n");
@@ -165,6 +247,9 @@ int main(void)
     test_no_storage_still_counts_drops();
     test_negative_raw_survives();
     test_timestamp_is_64bit();
+    test_push_and_pop_invoke_the_critical_section();
+    test_behaviour_is_unchanged_with_hooks_installed();
+    test_null_hooks_restore_the_noop_default();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;
 }

@@ -46,6 +46,31 @@ typedef struct {
 /* 저장소를 붙인다. cap 은 buf 의 칸 수다. */
 void mk_queue_init(MkQueue *q, MkSample *buf, uint16_t cap);
 
+/* 🔴 [검토 지적 I3] `push`(ISR)와 `pop`(슈퍼루프)가 같은 `q->count` 를
+ *    함께 건드린다. 둘 다 읽고-고치고-쓰는 세 단계(LDRH/SUB/STRH 류)라,
+ *    pop 의 로드와 스토어 사이에 push 의 ISR 이 끼면 push 의 증가분이
+ *    그대로 사라진다 — 큐에 든 항목 하나가 영구히 고아가 된다.
+ *
+ *    ADS1256 표본이면 그래프에 점 하나가 비지만, 디지털 입력(J18~J20)
+ *    엣지가 사라지면 확정 상태가 틀린 채로 다음 진짜 변화까지 고정된다
+ *    — `$STAT` 도 화면도 같이 틀린 말을 한다.
+ *
+ *    고치는 방법은 PRIMASK 임계구역인데, `app/` 은 `__disable_irq()` 조차
+ *    모른다(CMSIS 라 HAL 경계 밖이 아니라 이 저장소가 그은 경계 밖이다).
+ *    그래서 진입/이탈을 함수 포인터로 **주입**한다 — bsp 가 실제 PRIMASK
+ *    구현(`bsp/mk_critsec.c`)을 이 자리에 꽂는다.
+ *
+ *    기본은 아무것도 안 하는 구현이다. 호스트 시험은 단일 스레드라 그걸로
+ *    충분하고, 등록하지 않은 채로 링크되는 test_queue.exe 등이 깨지지
+ *    않는 이유이기도 하다. */
+typedef void (*MkQueueCritFn)(void);
+
+/* count 를 건드리는 구간을 감쌀 진입/이탈 함수를 등록한다. 어느 쪽이든
+ * NULL 이면 그 함수는 아무것도 안 하는 기본값으로 되돌아간다(둘 다 NULL
+ * 이면 mk_queue_init() 이전 상태 = 무보호로 복귀 — 시험이 다음 시험에
+ * 영향을 남기지 않으려 이렇게 되돌릴 수 있어야 한다). */
+void mk_queue_set_critical_section(MkQueueCritFn enter, MkQueueCritFn exit_fn);
+
 /* 표본 하나를 넣는다. 가득 차 있으면 가장 오래된 것을 버리고 넣는다.
  * 버렸으면 0, 그냥 들어갔으면 1 을 돌려준다. */
 int mk_queue_push(MkQueue *q, int64_t t_ms, int32_t raw);
