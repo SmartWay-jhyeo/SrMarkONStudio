@@ -158,3 +158,30 @@ def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
     if mask & (1 << _BIT_OF["time_quality"]):
         rec["time_quality"] = 0
     return rec
+
+
+# ---- 디지털 입력 J18~J20 (규격 §7.6) ----------------------------------------
+
+
+def build_din_record(store: ConfigStore, *, connector_id: int, state: int,
+                     seq: int, t_ms: int) -> dict:
+    """규격 §7.6 의 din 레코드. 마스크는 ain·i2c 와 **같은** `tx.fields` 다.
+
+    🔴 `connector_id`·`state` 는 마스크로 끌 수 없다 — 둘이 빠지면 레코드가
+       아무 말도 안 한다(i2c 의 quantity·value 와 같은 이유).
+
+    🔴 극성 반전은 여기서 하지 않는다. 이 함수를 부르는 쪽(`DeviceSim`)이
+       옵토의 로우 액티브를 이미 뒤집어 `state` 를 건넨다 — "1 = 켜짐" 이
+       전선에 나가는 유일한 뜻이다.
+    """
+    mask = store.field_mask
+    rec: dict = {"schema_ver": SCHEMA_VER, "seq": seq, "t": t_ms, "type": "din"}
+    rec["connector_id"] = connector_id
+    rec["state"] = state
+    if mask & (1 << _BIT_OF["device_id"]):
+        rec["device_id"] = str(store.get("dev.id"))
+    if mask & (1 << _BIT_OF["time_source"]):
+        rec["time_source"] = "device_clock"
+    if mask & (1 << _BIT_OF["time_quality"]):
+        rec["time_quality"] = 0
+    return rec

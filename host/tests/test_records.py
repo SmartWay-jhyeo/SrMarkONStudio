@@ -211,8 +211,21 @@ def test_is_telemetry_distinguishes_command_responses():
     from host.core.records import is_telemetry
 
     assert is_telemetry({"type": "ain"}) is True
+    assert is_telemetry({"type": "i2c"}) is True
+    assert is_telemetry({"type": "din"}) is True   # 규격 §7.6 — 엣지도 seq 를 탄다
     for t in ("id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end"):
         assert is_telemetry({"type": t}) is False, t
+
+
+def test_din_record_parses_like_any_other_telemetry():
+    """🔴 `din` 은 새 타입이지만 파싱 경로는 새로 만들지 않는다 — `parse_record`
+    는 `type` 을 가리지 않고 공통 필드만 본다(규격 §7.1)."""
+    line = ('{"schema_ver":3,"seq":7,"t":1000,"type":"din",'
+            '"connector_id":18,"state":1}')
+    rec = parse_record(line)
+    assert rec["type"] == "din"
+    assert rec["connector_id"] == 18
+    assert rec["state"] == 1
 
 
 def test_seq_tracker_is_not_polluted_by_command_responses():

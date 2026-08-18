@@ -528,24 +528,23 @@ def default_store(path: Path | None = None) -> ConfigStore:
         SimConfigItem("pwr.seq_delay_ms", "pwr", "u16", 500, 500,
                       minimum=0, maximum=5000, unit="ms", label="레일 기동 간격"),
 
-        # ── 디지털 출력 (데이터시트 §5.7) ──────────────────────────
+        # ── 디지털 입력 (데이터시트 §5.7, 사용자 확정 2026-08-18) ───────
         #
-        # 🔴 MCU GPIO 가 커넥터에 직결이다 — 버퍼도 직렬저항도 클램프도
-        #    없다. 핀당 20 mA 가 상한이라 밸브를 직접 못 구동하고, 외부
-        #    옵토커플러/드라이버 모듈이 반드시 붙는다. 그 사실을 note 로
-        #    실어 보내 화면이 그대로 띄우게 한다.
+        # 🔴 J18~J20 은 출력이 아니라 **입력**이다. 넷리스트 확인 결과
+        #    커넥터 pin1 이 MCU 핀에 직결이고 사이에 부품이 없다 — 옵토
+        #    커플러가 커넥터 반대편(외부)에 붙고, 보드는 그 신호를 읽는다.
+        #    "켜라/꺼라" 가 성립하지 않으므로 `sol.j18`~`sol.j20` 을 아예
+        #    카탈로그에서 없앤다. 지금 상태는 규격 §7.6 의 `din` 텔레메트리로
+        #    온다(`tools/simulator/telemetry.build_din_record`).
         #
-        # 🔴 보드는 3채널이지만 하우징 설계는 2채널로 확정됐다(§5.7). 남는
-        #    한 채널을 감추지 않는다 — 보드에 있는 것은 보드가 말한다.
-        SimConfigItem("sol.j18", "sol", "bool", False, False,
-                      label="J18 출력", out=True,
-                      note="외부 옵토·드라이버 필요 — 핀당 20 mA 가 상한이다"),
-        SimConfigItem("sol.j19", "sol", "bool", False, False,
-                      label="J19 출력", out=True,
-                      note="외부 옵토·드라이버 필요 — 핀당 20 mA 가 상한이다"),
-        SimConfigItem("sol.j20", "sol", "bool", False, False,
-                      label="J20 출력", out=True,
-                      note="외부 옵토·드라이버 필요 — 핀당 20 mA 가 상한이다"),
+        # 🔴 남는 것은 디바운스 시간뿐이다. 옵토 접점이 흔들리는 정도는
+        #    커넥터마다 물리는 외부 장치에 따라 달라질 수 있어, 펌웨어
+        #    상수로 고정하지 않고 현장에서 조정할 수 있게 카탈로그에
+        #    남긴다. `out` 이 아니다 — 켜고 끄는 출력이 아니라 필터 값이라
+        #    TEST 이탈 때 되돌릴 "출력" 이 없다.
+        SimConfigItem("sol.debounce_ms", "sol", "u16", 5, 5,
+                      minimum=0, maximum=1000, unit="ms", label="디바운스",
+                      note="이보다 짧게 흔들리는 신호는 상태 변화로 보지 않는다"),
 
         # ── WS2812 LED 체인 (데이터시트 §5.8) ──────────────────────
         SimConfigItem(

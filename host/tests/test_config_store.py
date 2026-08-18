@@ -372,3 +372,41 @@ def test_catalog_lines_end_with_cfg_end_matching_count():
     lines = list(store.catalog_lines())
     schema = parse_catalog(lines)          # count 불일치면 여기서 예외
     assert len(schema.items) == len(store.items)
+
+
+# ---- J18~J20 은 출력이 아니라 입력이다 (사용자 확정 2026-08-18) --------------
+#
+# 🔴 넷리스트 확인 결과 J18~J20 에는 옵토커플러가 붙고 보드는 그 신호를
+#    **읽는다**. "켜라/꺼라" 가 성립하지 않으므로 sol.j18~sol.j20 은
+#    카탈로그에서 아예 없앤다 — 대신 규격 §7.6 의 `din` 텔레메트리로 온다
+#    (host/tests/test_dins.py, tools/simulator/device_sim.py).
+
+
+def test_sol_j18_j19_j20_are_gone_from_the_catalog():
+    """켤 수 없는 것을 카탈로그에 남겨 두면 화면에 안 먹는 토글이 뜬다."""
+    store = default_store()
+    for key in ("sol.j18", "sol.j19", "sol.j20"):
+        assert key not in store.items, f"{key} 가 아직 카탈로그에 있다 — 입력이다"
+
+
+def test_sol_debounce_ms_replaces_the_removed_outputs():
+    """디바운스는 **펌웨어가** 쓰는 값이지만, 사용자가 현장에서 옵토 접점의
+    떨림 정도를 보고 조정할 수 있어야 하므로 카탈로그 항목이다."""
+    store = default_store()
+    item = store.items["sol.debounce_ms"]
+    assert item.vtype == "u16"
+    assert item.default == 5
+    assert item.minimum == 0
+    assert item.maximum == 1000
+    assert item.unit == "ms"
+    assert item.out is False           # 출력이 아니다 — TEST 이탈에 안 걸린다
+
+
+def test_catalog_item_count_is_ninety_one():
+    """93 (sol.j18~j20 셋) + 1 (sol.debounce_ms) = 91.
+
+    이 수가 흔들리면 십중팔구 항목을 늘리거나 줄인 것이다 — 실수인지
+    의도인지 이 시험이 먼저 묻는다.
+    """
+    store = default_store()
+    assert len(store.items) == 91

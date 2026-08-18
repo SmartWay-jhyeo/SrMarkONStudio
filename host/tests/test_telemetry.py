@@ -108,3 +108,53 @@ def test_smaller_mask_produces_shorter_line():
     store.set("tx.fields", "0")
     minimal = len(render(_rec(store)))
     assert minimal < full
+
+
+# ---- din (규격 §7.6) --------------------------------------------------------
+
+
+def test_din_record_has_mandatory_and_din_fields():
+    from tools.simulator.telemetry import build_din_record
+
+    store = default_store()
+    rec = build_din_record(store, connector_id=18, state=1, seq=5, t_ms=1000)
+    assert MANDATORY <= set(rec)
+    assert rec["type"] == "din"
+    assert rec["connector_id"] == 18
+    assert rec["state"] == 1
+
+
+def test_din_connector_id_and_state_survive_a_zero_mask():
+    """🔴 규격 §7.6 — 둘은 끌 수 없다. 빠지면 레코드가 아무 말도 안 한다."""
+    from tools.simulator.telemetry import build_din_record
+
+    store = default_store()
+    store.set("tx.fields", "0")
+    rec = build_din_record(store, connector_id=19, state=0, seq=1, t_ms=1000)
+    assert rec["connector_id"] == 19
+    assert rec["state"] == 0
+
+
+def test_din_uses_the_same_field_mask_as_ain_and_i2c():
+    """마스크는 `ain`·`i2c` 와 같은 `tx.fields` 다 — device_id 비트가 그대로 걸린다."""
+    from tools.simulator.telemetry import build_din_record
+
+    store = default_store()
+    store.set("tx.fields", str(store.field_mask | (1 << 0)))   # device_id
+    rec = build_din_record(store, connector_id=18, state=1, seq=1, t_ms=1000)
+    assert "device_id" in rec
+
+    store.set("tx.fields", "0")
+    rec = build_din_record(store, connector_id=18, state=1, seq=1, t_ms=1000)
+    assert "device_id" not in rec
+
+
+def test_din_render_is_a_single_compact_line():
+    from tools.simulator.telemetry import build_din_record
+
+    store = default_store()
+    line = render(build_din_record(store, connector_id=20, state=1,
+                                   seq=1, t_ms=1000))
+    assert "\n" not in line
+    assert ", " not in line and ": " not in line
+    assert json.loads(line)["type"] == "din"

@@ -17,6 +17,7 @@ from tools.simulator.config_store import I2C_PORTS, I2C_QUANTITIES, ConfigStore
 from tools.simulator.telemetry import (
     ADS1256_FULL_SCALE,
     build_ain_record,
+    build_din_record,
     build_i2c_record,
     render,
     synthetic_i2c_value,
@@ -29,6 +30,17 @@ HB_TIMEOUT_MS = 3000
 HB_EMIT_PERIOD_MS = 1000
 
 AIN_CHANNELS = 7
+
+#: 디지털 입력 커넥터 (규격 §7.6, 데이터시트 §5.7). J18~J20 은 출력이 아니라
+#: 입력이다 — 옵토커플러가 붙고 보드는 그 신호를 읽는다.
+DIN_CONNECTORS: tuple[int, ...] = (18, 19, 20)
+
+#: 🔴 시뮬레이터에는 옵토가 없다 — 실기기는 사람이 신호선을 흔들어야
+#:    상태가 바뀐다. 이 주기는 화면 확인용 **데모**일 뿐이다. `ain` 처럼
+#:    매 주기 값을 내면 규격 §7.6 이 금지하는 "주기 송신"이 돼 버리므로,
+#:    아주 드물게만(몇 초에 한 번) 뒤집는다. 커넥터마다 위상을 다르게 둬
+#:    셋이 한꺼번에 바뀌지 않게 한다(_emit_din 참조).
+DIN_DEMO_PERIOD_MS = 9000
 
 
 class Mode:
@@ -70,6 +82,11 @@ class DeviceSim:
         self._last_emit_ms = 0
         #: I2C 는 포트마다 주기가 따로다 — 마지막으로 낸 시각을 각각 센다.
         self._last_i2c_ms: dict[int, int] = {}
+        #: 디지털 입력 지금 상태 (규격 §7.6). `$STAT` 이 이걸 그대로 싣는다.
+        self._din_state: dict[int, int] = dict.fromkeys(DIN_CONNECTORS, 0)
+        #: 데모 토글이 마지막으로 넘긴 구간 번호. 커넥터마다 위상이 달라
+        #: 따로 센다 — DIN_DEMO_PERIOD_MS 주석·`_emit_din` 참조.
+        self._din_slot: dict[int, int] = dict.fromkeys(DIN_CONNECTORS, 0)
         self._boot_ms = 0
         # 🔴 부팅 기본값은 ACTIVE 다 (규격 §6.4). 보드는 혼자서도 제 일을
         #    해야 하고, 테스트는 사람이 명시적으로 들어가는 상태다.
@@ -185,6 +202,10 @@ class DeviceSim:
                     "v14v9": self.store.get("pwr.14v9"),
                     "v5": self.store.get("pwr.5v"),
                 },
+                # 🔴 din 은 `rails` 와 달리 실측이다 — 엣지가 안 오는 동안에도
+                #    화면이 지금 상태를 말할 수 있도록 여기서 채운다(규격 §7.6).
+                din=[{"connector_id": c, "state": self._din_state[c]}
+                     for c in DIN_CONNECTORS],
                 queues=[
                     {"ch": ch, "depth": 0, "peak": 0, "drops": 0}
                     for ch in range(AIN_CHANNELS)
@@ -282,6 +303,34 @@ class DeviceSim:
                 )
             )
         lines += self._emit_i2c(now_ms)
+        lines += self._emit_din(now_ms)
+        return lines
+
+    def _emit_din(self, now_ms: int) -> list[str]:
+        """규격 §7.6 — 상태가 바뀔 때만 한 줄 낸다.
+
+        🔴 시뮬레이터에는 옵토가 없다. 이 토글은 화면 확인용 **데모**다 —
+           `DIN_DEMO_PERIOD_MS` 주석 참조. 실기기에서는 사람이 신호선을
+           흔들어야 상태가 바뀐다.
+
+        커넥터마다 자기 구간 번호가 바뀔 때만 뒤집는다. 같은 구간 안에서는
+        몇 번을 불러도 아무것도 내지 않는다 — "주기 송신이 아니다"(규격
+        §7.6)를 시뮬레이터도 지킨다.
+        """
+        lines: list[str] = []
+        slot_period = DIN_DEMO_PERIOD_MS // len(DIN_CONNECTORS)
+        for idx, cid in enumerate(DIN_CONNECTORS):
+            phase_ms = idx * slot_period
+            slot = (now_ms + phase_ms) // DIN_DEMO_PERIOD_MS
+            if slot == self._din_slot[cid]:
+                continue
+            self._din_slot[cid] = slot
+            self._din_state[cid] ^= 1
+            self._seq += 1
+            lines.append(render(build_din_record(
+                self.store, connector_id=cid, state=self._din_state[cid],
+                seq=self._seq, t_ms=now_ms,
+            )))
         return lines
 
     def _emit_i2c(self, now_ms: int) -> list[str]:

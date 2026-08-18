@@ -209,6 +209,26 @@ def test_stat_reports_mode_and_rails():
     assert rec["rails"]["v5"] is True
 
 
+def test_stat_reports_din_current_state():
+    """🔴 규격 §7.6 — din 은 엣지가 안 오는 동안에도 화면이 지금 상태를
+    말할 수 있어야 한다. `$STAT` 이 그 공백을 채운다."""
+    sim = _sim()
+    rec = parse_record(
+        next(ln for ln in sim.feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert {d["connector_id"] for d in rec["din"]} == {18, 19, 20}
+    assert all(d["state"] in (0, 1) for d in rec["din"])
+
+
+def test_din_starts_off():
+    """부팅 직후에는 신호가 없다고 본다 — 실기기에서도 사람이 아직 아무
+    신호도 넣지 않은 상태가 기본이다."""
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert all(d["state"] == 0 for d in rec["din"])
+
+
 def test_stat_declares_the_time_base():
     """🔴 `t` 의 기준점을 호스트가 알 수 있어야 한다 (규격 §7.1.2).
 
@@ -328,6 +348,63 @@ def test_tick_emits_hb_once_per_second():
     sim = _sim()
     assert any(ln.startswith("$HB") for ln in sim.tick(1000))
     assert not any(ln.startswith("$HB") for ln in sim.tick(1500))
+
+
+# ------------------------------------------------------------------- din
+#
+# 🔴 시뮬레이터에는 옵토가 없다 — 실기기는 사람이 신호선을 흔들어야
+#    바뀐다. 여기서 도는 토글은 화면 확인용 **데모**일 뿐이라, ain 처럼
+#    매 주기 나오면 안 되고 아주 드물게만 바뀌어야 한다(규격 §7.6).
+
+
+def test_din_edges_are_rare_not_periodic():
+    """짧은 구간(2초)에는 한 번도 안 바뀌어야 한다 — ain 과 다르다."""
+    sim = _sim()
+    recs = []
+    for now in range(0, 2000, 100):
+        recs += [parse_record(ln) for ln in sim.tick(now) if ln.startswith("{")]
+    assert [r for r in recs if r["type"] == "din"] == []
+
+
+def test_din_toggles_eventually_and_only_on_change():
+    from tools.simulator.device_sim import DIN_CONNECTORS, DIN_DEMO_PERIOD_MS
+
+    sim = _sim()
+    recs = []
+    for now in range(0, DIN_DEMO_PERIOD_MS * 2 + 1000, 100):
+        recs += [parse_record(ln) for ln in sim.tick(now) if ln.startswith("{")]
+    dins = [r for r in recs if r["type"] == "din"]
+    assert dins, "충분히 오래 돌렸는데 한 번도 안 바뀌었다"
+    assert {r["connector_id"] for r in dins} <= set(DIN_CONNECTORS)
+
+    by_conn: dict[int, list[int]] = {}
+    for r in dins:
+        by_conn.setdefault(r["connector_id"], []).append(r["state"])
+    for cid, states in by_conn.items():
+        # 🔴 상태 변화에만 나온다 — 같은 값이 연달아 오면 "주기 송신"으로
+        #    되돌아간 것이다.
+        assert all(a != b for a, b in zip(states, states[1:])), (cid, states)
+
+
+def test_stat_din_matches_the_last_edge_emitted():
+    from tools.simulator.device_sim import DIN_DEMO_PERIOD_MS
+
+    sim = _sim()
+    last_state: dict[int, int] = {}
+    for now in range(0, DIN_DEMO_PERIOD_MS + 500, 100):
+        for ln in sim.tick(now):
+            if not ln.startswith("{"):
+                continue
+            rec = parse_record(ln)
+            if rec["type"] == "din":
+                last_state[rec["connector_id"]] = rec["state"]
+
+    stat = parse_record(
+        next(ln for ln in sim.feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    stat_state = {d["connector_id"]: d["state"] for d in stat["din"]}
+    for cid, state in last_state.items():
+        assert stat_state[cid] == state
 
 
 # --------------------------------------------------------- 제어 모드 (§6.4)
