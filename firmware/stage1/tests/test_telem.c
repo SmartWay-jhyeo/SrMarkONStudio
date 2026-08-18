@@ -6,6 +6,8 @@
 #include <string.h>
 #include "../app/mk_telem.h"
 #include "../app/mk_cfgtable.h"
+#include "../app/mk_i2c.h"
+#include "../app/mk_i2c_bh1750.h"
 
 static int failures = 0;
 
@@ -56,6 +58,51 @@ static void setup(void)
     size_t n_fields = 0;
     const MkFieldBit *fields = mk_cfgtable_fields(&n_fields);
     mk_telem_init(&T, &CFG, &ADS, fields, n_fields, "1");
+}
+
+/* ---- I2C 가짜 버스·헬퍼 --------------------------------------------------- */
+
+static int fake_xfer_ok(void *ctx, uint8_t bus, uint8_t addr,
+                        const uint8_t *tx, size_t ntx, uint8_t *rx, size_t nrx)
+{
+    (void)ctx; (void)bus; (void)addr; (void)tx; (void)ntx;
+    for (size_t k = 0; k < nrx; k++) { rx[k] = (uint8_t)(k + 1u); }
+    return 0;
+}
+
+static int fake_xfer_nak(void *ctx, uint8_t bus, uint8_t addr,
+                         const uint8_t *tx, size_t ntx, uint8_t *rx, size_t nrx)
+{
+    (void)ctx; (void)bus; (void)addr; (void)tx; (void)ntx; (void)rx; (void)nrx;
+    return -1;
+}
+
+static void enable_lux_port_in(MkConfig *cfg, unsigned jack)
+{
+    char key[20];
+    int n;
+    #define K(sfx) do {                                             \
+        n = 0; key[n++]='i'; key[n++]='2'; key[n++]='c';            \
+        key[n++]=(char)('0'+jack/10u); key[n++]=(char)('0'+jack%10u);\
+        for (const char *q=(sfx); *q; q++) { key[n++]=*q; }         \
+        key[n]='\0';                                                \
+    } while (0)
+    MkCfgItem *it;
+    K(".enabled");   it = mk_cfg_find(cfg, key); if (it) it->cur.u = 1u;
+    K(".kind");      it = mk_cfg_find(cfg, key); if (it) it->cur.u = 1u;
+    K(".addr");      it = mk_cfg_find(cfg, key); if (it) it->cur.u = 0x23u;
+    K(".period_ms"); it = mk_cfg_find(cfg, key); if (it) it->cur.u = 200u;
+    #undef K
+}
+
+static uint32_t parse_seq(const char *line)
+{
+    const char *p = strstr(line, "\"seq\":");
+    if (p == NULL) { return 0u; }
+    p += 6;
+    uint32_t v = 0u;
+    while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
+    return v;
 }
 
 /* ---- 환산 --------------------------------------------------------------- */
@@ -229,6 +276,71 @@ static void test_disabled_channel_is_silent(void)
     CHECK(mk_telem_tick(&T, 100, sink, NULL) == 0, "꺼진 채널은 안 나간다");
 }
 
+/* ---- I2C --------------------------------------------------------------- */
+
+/* 🔴 seq 는 레코드 종류를 가리지 않고 하나로 이어진다. 따로 세면 호스트의
+ *    누락 검출이 무너진다 (규격 §7.1). */
+static void test_i2c_records_share_the_sequence_with_ain(void)
+{
+    setup();
+    static MkI2c I2C;
+    MkI2cIo io = { fake_xfer_ok, NULL };     /* 아래에 정의. ctx 는 안 쓴다 */
+    mk_i2c_init(&I2C, &io);
+    mk_telem_attach_i2c(&T, &I2C);
+    enable_lux_port_in(&CFG, 10u);
+    /* 🔴 브리프 원문에는 없었지만 ADS 큐가 비어 있으면 ain 이 한 줄도 안
+     *    나가 "두 종류가 함께 나간다" 를 어떤 구현으로도 통과시킬 수 없다
+     *    (실제로 이 줄 없이 돌려 FAIL 을 확인했다 — task-6-report.md 참고).
+     *    seq 공유를 보는 시험이므로 ain 쪽에도 한 건은 있어야 한다. */
+    mk_queue_push(mk_ads_queue(&ADS, 0), 500, 4000000);
+
+    for (int64_t t = 0; t <= 400; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        mk_telem_tick(&T, t, sink, NULL);
+    }
+
+    int ain = 0, i2c = 0;
+    uint32_t last_seq = 0;
+    int monotonic = 1;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"ain\"")) { ain++; }
+        if (strstr(LINES[k], "\"type\":\"i2c\"")) { i2c++; }
+        uint32_t seq = parse_seq(LINES[k]);   /* 아래에 정의 */
+        if (k > 0 && seq != last_seq + 1u) { monotonic = 0; }
+        last_seq = seq;
+    }
+    CHECK(ain > 0 && i2c > 0, "두 종류가 함께 나간다");
+    CHECK(monotonic, "seq 가 종류를 가리지 않고 1씩 오른다");
+}
+
+/* 🔴 값이 없으면 null 이다. 마지막 값을 다시 실으면 화면이 살아 있는
+ *    센서처럼 보인다 (규격 §7.5). */
+static void test_failed_read_emits_null_not_the_last_value(void)
+{
+    setup();
+    static MkI2c I2C;
+    MkI2cIo io = { fake_xfer_nak, NULL };
+    mk_i2c_init(&I2C, &io);
+    mk_telem_attach_i2c(&T, &I2C);
+    enable_lux_port_in(&CFG, 10u);
+
+    for (int64_t t = 0; t <= 400; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        mk_telem_tick(&T, t, sink, NULL);
+    }
+
+    int found = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"i2c\"") == NULL) { continue; }
+        found = 1;
+        CHECK_HAS(LINES[k], "\"value\":null", "값 자리가 null");
+        CHECK_HAS(LINES[k], "\"status\":1", "응답 없음은 status=1");
+        CHECK(strstr(LINES[k], "\"unit\"") == NULL,
+              "unit 을 싣지 않는다 (규격 §7.5)");
+    }
+    CHECK(found, "실패해도 레코드가 나간다");
+}
+
 /* ---- 카탈로그 덤프 ------------------------------------------------------ */
 
 static void emit_samples(void)
@@ -246,10 +358,50 @@ static void emit_samples(void)
     }
 }
 
+/* crosscheck_i2c.py 가 대조하는 세 벡터. 상태기계를 거치지 않고 out 큐에
+ * 직접 채워 레코드 조립(build_i2c_record)만 시뮬레이터와 맞춘다. */
+static void emit_i2c(void)
+{
+    setup();
+    static MkI2c I2C;
+    MkI2cIo io = { fake_xfer_ok, NULL };
+    mk_i2c_init(&I2C, &io);
+    mk_telem_attach_i2c(&T, &I2C);
+
+    /* 1) 정상값 */
+    I2C.out[0] = (MkI2cOut){ .connector_id = 10u, .quantity = "lux",
+                             .value = 401.5f, .have_value = 1,
+                             .status = 0u, .t_ms = 1000 };
+    I2C.n_out = 1;
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    /* 2) 응답 없음 */
+    I2C.out[0] = (MkI2cOut){ .connector_id = 11u, .quantity = "",
+                             .value = 0.0f, .have_value = 0,
+                             .status = 1u, .t_ms = 2000 };
+    I2C.n_out = 1;
+    mk_telem_tick(&T, 300, sink, NULL);
+
+    /* 3) 지원 안 하는 종류 */
+    I2C.out[0] = (MkI2cOut){ .connector_id = 12u, .quantity = "",
+                             .value = 0.0f, .have_value = 0,
+                             .status = 3u, .t_ms = 3000 };
+    I2C.n_out = 1;
+    mk_telem_tick(&T, 500, sink, NULL);
+
+    for (int i = 0; i < N; i++) {
+        fputs(LINES[i], stdout);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--emit") == 0) {
         emit_samples();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--emit-i2c") == 0) {
+        emit_i2c();
         return 0;
     }
 
@@ -265,6 +417,8 @@ int main(int argc, char **argv)
     test_channels_take_turns();
     test_burst_is_capped();
     test_disabled_channel_is_silent();
+    test_i2c_records_share_the_sequence_with_ain();
+    test_failed_read_emits_null_not_the_last_value();
 
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;

@@ -155,12 +155,84 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
     return mk_json_end(&j);
 }
 
+/* i2c 레코드 조립. **필드 순서는 시뮬레이터 build_i2c_record 와 같게** 둔다
+ * (`schema_ver` `seq` `t` `type` `connector_id` `quantity` `value` `status`
+ *  `device_id` `time_source` `time_quality`). */
+static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
+                            char *out, size_t cap)
+{
+    uint32_t mask = cfg_u32(t->cfg, "tx.fields", 0u);
+    uint32_t digits = cfg_u32(t->cfg, "tx.float_digits", 4u);
+
+    MkJson j;
+    mk_json_begin(&j, out, cap);
+    mk_json_u32(&j, "schema_ver", 3u);
+    mk_json_u32(&j, "seq", t->seq);
+    mk_json_i64(&j, "t", o->t_ms);
+    mk_json_str(&j, "type", "i2c");
+
+    if (field_on(t, mask, "connector_id")) {
+        mk_json_u32(&j, "connector_id", (uint32_t)o->connector_id);
+    }
+    /* 🔴 quantity·value 는 마스크로 끌 수 없다 (규격 §7.5). 둘이 빠지면
+     *    레코드가 아무 말도 안 한다. */
+    mk_json_str(&j, "quantity", o->quantity ? o->quantity : "");
+    if (o->have_value) {
+        mk_json_f32(&j, "value", o->value, (int)digits);
+    } else {
+        mk_json_null(&j, "value");
+    }
+    /* 🔴 unit 을 싣지 않는다 — quantity 가 단위를 이미 정한다 (규격 §7.5). */
+    if (field_on(t, mask, "status")) {
+        mk_json_u32(&j, "status", o->status);
+    }
+    if (field_on(t, mask, "device_id")) {
+        mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
+    }
+    if (field_on(t, mask, "time_source")) {
+        mk_json_str(&j, "time_source", "device_clock");
+    }
+    if (field_on(t, mask, "time_quality")) {
+        mk_json_u32(&j, "time_quality", 0u);
+    }
+    return mk_json_end(&j);
+}
+
 /* ---- 주기 처리 ---------------------------------------------------------- */
+
+void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c)
+{
+    t->i2c = i2c;
+}
 
 int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
 {
     if (t->cfg == NULL || t->ads == NULL || emit == NULL) {
         return 0;
+    }
+
+    /* 🔴 tx.period_ms 를 기다리지 않는다. I2C 는 포트마다 자기 주기가
+     *    있고(i2cN.period_ms), 읽은 즉시 내보내는 것이 그 주기를 지키는
+     *    유일한 방법이다. 여기서 큐를 또 두면 주기가 둘이 되어 느린 쪽이
+     *    빠른 쪽을 덮어쓴다.
+     *
+     * 🔴 mk_i2c_tick() 을 부른 매 바퀴 뒤 mk_i2c_take() 가 0 을 돌려줄 때까지
+     *    비우는 것이 mk_i2c.h 의 계약이다 — while 로 끝까지 꺼낸다. 한 번만
+     *    꺼내면 남은 것이 다음 mk_i2c_tick() 의 push_out 자리를 막아
+     *    dropped 로 조용히 사라진다. */
+    int sent_i2c = 0;
+    if (t->i2c != NULL) {
+        MkI2cOut o;
+        while (sent_i2c < MK_TELEM_MAX_LINES && mk_i2c_take(t->i2c, &o)) {
+            char body[MK_LINE_MAX + 8];
+            t->seq++;
+            int len = build_i2c_record(t, &o, body, sizeof body);
+            if (len <= 0 || (size_t)len + 2u > sizeof body) { continue; }
+            body[len] = '\n';
+            body[len + 1] = '\0';
+            emit(ctx, body, (size_t)len + 1u);
+            sent_i2c++;
+        }
     }
 
     uint32_t period = cfg_u32(t->cfg, "tx.period_ms", 100u);
@@ -213,5 +285,5 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
     }
     /* 다음에는 그다음 채널부터 본다. */
     t->next_ch = (t->next_ch + 1) % MK_ADS_CHANNELS;
-    return sent;
+    return sent + sent_i2c;
 }
