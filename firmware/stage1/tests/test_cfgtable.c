@@ -16,6 +16,7 @@
 
 #include "../app/mk_cfgtable.h"
 #include "../app/mk_cfgwire.h"
+#include "../app/mk_i2c.h"
 
 static int failures = 0;
 
@@ -211,6 +212,37 @@ static void test_all_channels_are_present(void)
     CHECK(missing == 0, "J3~J9 일곱 채널이 모두 있다");
 }
 
+/* 🔴 카탈로그의 버스 이름표와 드라이버가 쓰는 버스 번호가 갈리면, 화면에는
+ *    I2C3 이라고 뜨는데 보드는 I2C1 을 두드린다. 한 곳에서 나오는지 본다. */
+static void test_bus_table_matches_the_catalog(void)
+{
+    MkConfig cfg;
+    mk_cfgtable_init(&cfg);
+
+    static const char *const EXPECT[MK_I2C_COUNT] = {
+        "I2C3", "I2C3", "I2C5", "I2C5", "I2C1", "I2C1"
+    };
+    for (unsigned p = 0; p < MK_I2C_COUNT; p++) {
+        char key[16];
+        int n = 0;
+        key[n++] = 'i'; key[n++] = '2'; key[n++] = 'c';
+        unsigned jack = mk_i2c_connector_of(p);
+        key[n++] = (char)('0' + jack / 10u);
+        key[n++] = (char)('0' + jack % 10u);
+        const char *suffix = ".bus";
+        for (const char *q = suffix; *q; q++) { key[n++] = *q; }
+        key[n] = '\0';
+
+        MkCfgItem *it = mk_cfg_find(&cfg, key);
+        CHECK(it != NULL, key);
+        CHECK(it != NULL && strcmp(it->def.s, EXPECT[p]) == 0, "버스 이름표");
+
+        /* "I2C3" 의 숫자와 mk_i2c_bus_of 가 같아야 한다 */
+        uint8_t want = (uint8_t)(EXPECT[p][3] - '0');
+        CHECK(mk_i2c_bus_of(p) == want, "버스 번호가 이름표와 같다");
+    }
+}
+
 /* ---- 저장 덩어리 --------------------------------------------------------- */
 
 static void test_pack_unpack_round_trips(void)
@@ -279,6 +311,7 @@ int main(int argc, char **argv)
     test_interlocked_items_say_why();
     test_five_volt_rail_is_settable_but_warns();
     test_all_channels_are_present();
+    test_bus_table_matches_the_catalog();
     test_pack_unpack_round_trips();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;

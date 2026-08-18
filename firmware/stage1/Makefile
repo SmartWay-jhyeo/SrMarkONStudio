@@ -43,6 +43,7 @@ C_SRC = \
   app/mk_telem.c \
   app/mk_ws2812.c \
   app/mk_solctl.c \
+  app/mk_i2c.c \
   bsp/mk_time.c \
   bsp/mk_rails.c \
   bsp/mk_ws2812_io.c \
