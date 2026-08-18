@@ -66,8 +66,9 @@ static void setup(void)
     mk_i2c_init(&I2C, &io);
 }
 
-/* 포트를 켜고 종류를 고른다. 조도 = MK_I2C_KIND_LUX */
-static void enable_lux_port(unsigned jack, uint32_t addr, uint32_t period_ms)
+/* 포트를 켜고 종류를 고른다 — 임의 종류. */
+static void enable_port_kind(unsigned jack, uint32_t kind, uint32_t addr,
+                             uint32_t period_ms)
 {
     char key[20];
     int n;
@@ -79,10 +80,16 @@ static void enable_lux_port(unsigned jack, uint32_t addr, uint32_t period_ms)
         key[n] = '\0';                                              \
     } while (0)
     KEY(".enabled");   set_u(key, 1u);
-    KEY(".kind");      set_u(key, (uint32_t)MK_I2C_KIND_LUX);
+    KEY(".kind");      set_u(key, kind);
     KEY(".addr");      set_u(key, addr);
     KEY(".period_ms"); set_u(key, period_ms);
     #undef KEY
+}
+
+/* 포트를 켜고 종류를 고른다. 조도 = MK_I2C_KIND_LUX */
+static void enable_lux_port(unsigned jack, uint32_t addr, uint32_t period_ms)
+{
+    enable_port_kind(jack, (uint32_t)MK_I2C_KIND_LUX, addr, period_ms);
 }
 
 /* ---- 시험 ---------------------------------------------------------------- */
@@ -151,29 +158,114 @@ static void test_one_port_per_tick(void)
  *    지워도(매 바퀴 push) 이 시험은 그대로 통과했다(버려지는 40개는 보지
  *    않고 살아남은 2개만 봤으므로). 그래서 이제 **매 바퀴 뒤** while 로
  *    완전히 비우고 나온 레코드 수를 세어, 400ms/주기 200ms 에서 나와야
- *    하는 개수(2 — t=0 즉시 한 번 + t=200 에 한 번)를 못박는다. */
+ *    하는 트리거 횟수(2 — t=0 즉시 한 번 + t=200 에 한 번)를 못박는다.
+ *
+ * 🔴 [검토 지적 C1] 종류가 IR_TEMP(양 하나) 라 트리거당 레코드도 하나다.
+ *    온습도(양 둘)는 트리거당 두 줄이 나가야 한다는 사실은 아래
+ *    test_unsupported_kind_with_two_quantities_emits_two_lines 가 따로
+ *    본다. */
 static void test_unsupported_kind_reports_status_three(void)
 {
     setup();
     enable_lux_port(10u, 0x23u, 200u);
     MkCfgItem *k = mk_cfg_find(&CFG, "i2c10.kind");
-    k->cur.u = (uint32_t)MK_I2C_KIND_HUMID;      /* 1차에는 드라이버가 없다 */
+    /* 1차에는 조도(BH1750)만 드라이버가 있다 — IR_TEMP 는 카탈로그엔
+     * 있지만 드라이버가 없으므로 여전히 FAULT 경로를 탄다. */
+    k->cur.u = (uint32_t)MK_I2C_KIND_IR_TEMP;
 
     int n_records = 0;
     int all_status_three = 1;
+    int all_quantity_temp_object = 1;
     MkI2cOut out;
     for (int64_t t = 0; t < 400; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
         while (mk_i2c_take(&I2C, &out) == 1) {
             n_records++;
             if (out.status != 3u) { all_status_three = 0; }
+            if (out.quantity == NULL || strcmp(out.quantity, "temp_object") != 0) {
+                all_quantity_temp_object = 0;
+            }
         }
     }
 
     CHECK(n_records == 2, "지원 안 하는 종류는 주기마다 한 번만 알린다 (400ms/200ms=2)");
     CHECK(all_status_three, "status=3");
+    CHECK(all_quantity_temp_object,
+          "quantity 가 실린다 — 없으면 host/gui/screen.py 가 레코드를 버린다 (C1)");
     CHECK(BUS.n == 0, "지원 안 하면 버스를 두드리지 않는다");
     CHECK(I2C.dropped == 0u, "매 바퀴 다 비웠으면 버릴 것이 없다");
+}
+
+/* 🔴 [C1] 값이 둘인 종류(온습도)는 미지원일 때도 두 줄이 나가야 한다 —
+ *    규격 §7.5.1 표가 종류→양을 이미 정해 두었고, 펌웨어가 임의로 하나만
+ *    골라 보내면 온습도 카드 중 하나는 "지원 안 함"이 영영 안 뜬다. */
+static void test_unsupported_kind_with_two_quantities_emits_two_lines(void)
+{
+    setup();
+    enable_port_kind(10u, (uint32_t)MK_I2C_KIND_HUMID, 0x40u, 1000u);
+
+    int n_temp = 0, n_humidity = 0;
+    MkI2cOut out;
+    mk_i2c_tick(&I2C, &CFG, 0);          /* 첫 트리거 하나만 본다 */
+    int seen = 0;
+    while (mk_i2c_take(&I2C, &out) == 1) {
+        seen++;
+        CHECK(out.status == 3u, "온습도 미지원도 status=3");
+        CHECK(!out.have_value, "값 자리는 비어 있다");
+        if (out.quantity != NULL && strcmp(out.quantity, "temp") == 0) { n_temp++; }
+        if (out.quantity != NULL && strcmp(out.quantity, "humidity") == 0) { n_humidity++; }
+    }
+    CHECK(seen == 2, "온습도는 트리거 한 번에 두 줄 (temp, humidity)");
+    CHECK(n_temp == 1 && n_humidity == 1, "두 줄이 각각 temp·humidity 다");
+}
+
+/* 🔴 [C1] 종류→양 표를 직접 확인한다. 각 종류가 규격 §7.5.1 표대로다. */
+static void test_kind_quantities_table_matches_the_spec(void)
+{
+    const char *q[MK_I2C_VALUES_MAX];
+    int n;
+
+    n = mk_i2c_kind_quantities((uint8_t)MK_I2C_KIND_NONE, q);
+    CHECK(n == 0, "없음 은 양이 없다");
+
+    n = mk_i2c_kind_quantities((uint8_t)MK_I2C_KIND_LUX, q);
+    CHECK(n == 1 && strcmp(q[0], "lux") == 0, "조도 = lux 하나");
+
+    n = mk_i2c_kind_quantities((uint8_t)MK_I2C_KIND_HUMID, q);
+    CHECK(n == 2 && strcmp(q[0], "temp") == 0 && strcmp(q[1], "humidity") == 0,
+          "온습도 = temp, humidity 둘 (값이 둘인 유일한 종류)");
+
+    n = mk_i2c_kind_quantities((uint8_t)MK_I2C_KIND_IR_TEMP, q);
+    CHECK(n == 1 && strcmp(q[0], "temp_object") == 0, "적외 온도 = temp_object 하나");
+
+    n = mk_i2c_kind_quantities((uint8_t)MK_I2C_KIND_WATER_TEMP, q);
+    CHECK(n == 1 && strcmp(q[0], "temp") == 0, "방수 온도 = temp 하나");
+}
+
+/* 🔴 [I1] 여러 포트가 같은 바퀴에 레코드를 내도 잃지 않는다.
+ *
+ *    FAULT(드라이버 없음)는 버스를 안 건드려 순회가 안 멈춘다 — 포트
+ *    여섯을 전부 온습도(양 둘)로 켜 두면 부팅 직후(모든 last_read_ms=0)
+ *    한 바퀴 안에서 여섯 포트가 동시에 gate 를 통과해 12줄이 쌓인다.
+ *    MK_I2C_OUT_MAX 가 이 최악(MK_I2C_COUNT × MK_I2C_VALUES_MAX)을
+ *    감당하지 못하면 dropped 가 올라간다. */
+static void test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer(void)
+{
+    setup();
+    for (unsigned jack = 10u; jack <= 15u; jack++) {
+        enable_port_kind(jack, (uint32_t)MK_I2C_KIND_HUMID, 0x30u + jack, 1000u);
+    }
+
+    mk_i2c_tick(&I2C, &CFG, 0);      /* 여섯 포트가 전부 처음 트리거된다 */
+
+    int n = 0;
+    MkI2cOut out;
+    while (mk_i2c_take(&I2C, &out) == 1) { n++; }
+
+    CHECK(n == (int)(MK_I2C_COUNT * 2),
+          "포트 여섯 × 양 둘 = 열두 줄이 한 바퀴에 다 나온다");
+    CHECK(I2C.dropped == 0u, "MK_I2C_OUT_MAX 가 최악을 감당해 버리는 것이 없다");
+    CHECK(BUS.n == 0, "드라이버가 없으니 버스는 안 건드린다");
 }
 
 /* ---- BH1750 드라이버 ------------------------------------------------------
@@ -223,6 +315,24 @@ static void test_bh1750_reads_two_bytes_msb_first(void)
           "명령 없이 2바이트만 읽는다");
 }
 
+/* 🔴 [C1] 드라이버가 내는 quantity 와 종류→양 표가 어긋나면 화면이 못
+ *    그린다 — 표가 "lux"를 기대하는데 드라이버가 다른 문자열을 내면
+ *    (오타 등) 정상값도 host/gui/screen.py 가 못 찾는다. */
+static void test_bh1750_quantity_matches_the_kind_table(void)
+{
+    const char *q[MK_I2C_VALUES_MAX];
+    int nq = mk_i2c_kind_quantities((uint8_t)MK_I2C_KIND_LUX, q);
+    CHECK(nq == 1, "조도 종류 표는 양이 하나");
+
+    memset(&BUS, 0, sizeof BUS);
+    MkI2cIo io = { fake_xfer, &BUS };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    MK_I2C_BH1750.read(&io, 3u, 0x23u, v, &n);
+    CHECK(n == 1 && nq == 1 && strcmp(v[0].quantity, q[0]) == 0,
+          "BH1750 이 내는 quantity 가 종류 표와 같다 (lux)");
+}
+
 /* 🔴 전원을 먼저 켠다. 칩은 전원 인가 직후 Power Down 이라(p.4) 모드 명령만
  *    보내면 받지 않을 수 있다. 순서가 뒤바뀌어도 "안 켜진다" 로만 보인다. */
 static void test_bh1750_start_powers_on_before_selecting_the_mode(void)
@@ -256,15 +366,213 @@ static void test_bh1750_start_stops_if_power_on_fails(void)
     CHECK(BUS.n == 1, "두 번째 명령을 보내지 않는다");
 }
 
-int main(void)
+/* ---- I3 — 설계 §11 이 요구한 상태기계 시험 다섯 --------------------------
+ *
+ * 🔴 원장(progress.md)에는 "Task 4 에서 Task 5 로 옮겼다"고 적혀 있었지만
+ *    실제로는 어디에도 없었다(검토 지적 I3). 아래 다섯이 그 빈칸을 채운다.
+ *    시간 경계는 MK_I2C_BH1750.warmup_ms 를 빌려 쓴다 — 손으로 다시 적지
+ *    않는다.
+ */
+
+/* [I3-1] 변환 대기 동안 read 를 안 부른다. */
+static void test_does_not_read_during_warmup(void)
 {
+    setup();
+    enable_lux_port(10u, 0x23u, 10u);   /* period 최솟값 — warmup 이 실효 주기를 결정한다 */
+
+    int start_done_at = -1;
+    int read_seen_at = -1;
+    for (int64_t t = 0; t < 400; t += 10) {
+        int before = BUS.n;
+        mk_i2c_tick(&I2C, &CFG, t);
+        int after = BUS.n;
+        if (start_done_at < 0 && after >= 2) { start_done_at = (int)t; }
+        if (start_done_at >= 0 && read_seen_at < 0 && after > before) {
+            /* read 는 명령 없이(ntx=0) 2바이트를 받는다 (§6) — start 의
+             * 1바이트 쓰기와 모양이 다르다. */
+            if (BUS.ntx[after - 1] == 0u && BUS.nrx[after - 1] == 2u) {
+                read_seen_at = (int)t;
+            }
+        }
+        MkI2cOut out;
+        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
+    }
+
+    CHECK(start_done_at >= 0, "start 가 불렸다");
+    CHECK(read_seen_at >= 0, "결국 read 가 불렸다");
+    CHECK(read_seen_at - start_done_at >= (int)MK_I2C_BH1750.warmup_ms,
+          "read 는 warmup_ms 가 다 찬 뒤에야 나간다 (변환 대기 동안은 안 읽는다)");
+}
+
+/* [I3-2] 실효 주기 = max(period_ms, warmup_ms). */
+static void test_effective_period_is_the_longer_of_period_and_warmup(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 10u);  /* period(10) < warmup(180) */
+
+    int64_t read_times[8];
+    int n_reads = 0;
+    for (int64_t t = 0; t < 800 && n_reads < 8; t += 10) {
+        int before = BUS.n;
+        mk_i2c_tick(&I2C, &CFG, t);
+        int after = BUS.n;
+        if (after > before && BUS.ntx[after - 1] == 0u && BUS.nrx[after - 1] == 2u) {
+            read_times[n_reads++] = t;
+        }
+        MkI2cOut out;
+        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
+    }
+
+    CHECK(n_reads >= 2, "read 가 여러 번 있었다");
+    if (n_reads >= 2) {
+        int64_t gap = read_times[1] - read_times[0];
+        CHECK(gap >= (int64_t)MK_I2C_BH1750.warmup_ms,
+              "read 간격이 설정 주기(10ms)가 아니라 warmup_ms(180ms) 를 따른다");
+    }
+}
+
+/* [I3-3] start 는 켤 때 한 번만 — 주기마다 다시 부르지 않는다. */
+static void test_start_is_called_once_when_turned_on(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 50u);
+    for (int64_t t = 0; t < 1000; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        MkI2cOut out;
+        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
+    }
+    int start_writes = 0;
+    for (int k = 0; k < BUS.n; k++) {
+        if (BUS.ntx[k] == 1u && BUS.nrx[k] == 0u) { start_writes++; }
+    }
+    CHECK(start_writes == 2,
+          "start(전원+모드) 는 켤 때 한 번만 나간다 — 계속 성공하는 동안 주기마다 다시 안 부른다");
+}
+
+/* [I3-4] 격리 — 한 포트가 죽어도(드라이버 없음) 다른 포트는 계속 읽힌다. */
+static void test_isolation_a_dead_port_does_not_stop_the_rest(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 50u);                                  /* 정상 */
+    enable_port_kind(11u, (uint32_t)MK_I2C_KIND_HUMID, 0x40u, 50u);    /* 드라이버 없음 — 계속 죽어 있다 */
+
+    int ok_count = 0, fault_count = 0;
+    MkI2cOut out;
+    for (int64_t t = 0; t < 500; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &out) == 1) {
+            if (out.connector_id == 10u && out.status == 0u) { ok_count++; }
+            if (out.connector_id == 11u && out.status == 3u) { fault_count++; }
+        }
+    }
+    CHECK(ok_count > 0, "죽은 포트(J11)가 있어도 다른 포트(J10)는 계속 읽힌다");
+    CHECK(fault_count > 0, "죽은 포트는 계속 status=3 을 알린다");
+}
+
+/* [I3-5] status 판정 — io 반환 −1·−2 가 1·2 로. */
+static void test_io_error_codes_map_to_status_one_and_two(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 50u);
+    BUS.ret = -1;
+    mk_i2c_tick(&I2C, &CFG, 0);      /* OFF -> START (버스 안 건드림) */
+    mk_i2c_tick(&I2C, &CFG, 10);     /* START 시도: 실패 */
+    MkI2cOut out;
+    int seen_status1 = 0;
+    while (mk_i2c_take(&I2C, &out) == 1) {
+        if (out.status == 1u) { seen_status1 = 1; }
+    }
+    CHECK(seen_status1, "io -1(응답 없음) 은 status=1");
+
+    setup();
+    enable_lux_port(10u, 0x23u, 50u);
+    BUS.ret = -2;
+    mk_i2c_tick(&I2C, &CFG, 0);
+    mk_i2c_tick(&I2C, &CFG, 10);
+    int seen_status2 = 0;
+    while (mk_i2c_take(&I2C, &out) == 1) {
+        if (out.status == 2u) { seen_status2 = 1; }
+    }
+    CHECK(seen_status2, "io -2(버스 오류) 는 status=2");
+}
+
+/* 🔴 [I2] 읽기 실패가 이어지면 OFF 로 되돌아가 start 부터 다시 한다.
+ *    BH1750 은 전원이 끊기면 Power Down 으로 돌아가는데(p.4) READY 에
+ *    머물며 read 만 재시도하면, 재삽입 뒤 주소는 ACK 하므로 read 가
+ *    성공(status=0)해 버려 변환 안 된 값이 나간다. */
+static void test_read_failure_forces_a_fresh_start(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 10u);
+    MkI2cOut out;
+    for (int64_t t = 0; t <= 200; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
+    }
+    int start_writes_before = 0;
+    for (int k = 0; k < BUS.n; k++) {
+        if (BUS.ntx[k] == 1u && BUS.nrx[k] == 0u) { start_writes_before++; }
+    }
+    CHECK(start_writes_before == 2, "여기까지는 시작 명령이 두 번뿐 (선행 확인)");
+
+    BUS.ret = -1;   /* 이제부터 다음 read 가 실패한다 */
+    for (int64_t t = 210; t <= 600; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
+    }
+    int start_writes_after = 0;
+    for (int k = 0; k < BUS.n; k++) {
+        if (BUS.ntx[k] == 1u && BUS.nrx[k] == 0u) { start_writes_after++; }
+    }
+    CHECK(start_writes_after > start_writes_before,
+          "읽기가 실패하면 OFF 로 되돌아가 start 를 다시 부른다 (I2)");
+}
+
+/* ---- 대조용 덤프 ---------------------------------------------------------- */
+
+/* 🔴 종류 → 양 표를 찍는다. crosscheck_i2c_quantities.py 가 시뮬레이터의
+ *    I2C_QUANTITIES 와 대조한다. 시뮬레이터의 I2C_KINDS 와 같은 범위
+ *    (0~4)만 찍는다 — 더 찍으면 시뮬레이터엔 없는 키가 나와 거짓
+ *    불일치가 난다. */
+static void print_quantities(void)
+{
+    for (uint32_t k = 0; k <= 4u; k++) {
+        const char *q[MK_I2C_VALUES_MAX];
+        int n = mk_i2c_kind_quantities((uint8_t)k, q);
+        printf("%u", (unsigned)k);
+        for (int j = 0; j < n; j++) { printf(",%s", q[j]); }
+        printf("\n");
+    }
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "--print-quantities") == 0) {
+        print_quantities();
+        return 0;
+    }
+
     printf("-- 꺼진 포트 --\n");        test_disabled_ports_never_touch_the_bus();
     printf("-- 라운드로빈 --\n");       test_one_port_per_tick();
     printf("-- 지원 안 하는 종류 --\n"); test_unsupported_kind_reports_status_three();
+    printf("-- 지원 안 하는 종류(양 둘) --\n");
+    test_unsupported_kind_with_two_quantities_emits_two_lines();
+    printf("-- 종류→양 표 --\n");       test_kind_quantities_table_matches_the_spec();
+    printf("-- [I1] 여러 포트 동시 FAULT --\n");
+    test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer();
     printf("-- BH1750 환산 --\n");      test_bh1750_conversion_uses_the_implementation_constant();
     printf("-- BH1750 바이트순서 --\n"); test_bh1750_reads_two_bytes_msb_first();
+    printf("-- BH1750 quantity 일치 --\n");
+    test_bh1750_quantity_matches_the_kind_table();
     printf("-- BH1750 전원 순서 --\n"); test_bh1750_start_powers_on_before_selecting_the_mode();
     printf("-- BH1750 전원 실패 --\n"); test_bh1750_start_stops_if_power_on_fails();
+    printf("-- [I3] 변환 대기 --\n");   test_does_not_read_during_warmup();
+    printf("-- [I3] 실효 주기 --\n");   test_effective_period_is_the_longer_of_period_and_warmup();
+    printf("-- [I3] start 한 번 --\n"); test_start_is_called_once_when_turned_on();
+    printf("-- [I3] 격리 --\n");        test_isolation_a_dead_port_does_not_stop_the_rest();
+    printf("-- [I3] status 매핑 --\n"); test_io_error_codes_map_to_status_one_and_two();
+    printf("-- [I2] 읽기 실패 재시작 --\n");
+    test_read_failure_forces_a_fresh_start();
 
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
     return failures ? 1 : 0;

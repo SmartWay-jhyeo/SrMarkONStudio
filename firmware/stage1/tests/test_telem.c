@@ -314,8 +314,22 @@ static void test_i2c_records_share_the_sequence_with_ain(void)
 }
 
 /* 🔴 값이 없으면 null 이다. 마지막 값을 다시 실으면 화면이 살아 있는
- *    센서처럼 보인다 (규격 §7.5). */
-static void test_failed_read_emits_null_not_the_last_value(void)
+ *    센서처럼 보인다 (규격 §7.5).
+ *
+ * 🔴 [검토 지적 C2 — 이름을 고쳤다] enable_lux_port_in 은 드라이버가
+ *    있는 LUX 를 켜고 fake_xfer_nak 는 **첫 xfer(Power On)부터** 실패
+ *    시키므로, 실제로 타는 것은 READY 의 read 실패가 아니라 START 의
+ *    시작 실패 경로다 — 예전 이름(test_failed_read_emits_null_not_
+ *    the_last_value)이 그것을 숨겼다.
+ *
+ *    예전 판은 각 줄의 **내용**만 보고 몇 줄이 왔는지는 안 셌다. 그래서
+ *    시작 실패에 주기 가드가 없어(안 꽂힌 포트 하나가 슈퍼루프 두
+ *    바퀴마다 레코드를 만드는 결함, 실측 링크의 약 2/3) 이 시험을
+ *    그대로 통과시켰다. 이제 줄 수를 못 박는다 —
+ *    enable_lux_port_in 이 고정하는 period_ms=200 에서 0~400ms 를
+ *    10ms 간격으로 돌리면 t=10(첫 시도 실패)과 t=210(첫 재시도) 두
+ *    번만 나가야 한다(t=410 은 범위 밖). */
+static void test_start_failure_is_rate_limited_and_emits_null(void)
 {
     setup();
     static MkI2c I2C;
@@ -330,15 +344,20 @@ static void test_failed_read_emits_null_not_the_last_value(void)
     }
 
     int found = 0;
+    int n_i2c = 0;
     for (int k = 0; k < N; k++) {
         if (strstr(LINES[k], "\"type\":\"i2c\"") == NULL) { continue; }
         found = 1;
+        n_i2c++;
         CHECK_HAS(LINES[k], "\"value\":null", "값 자리가 null");
         CHECK_HAS(LINES[k], "\"status\":1", "응답 없음은 status=1");
         CHECK(strstr(LINES[k], "\"unit\"") == NULL,
               "unit 을 싣지 않는다 (규격 §7.5)");
     }
     CHECK(found, "실패해도 레코드가 나간다");
+    CHECK(n_i2c == 2,
+          "주기 가드가 있어 400ms/period_ms=200 에 두 번만 나간다 (C2 — "
+          "가드 없이 매 두 바퀴 재시도하면 이보다 훨씬 많이 나간다)");
 }
 
 /* 🔴 [검토 지적 — 근거가 틀렸다] "while → if 로 바꿔도 시험이 안 깨진다" 는
@@ -455,7 +474,7 @@ int main(int argc, char **argv)
     test_burst_is_capped();
     test_disabled_channel_is_silent();
     test_i2c_records_share_the_sequence_with_ain();
-    test_failed_read_emits_null_not_the_last_value();
+    test_start_failure_is_rate_limited_and_emits_null();
     test_tick_drains_every_pending_i2c_record_in_one_call();
 
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
