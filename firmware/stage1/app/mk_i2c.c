@@ -103,6 +103,33 @@ static void push_status(MkI2c *i, unsigned connector_id, uint8_t kind,
     }
 }
 
+/* 🔴 [검토 지적 Important, 2026-08-18] 재시도 하한.
+ *
+ *    카탈로그 하한(i2cN.period_ms 최소 10ms)을 그대로 재시도 주기로 쓰면
+ *    안 꽂힌 포트 하나가 초당 100회 재시도 + 레코드를 낸다 — 여섯 포트면
+ *    초당 ~600줄, 링크의 약 90% 다. 방금 고친 C2(START 실패를 매 바퀴
+ *    재시도해 링크를 채운 결함)와 같은 결의 문제라, 성공 경로처럼 여기도
+ *    하한을 둔다.
+ *
+ *    드라이버가 있으면(FAULT: 시작은 실패했지만 종류는 지원됨) 그
+ *    드라이버의 warmup_ms 를 그대로 floor 로 쓴다 — READY 의
+ *    max(period_ms, warmup_ms) 와 정확히 같은 규칙이다(§ 아래
+ *    "실효 주기" 주석 참고). 재시작이 성공하면 어차피 그 주기로
+ *    안정되므로, 실패 중이라고 더 급하게 두드릴 이유가 없다.
+ *
+ *    드라이버가 없으면(미지원 종류, 절대 회복 안 됨) warmup_ms 를 모른다.
+ *    "대답 없는 포트를 성공 경로보다 자주 두드릴 이유가 없다"가 요지라,
+ *    카탈로그의 기본 주기(i2cN.period_ms 기본값 200ms, mk_cfgtable.c) 를
+ *    floor 로 쓴다 — 실사용 대표값이지 임의로 지어낸 수가 아니다. */
+#define MK_I2C_UNSUPPORTED_RETRY_FLOOR_MS 200u
+
+static uint32_t retry_period_ms(const MkI2cDriver *drv, uint32_t period)
+{
+    uint32_t floor_ms = drv != NULL ? drv->warmup_ms
+                                     : MK_I2C_UNSUPPORTED_RETRY_FLOOR_MS;
+    return period < floor_ms ? floor_ms : period;
+}
+
 void mk_i2c_init(MkI2c *i, const MkI2cIo *io)
 {
     memset(i, 0, sizeof *i);
@@ -164,7 +191,8 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
          *    길을 타면 한 바퀴에 여럿이 몰릴 수 있다 — mk_i2c.h 의
          *    MK_I2C_OUT_MAX 가 그 최악(포트 수 × 종류당 양)을 감당한다
          *    (검토 지적 I1). */
-        if (st->state != MK_I2C_FAULT || now - st->last_read_ms >= (int64_t)period) {
+        uint32_t retry = retry_period_ms(NULL, period);
+        if (st->state != MK_I2C_FAULT || now - st->last_read_ms >= (int64_t)retry) {
             st->state = MK_I2C_FAULT;
             st->last_read_ms = now;
             push_status(i, jack, kind, 3u, now);
@@ -214,7 +242,7 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
     case MK_I2C_READY: {
         /* 🔴 실효 주기 = max(period_ms, warmup_ms). 변환보다 빨리 읽으면
          *    같은 값이 여러 줄 나가고 화면이 멈춘 값을 갱신처럼 보여 준다. */
-        uint32_t eff_period = period < drv->warmup_ms ? drv->warmup_ms : period;
+        uint32_t eff_period = retry_period_ms(drv, period);
         if (now - st->last_read_ms < (int64_t)eff_period) {
             return 0;
         }
@@ -246,9 +274,13 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
     case MK_I2C_FAULT: {
         /* 🔴 [C2] 여기 오는 것은 시작 실패뿐이다 — 드라이버 없음은 위
          *    drv==NULL 검사에서 이미 걸러져 이 switch 에 안 온다(그래서
-         *    drv 를 안전하게 그대로 쓴다). period_ms 마다 한 번 다시
-         *    시도한다 — 즉시 재시도하면 START 실패와 같은 폭주가 난다. */
-        if (now - st->last_read_ms < (int64_t)period) {
+         *    drv 를 안전하게 그대로 쓴다). max(period_ms, warmup_ms) 마다
+         *    한 번 다시 시도한다 — period_ms 원값만 쓰면 카탈로그 하한
+         *    10ms 에서 초당 100회 재시도로 폭주한다(검토 지적 Important,
+         *    retry_period_ms() 주석 참고). 즉시 재시도해도 START 실패와
+         *    같은 폭주가 난다. */
+        uint32_t retry = retry_period_ms(drv, period);
+        if (now - st->last_read_ms < (int64_t)retry) {
             return 0;
         }
         int rc = drv->start != NULL ? drv->start(&i->io, bus, use_addr) : 0;

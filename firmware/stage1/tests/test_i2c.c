@@ -268,6 +268,72 @@ static void test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer(void)
     CHECK(BUS.n == 0, "드라이버가 없으니 버스는 안 건드린다");
 }
 
+/* 🔴 [검토 지적 Important, 2026-08-18] 재시도 하한 — 미지원 종류(드라이버
+ *    없음, drv==NULL 경로).
+ *
+ *    period_ms 를 카탈로그 하한(10ms)에 두고 안 꽂힌 포트를 돌렸을 때,
+ *    재시도가 10ms 마다가 아니라 MK_I2C_UNSUPPORTED_RETRY_FLOOR_MS(200ms)
+ *    마다여야 한다. 2000ms 창에서: t=0(즉시 첫 알림) 이후 200ms 마다
+ *    한 번씩 — 0,200,400,...,1800 = 10회. 하한이 없으면(원값 10ms) 이
+ *    창에서 199회가 나온다(검토가 지적한 "초당 100회"와 같은 크기).
+ *
+ *    되돌림 검사: retry_period_ms() 안의 MK_I2C_UNSUPPORTED_RETRY_FLOOR_MS
+ *    분기를 지우고(그냥 period 를 돌려주게) 이 시험이 10 이 아니라 199 로
+ *    깨지는 것을 확인한 뒤 되돌렸다. */
+static void test_unsupported_kind_retry_has_a_floor_even_at_min_period(void)
+{
+    setup();
+    enable_port_kind(10u, (uint32_t)MK_I2C_KIND_IR_TEMP, 0x50u, 10u);  /* period_ms = 카탈로그 하한 */
+
+    int n_events = 0;
+    MkI2cOut out;
+    for (int64_t t = 0; t < 2000; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &out) == 1) {
+            CHECK(out.status == 3u, "미지원은 늘 status=3");
+            n_events++;
+        }
+    }
+    CHECK(n_events == 10,
+          "period_ms=10 이어도 재시도는 200ms 하한을 따른다 (2000ms/200ms=10, "
+          "하한이 없으면 199)");
+}
+
+/* 🔴 [검토 지적 Important, 2026-08-18] 재시도 하한 — 드라이버는 있는데
+ *    시작이 실패하는 경우(FAULT, C2 경로). 이것이 사용자가 든 실제 예다
+ *    — 지원하는 종류를 골라 놓고 센서를 안 꽂으면 START 가 NACK 으로
+ *    실패해 이 길을 탄다.
+ *
+ *    period_ms 를 하한(10ms)에 두면, 재시도는 이제 drv->warmup_ms
+ *    (BH1750=180ms) 를 따라야 한다 — READY 의 max(period_ms, warmup_ms)
+ *    와 같은 규칙. 2000ms 창에서: 첫 시도 t=10(OFF→START 가 한 바퀴,
+ *    START 시도가 다음 바퀴) 이후 180ms 마다 한 번씩 —
+ *    10,190,370,...,1990 = 12회. 하한이 없으면(원값 10ms) 이 창에서
+ *    199회에 가깝게 나온다.
+ *
+ *    되돌림 검사: MK_I2C_FAULT 케이스의 retry_period_ms(drv, period) 를
+ *    period 로 되돌리면 12 가 아니라 199 근처로 깨지는 것을 확인한 뒤
+ *    되돌렸다. */
+static void test_fault_retry_has_a_floor_even_at_min_period(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 10u);   /* period_ms = 카탈로그 하한 */
+    BUS.ret = -1;                       /* start 가 항상 NACK */
+
+    int n_events = 0;
+    MkI2cOut out;
+    for (int64_t t = 0; t < 2000; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &out) == 1) {
+            CHECK(out.status == 1u, "NACK 은 status=1");
+            n_events++;
+        }
+    }
+    CHECK(n_events == 12,
+          "period_ms=10 이어도 재시도는 warmup_ms(180ms) 하한을 따른다 "
+          "(t=10 부터 180ms 마다, 2000ms 창에서 12회)");
+}
+
 /* ---- BH1750 드라이버 ------------------------------------------------------
  *
  * 🔴 상태기계를 거치지 않고 드라이버 구조체(MK_I2C_BH1750)를 직접 부른다.
@@ -560,6 +626,10 @@ int main(int argc, char **argv)
     printf("-- 종류→양 표 --\n");       test_kind_quantities_table_matches_the_spec();
     printf("-- [I1] 여러 포트 동시 FAULT --\n");
     test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer();
+    printf("-- 재시도 하한(미지원) --\n");
+    test_unsupported_kind_retry_has_a_floor_even_at_min_period();
+    printf("-- 재시도 하한(FAULT) --\n");
+    test_fault_retry_has_a_floor_even_at_min_period();
     printf("-- BH1750 환산 --\n");      test_bh1750_conversion_uses_the_implementation_constant();
     printf("-- BH1750 바이트순서 --\n"); test_bh1750_reads_two_bytes_msb_first();
     printf("-- BH1750 quantity 일치 --\n");
