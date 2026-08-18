@@ -281,3 +281,33 @@ def test_replaced_records_container_is_reported_as_discontinuity():
     r = w.step(0.1)
     assert r.records_discontinuity is True
     assert len(r.records) == 1
+
+
+# ------------------------------------------------------------- 원문 줄 (스트림)
+
+def test_raw_lines_are_collected_when_the_service_offers_them():
+    """🔴 stream 화면은 원문 줄이 있어야 "정말 오고 있나" 를 보여줄 수 있다.
+
+    `take_records()` 와 같은 어법이다 — 서비스가 제공하면 우선 쓴다.
+    """
+
+    class WithRaw(FakeService):
+        def __init__(self):
+            super().__init__()
+            self._raw_buf = ['{"type":"ain"}', '{"type":"i2c"}']
+
+        def take_raw_lines(self):
+            out, self._raw_buf = self._raw_buf, []
+            return out
+
+    w = WorkerLoop(WithRaw(), CommandQueue())
+    r = w.step(0.0)
+    assert r.raw_lines == ['{"type":"ain"}', '{"type":"i2c"}']
+    assert w.step(0.1).raw_lines == []              # 두 번 넘어오지 않는다
+
+
+def test_raw_lines_default_to_empty_when_the_service_lacks_them():
+    """구형 서비스 스텁(FakeService)에는 `take_raw_lines` 가 없다 — 없으면
+    조용히 빈 목록이다. 예외로 워커 전체가 죽으면 안 된다."""
+    w = WorkerLoop(FakeService(), CommandQueue())
+    assert w.step(0.0).raw_lines == []

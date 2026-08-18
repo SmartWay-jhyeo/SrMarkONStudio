@@ -29,6 +29,11 @@ class StepResult:
     pump_error: str | None = None
     #: 수집 커서가 끊긴 경우(서비스의 records 가 교체·절단됨).
     records_discontinuity: bool = False
+    #: 이번 스텝에 걷은 원문 줄 (stream 화면용). 서비스가 `take_raw_lines()`
+    #: 를 제공하지 않으면(구형 스텁 등) 빈 목록이다 — `records` 와 달리
+    #: 커서 대체 경로가 없다. 원문 스트림이 없던 시절부터 있던 서비스
+    #: 스텁까지 조용히 지원해야 하므로, 이 필드만은 없으면 없는 대로 둔다.
+    raw_lines: list[str] = field(default_factory=list)
 
     @property
     def error(self) -> str | None:
@@ -113,6 +118,10 @@ class WorkerLoop:
             out.pump_error = str(exc)
 
         out.records, out.records_discontinuity = self._collect_records()
+
+        take_raw = getattr(self.service, "take_raw_lines", None)
+        out.raw_lines = list(take_raw()) if callable(take_raw) else []
+
         out.mode = getattr(self.service, "mode", "RUN")
         out.ctl_mode = getattr(self.service, "ctl_mode", "ACTIVE")
         return out
