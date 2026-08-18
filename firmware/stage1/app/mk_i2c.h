@@ -113,14 +113,34 @@ typedef struct MkI2c {
     MkI2cOut  out[MK_I2C_OUT_MAX];
     int       n_out;
     int       out_head;
+    /* 🔴 mk_i2c_take() 로 못 비운 사이 push_out 이 자리가 없어 버린 개수
+     *    (mk_queue.c 의 drops 와 같은 관례). 버려도 값이 섞이거나 다음
+     *    레코드가 이전 것에 덮어써지지는 않는다 — 그냥 통째로 사라진다.
+     *    올라간다고 해서 손을 쓰는 코드는 아직 없다(YAGNI) — $STAT 노출은
+     *    이 Task 범위 밖이다. 세지 않으면 유실이 없었던 것으로 보인다. */
+    uint32_t  dropped;
 } MkI2c;
 
 void mk_i2c_init(MkI2c *i, const MkI2cIo *io);
 
-/* 한 바퀴에 포트 **하나**만 나아간다. 매 루프 불러도 된다. */
+/* 한 바퀴에 포트 **하나**만 나아간다. 매 루프 불러도 된다.
+ *
+ * 🔴 out 버퍼는 MK_I2C_OUT_MAX(2)칸뿐이다. 정상 경로(READY 에서 값을
+ *    읽음)는 한 바퀴에 버스를 건드리는 포트가 하나뿐이고 그 포트가 내는
+ *    값도 최대 2개(온습도)라 절대 안 넘친다. 하지만 **지원 안 하는
+ *    종류(FAULT)는 버스를 건드리지 않으므로 한 바퀴 안에서 여러 포트가
+ *    동시에 status=3 을 낼 수 있다** — 그래서 이 함수를 부른 직후에는
+ *    mk_i2c_take() 로 **반드시 완전히** 비워야 한다. 안 비우고 다음
+ *    바퀴를 돌리면 새 레코드가 자리가 없어 조용히 버려지고 dropped 만
+ *    올라간다. */
 void mk_i2c_tick(MkI2c *i, MkConfig *cfg, int64_t now_ms);
 
-/* 내보낼 것이 있으면 1 을 돌려주고 out 을 채운다. 없으면 0. */
+/* 내보낼 것이 있으면 1 을 돌려주고 out 을 채운다. 없으면 0.
+ *
+ * 🔴 mk_i2c_tick() 을 부른 **매 바퀴 뒤** 0 이 나올 때까지 while 로
+ *    반복해서 불러야 하는 계약이다. 다 비우지 않은 채 다음 tick 을 부르면
+ *    이전 바퀴가 남겨 둔 자리 때문에 이번 바퀴의 레코드가 밀려 버려질 수
+ *    있다 — dropped 로 셀 수 있다. */
 int mk_i2c_take(MkI2c *i, MkI2cOut *out);
 
 #endif /* MK_I2C_H */

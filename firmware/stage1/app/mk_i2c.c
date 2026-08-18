@@ -48,7 +48,12 @@ static void push_out(MkI2c *i, unsigned connector_id, const char *quantity,
                      float value, int have_value, uint16_t status, int64_t t_ms)
 {
     if (i->n_out >= MK_I2C_OUT_MAX) {
-        return;                  /* 한 바퀴에 포트 하나라 여기 오지 않는다 */
+        /* 🔴 정상 경로로는 오지 않는다 — FAULT 는 버스를 안 건드려 한
+         *    바퀴에 여럿이 겹칠 수 있다(mk_i2c.h 의 mk_i2c_tick 계약).
+         *    조용히 버리지 않고 센다 — mk_queue.c 의 drops 와 같은 이유:
+         *    세지 않으면 유실이 없었던 것으로 보인다. */
+        i->dropped++;
+        return;
     }
     MkI2cOut *o = &i->out[i->n_out++];
     o->connector_id = connector_id;
@@ -98,6 +103,13 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
     if (st->state != MK_I2C_OFF && (st->kind != kind || st->addr != addr)) {
         st->state = MK_I2C_OFF;
     }
+    /* 🔴 FAULT 로 빠지는 길에도 반드시 기록한다. 여기서 빠뜨리면 위 되돌림
+     *    검사가 st->kind(옛값) != kind(방금 읽은 값) 를 매 바퀴 참으로
+     *    보고 state 를 OFF 로 되돌려, 아래 FAULT 가드의 "state != FAULT"
+     *    가 항상 참이 되어 "주기마다 한 번" 이 지켜지지 않는다
+     *    (검토 지적 2026-08-18 — 시험을 고치다 드러났다). */
+    st->kind = kind;
+    st->addr = addr;
 
     const MkI2cDriver *drv = mk_i2c_driver_for(kind);
     if (drv == NULL) {
@@ -116,8 +128,7 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
 
     switch (st->state) {
     case MK_I2C_OFF:
-        st->kind = kind;
-        st->addr = addr;
+        /* kind·addr 는 위에서 이미 기록했다. */
         st->state = MK_I2C_START;
         st->step_ms = now;
         return 0;                /* 다음 바퀴에 시작 명령을 낸다 */
