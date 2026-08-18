@@ -147,14 +147,16 @@ def test_the_rail_sequence_test_still_exists():
         assert name in t, f"{name} 이 사라졌다"
 
 
-#: 🔴 디지털 출력 J18~J20 의 핀 (데이터시트 §5.7, 넷리스트 확인).
+#: 🔴 디지털 입력 J18~J20 의 핀 (데이터시트 §5.7, 넷리스트 확인).
 #:
 #:    PA4 = J18 · PA5 = J19 · PA6 = J20
 #:
-#:    레일과 같은 이유로 한 파일에 묶는다. 여기는 위험의 종류가 다르다 —
+#:    사용자 확정(2026-08-18) — 출력이 아니라 입력이다. 커넥터 반대편에
+#:    옵토커플러가 붙고 보드는 신호를 읽는다. 방향이 바뀌어도 "어느
+#:    파일이 이 핀을 만지는가" 를 하나로 묶어야 하는 이유는 그대로다 —
 #:    MCU GPIO 가 커넥터에 직결이라 버퍼도 클램프도 없고, PA4·PA5 는
-#:    3.3V 전용(절대최대 4.0V)이다. 어느 파일이 이 핀을 만지는지 흩어지면
-#:    "누가 언제 High 로 냈나" 를 코드로 답할 수 없게 된다.
+#:    3.3V 전용(절대최대 4.0V)이다. 흩어지면 "누가 언제 이 핀을 초기화
+#:    했나" 를 코드로 답할 수 없게 된다.
 SOL_OWNER = "mk_sol.c"
 SOL_PINS = {
     "GPIO_PIN_4": "PA4 = J18 (3.3V 전용)",
@@ -163,7 +165,7 @@ SOL_PINS = {
 }
 
 
-def test_only_one_file_drives_the_digital_outputs():
+def test_only_one_file_drives_the_digital_inputs():
     """sol 핀을 GPIOA 에서 만지는 파일은 하나여야 한다.
 
     🔴 GPIOA 자체는 여러 파일이 쓴다 — PA7 이 WS2812 다(mk_ws2812_io.c).
@@ -182,18 +184,28 @@ def test_only_one_file_drives_the_digital_outputs():
     )
 
 
-def test_the_digital_output_test_still_exists():
-    """설정이 핀까지 닿는지 보는 C 시험이 지워지지 않았는지.
+def test_the_digital_input_test_still_exists():
+    """엣지가 디바운스를 거쳐 확정 상태·레코드로 옮겨지는지 보는 C 시험이
+    지워지지 않았는지.
 
     🔴 이 프로젝트가 같은 빠짐을 네 번 밟았다 — ain*.enabled·adc.pga·
        led.*·sol.* 이 차례로 "카탈로그에는 있는데 하드웨어에 안 닿는"
        상태였다. 전부 GUI 에는 멀쩡히 뜨므로 화면으로는 못 잡는다.
        그 시험이 사라지면 같은 자리로 조용히 되돌아간다.
+
+       sol.* 은 출력에서 입력으로 뒤집히면서(사용자 확정 2026-08-18)
+       옛 시험 이름(test_each_key_drives_its_own_connector 등, "설정이
+       핀을 명령하는가")이 더는 뜻이 안 맞는다 — 이제는 "핀 엣지가
+       디바운스·극성 반전을 거쳐 확정 상태·레코드가 되는가" 다.
     """
     t = (FW / "tests" / "test_sol.c").read_text(encoding="utf-8")
-    for name in ("test_each_key_drives_its_own_connector",
-                 "test_missing_items_are_treated_as_off",
-                 "test_the_catalog_still_has_the_three_keys"):
+    for name in ("test_edge_confirms_after_debounce_elapses",
+                 "test_glitches_within_debounce_window_are_ignored",
+                 "test_polarity_is_flipped_exactly_once",
+                 "test_repeated_same_level_emits_only_once",
+                 "test_queue_overflow_is_counted",
+                 "test_channels_are_independent",
+                 "test_the_catalog_has_the_debounce_item"):
         assert name in t, f"{name} 이 사라졌다"
 
 
