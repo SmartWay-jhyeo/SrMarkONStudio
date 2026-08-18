@@ -61,7 +61,8 @@ foreach ($s in $suites) {
 if ($failed -eq 0) {
     $checks = @("check_sources.py", "crosscheck.py", "crosscheck_json.py", "crosscheck_crc.py",
                 "crosscheck_cfg.py", "crosscheck_cfgtable.py",
-                "crosscheck_hostlink.py", "crosscheck_i2c.py", "crosscheck_i2c_quantities.py")
+                "crosscheck_hostlink.py", "crosscheck_i2c.py", "crosscheck_i2c_quantities.py",
+                "crosscheck_din.py")
     foreach ($c in $checks) {
         Write-Output "-- $c"
         cmd /c "chcp 65001 >nul && python $c"

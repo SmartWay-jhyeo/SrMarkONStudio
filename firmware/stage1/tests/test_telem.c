@@ -528,6 +528,40 @@ static void emit_i2c(void)
     }
 }
 
+/* crosscheck_din.py 가 대조하는 세 벡터. 상태기계(디바운스)를 거치지 않고
+ * MkSolCtl.out 에 직접 채워 레코드 조립(build_din_record)만 시뮬레이터와
+ * 맞춘다 — emit_i2c() 와 같은 방식(검토 지적 I2: din 에는 crosscheck_i2c.py
+ * 같은 바이트 대조가 없어서 필드 순서 일치가 양쪽 주석에 손으로 옮겨 적은
+ * 문장뿐이었다).
+ *
+ * 벡터 셋 — 켜짐(state 1)·꺼짐(state 0)·세 커넥터(18·19·20)가 모두 나오게: */
+static void emit_din(void)
+{
+    setup();
+    static MkSolCtl SOL;
+    mk_solctl_init(&SOL);
+    mk_telem_attach_sol(&T, &SOL);
+
+    /* 1) 켜짐, J18 */
+    SOL.out[0] = (MkSolOut){ .connector_id = 18u, .state = 1u, .t_ms = 1000 };
+    SOL.n_out = 1;
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    /* 2) 꺼짐, J19 */
+    SOL.out[0] = (MkSolOut){ .connector_id = 19u, .state = 0u, .t_ms = 2000 };
+    SOL.n_out = 1;
+    mk_telem_tick(&T, 300, sink, NULL);
+
+    /* 3) 켜짐, J20 — 세 커넥터가 다 나오도록 */
+    SOL.out[0] = (MkSolOut){ .connector_id = 20u, .state = 1u, .t_ms = 3000 };
+    SOL.n_out = 1;
+    mk_telem_tick(&T, 500, sink, NULL);
+
+    for (int i = 0; i < N; i++) {
+        fputs(LINES[i], stdout);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--emit") == 0) {
@@ -536,6 +570,10 @@ int main(int argc, char **argv)
     }
     if (argc > 1 && strcmp(argv[1], "--emit-i2c") == 0) {
         emit_i2c();
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "--emit-din") == 0) {
+        emit_din();
         return 0;
     }
 
