@@ -17,7 +17,7 @@ Set-Location $PSScriptRoot
 $suites = @(
     @{ exe = "test_framing.exe";  src = "test_framing.c ..\app\mk_framing.c" },
     @{ exe = "test_json.exe";     src = "test_json.c ..\app\mk_json.c" },
-    @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c ..\app\mk_config.c ..\app\mk_cfgwire.c ..\app\mk_ads1256.c ..\app\mk_queue.c ..\app\mk_railctl.c" },
+    @{ exe = "test_hostlink.exe"; src = "test_hostlink.c ..\app\mk_hostlink.c ..\app\mk_framing.c ..\app\mk_json.c ..\app\mk_config.c ..\app\mk_cfgwire.c ..\app\mk_ads1256.c ..\app\mk_queue.c ..\app\mk_railctl.c ..\app\mk_solctl.c" },
     @{ exe = "test_config.exe";   src = "test_config.c ..\app\mk_config.c" },
     @{ exe = "test_cfgwire.exe";  src = "test_cfgwire.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
     @{ exe = "test_crc.exe";      src = "test_crc.c ..\app\mk_crc.c" },
@@ -25,10 +25,10 @@ $suites = @(
     @{ exe = "test_ads1256.exe"; src = "test_ads1256.c ..\app\mk_ads1256.c ..\app\mk_queue.c" },
     @{ exe = "test_railctl.exe";  src = "test_railctl.c ..\app\mk_railctl.c" },
     @{ exe = "test_cfgtable.exe"; src = "test_cfgtable.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c" },
-    @{ exe = "test_telem.exe";    src = "test_telem.c ..\app\mk_telem.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ads1256.c ..\app\mk_queue.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c" },
+    @{ exe = "test_telem.exe";    src = "test_telem.c ..\app\mk_telem.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ads1256.c ..\app\mk_queue.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_solctl.c" },
     @{ exe = "test_ws2812.exe";   src = "test_ws2812.c ..\app\mk_ws2812.c" },
-    @{ exe = "test_sol.exe";      src = "test_sol.c ..\app\mk_solctl.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
-    @{ exe = "test_i2c.exe";      src = "test_i2c.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ws2812.c ..\app\mk_solctl.c" }
+    @{ exe = "test_sol.exe";      src = "test_sol.c ..\app\mk_solctl.c ..\app\mk_queue.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
+    @{ exe = "test_i2c.exe";      src = "test_i2c.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ws2812.c ..\app\mk_solctl.c ..\app\mk_queue.c" }
 )
 
 # 빌드와 실행을 나눈다. 한 사슬로 묶으면 컴파일 실패와 시험 실패가 같은

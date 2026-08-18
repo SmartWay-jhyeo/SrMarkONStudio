@@ -11,6 +11,7 @@
 #include "stm32h7xx_hal.h"
 
 #include "mk_ads_io.h"
+#include "mk_sol.h"
 #include "mk_uart.h"
 #include "mk_ws2812_io.h"
 
@@ -45,6 +46,20 @@ void EXTI15_10_IRQHandler(void)
      *    한 벡터를 공유하므로, 나중에 이 범위에 EXTI 를 더 붙이면 여기서
      *    함께 분기해야 한다. LCD 터치 IRQ 가 PD12 인 것이 그 때문이다. */
     mk_ads_io_drdy_isr();
+}
+
+/* 🔴 디지털 입력 J18(PA4) 전용선. EXTI 는 포트가 아니라 핀 번호로 갈라져
+ *    있어(RM0468), "4번 핀"은 어느 GPIO 포트든 항상 EXTI4 다. */
+void EXTI4_IRQHandler(void)
+{
+    mk_sol_exti4_isr();
+}
+
+/* 🔴 디지털 입력 J19(PA5)·J20(PA6) 공유선. mk_sol_exti9_5_isr() 안에서
+ *    둘을 나눈다. */
+void EXTI9_5_IRQHandler(void)
+{
+    mk_sol_exti9_5_isr();
 }
 
 /* 🔴 H7 의 SPI 는 전송 종료를 EOT 플래그로 알리고, HAL 은 그 인터럽트에서
