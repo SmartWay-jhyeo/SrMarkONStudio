@@ -147,6 +147,56 @@ def test_the_rail_sequence_test_still_exists():
         assert name in t, f"{name} 이 사라졌다"
 
 
+#: 🔴 디지털 출력 J18~J20 의 핀 (데이터시트 §5.7, 넷리스트 확인).
+#:
+#:    PA4 = J18 · PA5 = J19 · PA6 = J20
+#:
+#:    레일과 같은 이유로 한 파일에 묶는다. 여기는 위험의 종류가 다르다 —
+#:    MCU GPIO 가 커넥터에 직결이라 버퍼도 클램프도 없고, PA4·PA5 는
+#:    3.3V 전용(절대최대 4.0V)이다. 어느 파일이 이 핀을 만지는지 흩어지면
+#:    "누가 언제 High 로 냈나" 를 코드로 답할 수 없게 된다.
+SOL_OWNER = "mk_sol.c"
+SOL_PINS = {
+    "GPIO_PIN_4": "PA4 = J18 (3.3V 전용)",
+    "GPIO_PIN_5": "PA5 = J19 (3.3V 전용)",
+    "GPIO_PIN_6": "PA6 = J20",
+}
+
+
+def test_only_one_file_drives_the_digital_outputs():
+    """sol 핀을 GPIOA 에서 만지는 파일은 하나여야 한다.
+
+    🔴 GPIOA 자체는 여러 파일이 쓴다 — PA7 이 WS2812 다(mk_ws2812_io.c).
+       그래서 포트가 아니라 **핀 번호까지** 봐야 가려진다.
+    """
+    touching = []
+    for path in _sources():
+        code = _strip_comments(path.read_text(encoding="utf-8"))
+        if "GPIOA" not in code:
+            continue
+        if any(re.search(rf"\b{pin}\b", code) for pin in SOL_PINS):
+            touching.append(path.name)
+    assert touching == [SOL_OWNER], (
+        f"GPIOA 에서 J18~J20 핀을 건드리는 파일: {touching} — "
+        f"{SOL_OWNER} 하나여야 한다"
+    )
+
+
+def test_the_digital_output_test_still_exists():
+    """설정이 핀까지 닿는지 보는 C 시험이 지워지지 않았는지.
+
+    🔴 이 프로젝트가 같은 빠짐을 네 번 밟았다 — ain*.enabled·adc.pga·
+       led.*·sol.* 이 차례로 "카탈로그에는 있는데 하드웨어에 안 닿는"
+       상태였다. 전부 GUI 에는 멀쩡히 뜨므로 화면으로는 못 잡는다.
+       그 시험이 사라지면 같은 자리로 조용히 되돌아간다.
+    """
+    t = (FW / "tests" / "test_sol.c").read_text(encoding="utf-8")
+    for name in ("test_each_key_drives_its_own_connector",
+                 "test_missing_items_are_treated_as_off",
+                 "test_the_catalog_still_has_the_three_keys"):
+        assert name in t, f"{name} 이 사라졌다"
+
+
 def test_uart_uses_only_usart3_pins():
     """UART 는 PB10/PB11 (USART3) 만 쓴다.
 

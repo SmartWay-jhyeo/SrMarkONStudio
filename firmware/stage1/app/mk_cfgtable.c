@@ -3,15 +3,16 @@
 #include <string.h>
 
 #include "mk_ws2812.h"      /* MK_LED_COUNT — 정의는 저쪽이 들고 있다 */
+#include "mk_solctl.h"      /* MK_SOL_COUNT — 정의는 저쪽이 들고 있다 */
 
 /* 이 보드가 가진 것들 (데이터시트 §5).
  *   J18~J20  디지털 출력 3
  *   J21~J24  WS2812 체인 — 개수·밝기 + 램프마다 R·G·B
  *   J10~J15  I2C 6포트 — 버스·사용·종류·주소·주기
  *
- * 🔴 MK_LED_COUNT 를 여기 다시 적지 않는다. 송신 버퍼 크기가 같은 수에
- *    묶여 있어, 두 곳에 적으면 카탈로그와 실제로 켜지는 램프 수가 갈린다. */
-#define MK_SOL_COUNT   3
+ * 🔴 MK_LED_COUNT 도 MK_SOL_COUNT 도 여기 다시 적지 않는다. 저쪽이 핀을
+ *    내는 층이라, 두 곳에 적으면 카탈로그가 말하는 개수와 실제로 움직이는
+ *    핀 수가 갈린다. */
 #define MK_I2C_COUNT   6
 
 /* I2C 포트에 꽂을 수 있는 센서 **종류**.

@@ -27,8 +27,10 @@
 #include "app/mk_railctl.h"
 #include "app/mk_telem.h"
 #include "app/mk_ws2812.h"
+#include "app/mk_solctl.h"
 #include "bsp/mk_rails.h"
 #include "bsp/mk_ws2812_io.h"
+#include "bsp/mk_sol.h"
 #include "mk_config.h"
 #include "mk_flash.h"
 #include "mk_hostlink.h"
@@ -70,6 +72,7 @@ static MkConfig s_cfg;
 static MkAds    s_ads;
 static MkRailCtl s_rails;
 static MkTelem   s_telem;
+static MkSolCtl  s_sol;
 static int      s_led_on;
 
 /* 채널별 표본 저장소.
@@ -287,6 +290,8 @@ int main(void)
      *    (VREFP). 디지털(DVDD pin16)만 V3V3 상시다. WS2812(J21~J24)도
      *    같은 레일이다. */
     mk_railctl_init(&s_rails, mk_rails_set, NULL);
+    mk_sol_init();
+    mk_solctl_init(&s_sol, mk_sol_set, NULL);
     mk_ws2812_io_init();
 
     mk_ads_io_init(&s_ads);
@@ -330,6 +335,13 @@ int main(void)
          *    하지 않으므로(그러지 않으면 예정이 영원히 밀린다) 싸다. */
         sync_channels(&s_ads, &s_cfg, now);
         sync_rails(&s_rails, &s_cfg, now);
+
+        /* 🔴 디지털 출력도 같은 이유로 매 바퀴 민다. 설정이 바뀐 것을
+         *    알아챌 다른 통로가 없다. 바뀐 채널만 쓰므로 싸다.
+         *
+         *    이것이 없던 동안 GUI 의 J18~J20 스위치는 저장까지 되면서
+         *    핀은 그대로였다 — 화면이 거짓말을 하는 상태였다. */
+        mk_solctl_tick(&s_sol, &s_cfg);
         sync_leds(&s_cfg, now);
 
         mk_ads_tick(&s_ads, now);

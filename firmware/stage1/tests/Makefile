@@ -2,7 +2,7 @@
 CC ?= gcc
 CFLAGS = -std=c11 -Wall -Wextra -Werror -O1 -g
 
-TESTS = test_framing test_json test_hostlink test_config test_cfgwire test_crc
+TESTS = test_framing test_json test_hostlink test_config test_cfgwire test_crc test_sol
 
 all: $(TESTS)
 	./test_framing
@@ -11,6 +11,7 @@ all: $(TESTS)
 	./test_config
 	./test_cfgwire
 	./test_crc
+	./test_sol
 
 test_framing: test_framing.c ../app/mk_framing.c
 	$(CC) $(CFLAGS) -o $@ $^
@@ -28,6 +29,9 @@ test_cfgwire: test_cfgwire.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_js
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_crc: test_crc.c ../app/mk_crc.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test_sol: test_sol.c ../app/mk_solctl.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 clean:
