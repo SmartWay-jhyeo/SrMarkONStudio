@@ -1431,7 +1431,23 @@ git commit -m "feat(fw): i2c 레코드를 내보낸다 — seq 와 마스크를 
 **선행 조건 (BLOCKING, CLAUDE.md §5):** 아래 둘을 확보하기 전에는 이 Task를 시작하지 않는다. 확보 못 하면 멈추고 사용자에게 알린다.
 
 1. **AF 번호** — PA8·PC9(I2C3), PC11·PC10(I2C5), PB8·PB9(I2C1). STM32H723 데이터시트(DS13313)의 Alternate function 표를 인용한다. WS2812 때 PA7 AF2를 `DS13313 Rev 1 p.72 Table 8`로 확인한 것과 같은 절차.
-2. **`I2C_TIMINGR` 값** — 목표 100 kHz. 커널 클럭을 먼저 확인한다(`SystemClock_Config`가 HSI 64 MHz·분주 1이므로 PCLK1 = 64 MHz로 보이지만, I2C 커널 클럭 선택은 RCC의 D2CCIP2R가 정한다 — **읽어서 확인한다**). RM0468의 I2C 타이밍 절에서 산출하고, 계산 과정을 주석에 남긴다.
+2. ~~**`I2C_TIMINGR` 값**~~ — **확정됐다 (2026-08-18)**. 아래 §7.1 참조.
+
+#### 7.1 `I2C_TIMINGR` = `0x60702729` (100 kHz) — 근거
+
+| 단계 | 확인한 것 | 근거 |
+|---|---|---|
+| 커널 클럭 **선택** | I2C1·2·3·**5**가 한 선택자를 쓴다 (`RCC_D2CCIP2R_I2C1235SEL`) | ST CMSIS `stm32h723xx.h` (Cube FW_H7 V1.13.0) |
+| 그 기본값 | `RCC_I2C123CLKSOURCE_D2PCLK1 = 0` = 리셋값 → **APB1** | ST HAL `stm32h7xx_hal_rcc_ex.h` |
+| APB1 주파수 | HSI 64 MHz, PLL 없음, 모든 분주 1 → **64 MHz** | 이 저장소 `main.c` 의 `SystemClock_Config` |
+| TIMINGR | `I2C_GetTiming(64000000, 100000)` = **`0x60702729`** | ST 자체 유틸리티 `i2c_timing_utility.c` (Cube FW_H7 V1.13.0 의 `Projects/NUCLEO-H723ZG/Examples/I2C/I2C_TwoBoards_ComPolling`) 를 호스트에서 컴파일해 계산 |
+
+🔴 **`SystemClock_Config` 를 바꾸면 이 값이 틀어진다.** 클럭을 손대면 같은
+유틸리티로 다시 계산한다 (400 kHz 는 `0x30D00A13` 이었다).
+
+🔴 값을 손으로 지어내지 않았다. ST 알고리즘이 아날로그 필터 지연·SDADEL·
+SCLDEL 제약까지 함께 푸는데, 그것을 눈대중으로 맞추면 파형이 규격을 벗어나도
+통신은 되는 상태가 나온다 — 나중에 다른 센서에서만 실패한다.
 
 **Files:**
 - Create: `firmware/stage1/bsp/mk_i2c_io.c` · `firmware/stage1/bsp/mk_i2c_io.h`
@@ -1597,8 +1613,16 @@ int mk_i2c_io_xfer(void *ctx, uint8_t bus, uint8_t addr,
  *       PC11·PC10·PB8·PB9 각각. 인용을 여기 남긴다.
  *   TIMINGR: RM0468 의 I2C 타이밍 절. 커널 클럭(RCC D2CCIP2R 이 고른다)을
  *       먼저 읽고 100 kHz 로 산출한 과정을 여기 남긴다. */
-#define I2C_AF               GPIO_AF4_I2C1   /* ← 확인 후 버스별로 나눈다 */
-#define I2C_TIMINGR_100K     0x00000000u     /* ← 확인 후 채운다 */
+/* 🔴 I2C1 의 PB8/PB9 = AF4 는 ST 예제로 확인됐다 (Cube FW_H7 V1.13.0,
+ *    Projects/NUCLEO-H723ZG/Examples/I2C/.../Inc/main.h: I2Cx_SCL_PIN =
+ *    GPIO_PIN_8, I2Cx_SDA_PIN = GPIO_PIN_9, I2Cx_SCL_SDA_AF =
+ *    GPIO_AF4_I2C1). I2C3(PA8·PC9)·I2C5(PC11·PC10)는 아직 미확인이다. */
+#define I2C1_AF              GPIO_AF4_I2C1
+#define I2C3_AF              /* ← DS13313 AF 표로 확인 후 채운다 */
+#define I2C5_AF              /* ← DS13313 AF 표로 확인 후 채운다 */
+
+/* 커널 클럭 64 MHz(APB1) 에서 100 kHz. 산출 근거는 위 §7.1 표. */
+#define I2C_TIMINGR_100K     0x60702729u
 
 static void open_pins(GPIO_TypeDef *port, uint16_t pins, uint8_t af)
 {
@@ -1638,10 +1662,10 @@ void mk_i2c_io_init(void)
 
     /* 🔴 핀별로만 연다. GPIOA 에는 sol(PA4~PA6)과 WS2812(PA7)가 있어
      *    포트를 통째로 초기화하면 서로를 덮는다. */
-    open_pins(GPIOA, GPIO_PIN_8,  I2C_AF);            /* I2C3 SCL */
-    open_pins(GPIOC, GPIO_PIN_9,  I2C_AF);            /* I2C3 SDA */
-    open_pins(GPIOC, GPIO_PIN_11 | GPIO_PIN_10, I2C_AF); /* I2C5 SCL·SDA */
-    open_pins(GPIOB, GPIO_PIN_8 | GPIO_PIN_9,   I2C_AF); /* I2C1 SCL·SDA */
+    open_pins(GPIOA, GPIO_PIN_8,  I2C3_AF);              /* I2C3 SCL */
+    open_pins(GPIOC, GPIO_PIN_9,  I2C3_AF);              /* I2C3 SDA */
+    open_pins(GPIOC, GPIO_PIN_11 | GPIO_PIN_10, I2C5_AF); /* I2C5 SCL·SDA */
+    open_pins(GPIOB, GPIO_PIN_8 | GPIO_PIN_9,   I2C1_AF); /* I2C1 SCL·SDA */
 
     __HAL_RCC_I2C1_CLK_ENABLE();
     __HAL_RCC_I2C3_CLK_ENABLE();
