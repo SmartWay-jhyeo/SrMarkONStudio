@@ -1428,9 +1428,24 @@ git commit -m "feat(fw): i2c 레코드를 내보낸다 — seq 와 마스크를 
 
 ### Task 7: BSP — 버스를 실제로 연다
 
-**선행 조건 (BLOCKING, CLAUDE.md §5):** 아래 둘을 확보하기 전에는 이 Task를 시작하지 않는다. 확보 못 하면 멈추고 사용자에게 알린다.
+**선행 조건 — 둘 다 확보 완료 (2026-08-18).** 아래 근거로 확정했으니 이 Task 는 바로 시작할 수 있다.
 
-1. **AF 번호** — PA8·PC9(I2C3), PC11·PC10(I2C5), PB8·PB9(I2C1). STM32H723 데이터시트(DS13313)의 Alternate function 표를 인용한다. WS2812 때 PA7 AF2를 `DS13313 Rev 1 p.72 Table 8`로 확인한 것과 같은 절차.
+1. ~~**AF 번호**~~ — **확정됐다 (2026-08-18)**. `DS13313 Rev 1, Table 8` (원본: `D:\STM32_PCB_Board\datasheets\MiniPCB\STM32H723ZGT6.pdf`).
+
+   | 핀 | AF4 자리에 있는 것 | 쪽 |
+   |---|---|---|
+   | PA8 | `I2C3_SCL` | p.73 |
+   | PC9 | `I2C3_SDA` | p.77 |
+   | PC11 | `I2C5_SCL` | p.77 |
+   | PC10 | `I2C5_SDA` | p.77 |
+   | PB8 | `I2C1_SCL` | p.74 |
+   | PB9 | `I2C1_SDA` | p.74 |
+
+   **여섯 핀 모두 AF4 다.** 표의 AF4 열 머리글이 `CEC/DCMI/PSSI/DFSDM1/I2C1/2/3/4/5/...` 라 앞뒤가 맞는다.
+
+   🔴 PA8·PC9 는 **AF6 에도 I2C5 가 있다**(`I2C5_SCL`·`I2C5_SDA`). AF 를 잘못 고르면 J10·J11 이 I2C3 이 아니라 I2C5 에 붙는데, 코드는 I2C3 핸들을 쓰므로 **아무 파형도 안 나간다.** 버스가 죽은 것처럼 보이므로 배선부터 의심하게 된다.
+
+   확인 방법이 하나 더 있었다: ST 의 Cube FW_H7 예제(`Projects/NUCLEO-H723ZG/Examples/I2C/I2C_TwoBoards_ComPolling/Inc/main.h`)가 PB8/PB9 에 `GPIO_AF4_I2C1` 을 쓴다 — 데이터시트에서 읽은 것과 같다.
 2. ~~**`I2C_TIMINGR` 값**~~ — **확정됐다 (2026-08-18)**. 아래 §7.1 참조.
 
 #### 7.1 `I2C_TIMINGR` = `0x60702729` (100 kHz) — 근거
@@ -1613,13 +1628,17 @@ int mk_i2c_io_xfer(void *ctx, uint8_t bus, uint8_t addr,
  *       PC11·PC10·PB8·PB9 각각. 인용을 여기 남긴다.
  *   TIMINGR: RM0468 의 I2C 타이밍 절. 커널 클럭(RCC D2CCIP2R 이 고른다)을
  *       먼저 읽고 100 kHz 로 산출한 과정을 여기 남긴다. */
-/* 🔴 I2C1 의 PB8/PB9 = AF4 는 ST 예제로 확인됐다 (Cube FW_H7 V1.13.0,
- *    Projects/NUCLEO-H723ZG/Examples/I2C/.../Inc/main.h: I2Cx_SCL_PIN =
- *    GPIO_PIN_8, I2Cx_SDA_PIN = GPIO_PIN_9, I2Cx_SCL_SDA_AF =
- *    GPIO_AF4_I2C1). I2C3(PA8·PC9)·I2C5(PC11·PC10)는 아직 미확인이다. */
+/* 🔴 여섯 핀 모두 AF4 다 (DS13313 Rev 1, Table 8 — PA8·PC9 p.73·77,
+ *    PC10·PC11 p.77, PB8·PB9 p.74). PB8/PB9 는 ST 예제(Cube FW_H7
+ *    V1.13.0, NUCLEO-H723ZG I2C 예제)가 GPIO_AF4_I2C1 을 쓰는 것으로도
+ *    맞다.
+ *
+ * 🔴 PA8·PC9 는 AF6 에도 I2C5 가 있다. 잘못 고르면 J10·J11 이 I2C3 이
+ *    아니라 I2C5 에 붙고, 코드는 I2C3 핸들을 쓰므로 아무 파형도 안 나간다 —
+ *    배선을 의심하게 되는 종류의 실패다. */
 #define I2C1_AF              GPIO_AF4_I2C1
-#define I2C3_AF              /* ← DS13313 AF 표로 확인 후 채운다 */
-#define I2C5_AF              /* ← DS13313 AF 표로 확인 후 채운다 */
+#define I2C3_AF              GPIO_AF4_I2C3
+#define I2C5_AF              GPIO_AF4_I2C5
 
 /* 커널 클럭 64 MHz(APB1) 에서 100 kHz. 산출 근거는 위 §7.1 표. */
 #define I2C_TIMINGR_100K     0x60702729u
