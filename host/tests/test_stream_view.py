@@ -80,6 +80,31 @@ def test_table_exposes_raw_adc_count_separately_from_value():
     assert view._table.item(0, value_col).text() == "0.0"
 
 
+def test_raw_line_cell_carries_the_full_text_as_a_tooltip(app):
+    """🔴 원문 열이 좁으면 "…" 로 잘린다 — 열을 다 못 넓혀도 호버(또는 행을
+    고르는 것)로 전체 원문을 볼 수 있어야 한다."""
+    state = StreamState()
+    line = _ain_line(1)
+    state.ingest([line], now_s=0.0)
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+
+    assert view._table.item(0, 0).toolTip() == line
+
+
+def test_raw_line_column_stretches_to_fill_the_table(app):
+    """🔴 원문 열이 고정폭이면 나머지 좁은 열(seq·t·type 등)이 자리를 남기고도
+    원문이 잘린다. 원문 열만 Stretch 여야 창을 넓히면 원문도 함께 넓어진다."""
+    from PyQt6.QtWidgets import QHeaderView
+
+    view = StreamView()
+    header = view._table.horizontalHeader()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    for c in range(1, view._table.columnCount()):
+        assert header.sectionResizeMode(c) != QHeaderView.ResizeMode.Stretch
+
+
 def test_pause_button_freezes_the_table(app):
     state = StreamState()
     state.ingest([_ain_line(1)], now_s=0.0)

@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QTableWidget,
@@ -99,7 +100,16 @@ class StreamView(QWidget):
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setStyleSheet(f"font-family: {Font.MONO};")
         self._table.horizontalHeader().setStretchLastSection(False)
-        self._table.setColumnWidth(0, 420)     # 원문 — 나머지보다 훨씬 길다
+        # 🔴 원문(0열)이 고정 420px 라 NDJSON 한 줄(보통 150~250B)이 "…" 로
+        #    잘려 정작 원문을 못 읽었다. 나머지 열(seq·t·type·커넥터·value·
+        #    raw·ma)은 내용에 맞춰 좁게, 원문 열만 남는 폭을 전부 가져가게
+        #    한다 — 창을 넓히면 원문도 함께 넓어진다.
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for c in range(1, len(_HEADERS)):
+            header.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        # 🔴 그래도 창이 좁으면 여전히 잘릴 수 있다 — 행을 고르면(호버해도)
+        #    전체를 볼 수 있게 툴팁에 원문을 그대로 싣는다(`_update_table`).
 
         col = QVBoxLayout(self)
         col.setContentsMargins(Space.MD, Space.MD, Space.MD, Space.MD)
@@ -159,7 +169,12 @@ class StreamView(QWidget):
                 _fmt(row.ma),
             )
             for c, text in enumerate(cells):
-                self._table.setItem(r, c, QTableWidgetItem(text))
+                item = QTableWidgetItem(text)
+                if c == 0:
+                    # 🔴 열이 좁아 "…" 로 잘려도 마우스를 올리면(또는
+                    #    행을 골라도) 전체 원문을 볼 수 있게 한다.
+                    item.setToolTip(row.line)
+                self._table.setItem(r, c, item)
 
     # -------------------------------------------------------------- 필터
     def _ensure_filter_checks(self, state: StreamState) -> None:
