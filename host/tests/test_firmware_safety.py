@@ -284,6 +284,47 @@ def test_i2c_owner_does_not_touch_the_sol_or_led_pins():
         )
 
 
+#: 🔴 [검토 지적 I6] 역방향 검사. 위 test_i2c_owner_does_not_touch_the_sol_
+#:    or_led_pins 는 mk_i2c_io.c 가 **남의** 핀을 안 건드리는지만 본다 —
+#:    반대로 **다른 파일이 I2C 핀을 건드리는지**는 아무도 안 봤다. 레일이
+#:    GPIOD 에서 받는 검사(test_only_one_file_touches_gpiod ·
+#:    test_rail_pins_only_appear_in_the_owner)와 sol 이 GPIOA 에서 받는
+#:    검사(test_only_one_file_drives_the_digital_outputs)는 둘 다 이
+#:    양방향을 갖췄는데 I2C 만 정방향뿐이었다.
+#:
+#:    I2C 는 세 포트(A·B·C)에 걸쳐 있어 sol·레일처럼 "포트 하나 + 핀
+#:    번호 집합"으로 못 묶는다 — 포트마다 다른 핀 집합을 쓴다.
+I2C_PORT_PINS = {
+    "GPIOA": {"GPIO_PIN_8": "PA8 = I2C3 SCL"},
+    "GPIOB": {"GPIO_PIN_8": "PB8 = I2C1 SCL", "GPIO_PIN_9": "PB9 = I2C1 SDA"},
+    "GPIOC": {"GPIO_PIN_9": "PC9 = I2C3 SDA", "GPIO_PIN_10": "PC10 = I2C5 SDA",
+              "GPIO_PIN_11": "PC11 = I2C5 SCL"},
+}
+
+
+def test_only_one_file_drives_the_i2c_pins():
+    """I2C 핀(PA8·PC9·PC10·PC11·PB8·PB9)을 만지는 파일은 mk_i2c_io.c 하나.
+
+    🔴 레일·sol 과 같은 모양의 역방향 검사다. GPIOA 를 여는 파일이 이제
+       셋이라(sol · WS2812 · I2C) 그 자리에서 핀 번호가 겹치는 실수를
+       "누가 이 핀을 언급하는가" 목록으로 잡는다.
+    """
+    touching = []
+    for path in _sources():
+        if path.name == I2C_OWNER:
+            continue
+        code = _strip_comments(path.read_text(encoding="utf-8"))
+        for port, pins in I2C_PORT_PINS.items():
+            if port not in code:
+                continue
+            for pin in pins:
+                if re.findall(rf"\b{pin}\b", code):
+                    touching.append(f"{path.name}:{port}.{pin}")
+    assert touching == [], (
+        f"I2C 핀을 {I2C_OWNER} 말고 다른 파일이 건드린다: {touching}"
+    )
+
+
 def test_makefile_builds_the_tested_sources():
     """보드에 굽는 것이 호스트에서 시험한 바로 그 파일들인지.
 
