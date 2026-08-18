@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -28,6 +29,7 @@ from host.gui.command_queue import CommandQueue
 from host.gui.qt.dashboard import Dashboard
 from host.gui.qt.parts import TestBand
 from host.gui.qt.settings_page import SettingsPage
+from host.gui.qt.stream_view import StreamView
 from host.gui.qt.topbar import TopBar
 from host.gui.qt.view import View
 from host.gui.qt.worker import WorkerThread
@@ -47,10 +49,11 @@ from host.gui.screen import (
     build_screen,
     empty_channels,
 )
+from host.gui.stream import StreamState
 from host.gui.qt.style import stylesheet
 
 WINDOW_TITLE = "MarkON Studio"
-PAGES = ("대시보드", "설정")
+PAGES = ("대시보드", "설정", "스트림")
 
 
 def _checked_views(*views) -> tuple[View, ...]:
@@ -92,10 +95,16 @@ class MainWindow(QMainWindow):
         self._settings.apply_requested.connect(self._on_apply)
         self._settings.save_requested.connect(self._on_save)
         self._settings.reset_requested.connect(self._on_reset)
+        #: 🔴 NDJSON 이 실제로 오고 있는지 보여주는 원문 스트림.
+        #:    `StreamState` 는 Qt 를 모른다(host/gui/stream.py) — 여기서는
+        #:    보관하고 `_on_step` 에서 먹이기만 한다.
+        self._stream_state = StreamState()
+        self._stream_view = StreamView()
 
         self._pages = QStackedWidget()
         self._pages.addWidget(self._dashboard)
         self._pages.addWidget(self._settings)
+        self._pages.addWidget(self._stream_view)
         self._top.page_selected.connect(self._pages.setCurrentIndex)
 
         # 🔴 세 구역으로 나눈다: 정체성 바(위) · 레일(왼쪽) · 캔버스.
@@ -248,6 +257,16 @@ class MainWindow(QMainWindow):
         #    구조로 되돌아간다(위 머리말).
         self._settings.set_live_ma(
             {ch.index: ch.ma for ch in self._state.channels})
+
+        # 🔴 스트림 화면도 같은 이유로 `_views` 밖에 있다 — `render` 서명이
+        #    `(state, now_s)` 라 뷰 계약(`ScreenState` 만)과 다르다(위 머리말).
+        #    `time.monotonic()` 을 쓴다 — 보드 시계(`result` 안의 `t`)가
+        #    아니라 "화면이 지금 언제라고 느끼는가" 가 필요하기 때문이다.
+        #    연결이 끊겨도 이 시계는 계속 흘러야 "마지막 수신 후 경과" 가
+        #    실제로 늘어난다.
+        now_s = time.monotonic()
+        self._stream_state.ingest(result.raw_lines, now_s=now_s)
+        self._stream_view.render(self._stream_state, now_s=now_s)
 
         for res in result.results:
             tag = res.tag or ""

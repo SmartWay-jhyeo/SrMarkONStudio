@@ -42,7 +42,7 @@ def window(app):
 
 def test_window_opens_without_a_board(window):
     assert window.windowTitle().startswith("MarkON Studio")
-    assert window._pages.count() == 2
+    assert window._pages.count() == 3          # 대시보드 · 설정 · 스트림
 
 
 def test_every_view_keeps_the_contract(window):
@@ -122,3 +122,18 @@ def test_apply_queues_commands(window):
     window._settings._rows["tx.period_ms"]._editor.setText("250")
     window._settings._apply.click()
     assert window._queue.pending_tags == {"set:tx.period_ms"}
+
+
+# ------------------------------------------------------------- 스트림 탭
+
+def test_step_result_feeds_the_stream_view(window):
+    """🔴 워커가 걷은 원문 줄이 실제로 스트림 화면까지 닿는지.
+
+    판정 로직(창 기반 rate·필터·일시정지)은 test_stream.py 가 Qt 없이
+    이미 본다. 여기서 보는 것은 배선뿐이다.
+    """
+    line = ('{"schema_ver":3,"seq":1,"t":0,"type":"ain","connector_id":3,'
+            '"raw":0,"ma":0,"value":0,"status":0}')
+    window._on_step(StepResult(raw_lines=[line]))
+    assert window._stream_view._table.rowCount() == 1
+    assert window._stream_view._table.item(0, 0).text() == line
