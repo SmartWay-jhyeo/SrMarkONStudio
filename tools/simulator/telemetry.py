@@ -133,7 +133,10 @@ def synthetic_i2c_value(connector_id: int, quantity: str,
 def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
                      seq: int, t_ms: int,
                      value: float | None, status: int = 0) -> dict:
-    """규격 §7.5 의 i2c 레코드. 마스크는 ain 과 **같은** `tx.fields` 다."""
+    """규격 §7.5 의 i2c 레코드. 마스크는 ain 과 **같은** `tx.fields` 다.
+
+    status: 0=정상 · 1=응답 없음 · 2=데이터 오류 · 3=지원하지 않는 종류
+    """
     mask = store.field_mask
     digits = int(store.get("tx.float_digits"))
 

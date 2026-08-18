@@ -145,3 +145,27 @@ def test_unknown_quantity_has_no_unit():
     from host.gui.screen import quantity_unit
 
     assert quantity_unit("dust_pm25") == ""
+
+
+def test_unsupported_kind_is_not_the_same_as_broken():
+    """🔴 `status=3` 은 고장이 아니다.
+
+    센서가 죽은 것과 펌웨어에 그 종류의 드라이버가 없는 것은 사용자가 할
+    일이 다르다 — 앞은 배선을 보고, 뒤는 기다리거나 종류를 바꾼다. 같은
+    빨간 글씨로 보이면 배선을 뜯게 된다.
+    """
+    rec = {"type": "i2c", "connector_id": 11, "quantity": "temp",
+           "value": None, "status": 3, "t": 1000}
+    (s,) = build_sensors([rec], reachable=True)
+
+    assert s.unsupported is True
+    assert s.broken is False
+
+
+def test_no_response_is_broken_but_not_unsupported():
+    rec = {"type": "i2c", "connector_id": 10, "quantity": "lux",
+           "value": None, "status": 1, "t": 1000}
+    (s,) = build_sensors([rec], reachable=True)
+
+    assert s.broken is True
+    assert s.unsupported is False

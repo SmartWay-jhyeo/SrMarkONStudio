@@ -416,8 +416,16 @@ class SensorState:
 
         🔴 꺼진 포트는 여기 오지 않는다. 규격 §7.5 대로 아예 레코드를 안
            보내기 때문이다 — 미연결은 정상 상태다(설계 원칙 3).
+
+        🔴 `status=3`(지원하지 않는 종류)은 고장이 아니다. 배선을 뜯을
+           일이 아니라 펌웨어가 아직 그 칩을 모르는 것이다.
         """
-        return self.status != 0
+        return self.status not in (0, 3)
+
+    @property
+    def unsupported(self) -> bool:
+        """펌웨어에 이 종류의 드라이버가 없다 (규격 §7.5, status=3)."""
+        return self.status == 3
 
 
 def build_sensors(records, *, reachable: bool,

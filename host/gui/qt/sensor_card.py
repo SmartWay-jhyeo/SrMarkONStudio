@@ -127,7 +127,9 @@ class SensorCard(QFrame):
         if sensor.value is None:
             # 🔴 값이 없으면 비운다. 마지막 값을 계속 띄우면 죽은 센서가
             #    살아 있는 것처럼 보인다 (규격 §7.5).
-            self._value.setText("—")
+            #    `status=3`(지원 안 함)은 고장이 아니므로 "—" 대신 이유를
+            #    말하고, 색도 FAULT 로 물들이지 않는다.
+            self._value.setText("지원 안 함" if sensor.unsupported else "—")
             self._value.setStyleSheet(
                 f"color: {Color.FAULT if sensor.broken else Color.INK_FAINT}; "
                 f"font-family: {Font.MONO}; font-size: {Font.SIZE_XL}pt;")
