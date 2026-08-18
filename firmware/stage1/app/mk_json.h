@@ -55,6 +55,10 @@ void mk_json_i32(MkJson *j, const char *key, int32_t val);
 void mk_json_u32(MkJson *j, const char *key, uint32_t val);
 void mk_json_bool(MkJson *j, const char *key, int val);
 
+/* 🔴 "값이 없다" 를 싣는다. 0 이나 "" 로 대신하지 않는다 — 호스트가 그것을
+ *    측정값으로 받는다 (규격 §7.5). */
+void mk_json_null(MkJson *j, const char *key);
+
 /* 정수 배열. 규격 §7.3 의 `choices` 가 이 형태다.
  *
  * 🔴 배열이 없으면 enum 항목을 화면에 그릴 수 없다. 호스트는 설정 항목을

@@ -386,6 +386,22 @@ static void test_str_array(void)
     CHECK(strcmp(b, "{\"x\":[]}") == 0, "빈 배열");
 }
 
+/* 🔴 값이 없다는 것과 0 은 다르다. 규격 §7.5 는 센서가 대답하지 않을 때
+ *    마지막 값을 다시 싣는 대신 null 을 넣으라고 한다 — 옛 값을 실으면
+ *    화면이 살아 있는 센서처럼 보인다. */
+static void test_null_is_not_zero_and_not_a_string(void)
+{
+    char buf[64];
+    MkJson j;
+    mk_json_begin(&j, buf, sizeof buf);
+    mk_json_str(&j, "type", "i2c");
+    mk_json_null(&j, "value");
+    int len = mk_json_end(&j);
+
+    CHECK(len > 0, "null 을 넣어도 JSON 이 완성된다");
+    CHECK(strcmp(buf, "{\"type\":\"i2c\",\"value\":null}") == 0, buf);
+}
+
 int main(int argc, char **argv)
 {
     /* 🔴 `--records` 보다 뒤에 둔다. 앞에 두면 시험이 찍는 "ok ..." 줄이
@@ -407,6 +423,7 @@ int main(int argc, char **argv)
     test_tiny_and_null_buffers();
     test_float_non_finite_is_null();
     test_overflow_is_sticky_and_yields_nothing();
+    test_null_is_not_zero_and_not_a_string();
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
     return failures ? 1 : 0;
 }

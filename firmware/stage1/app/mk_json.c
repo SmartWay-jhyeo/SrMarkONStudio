@@ -185,6 +185,12 @@ void mk_json_bool(MkJson *j, const char *key, int val)
     puts_raw(j, val ? "true" : "false");
 }
 
+void mk_json_null(MkJson *j, const char *key)
+{
+    put_key(j, key);
+    puts_raw(j, "null");
+}
+
 void mk_json_u32_array(MkJson *j, const char *key,
                        const uint32_t *values, size_t count)
 {
