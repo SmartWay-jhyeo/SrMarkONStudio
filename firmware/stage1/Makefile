@@ -45,6 +45,7 @@ C_SRC = \
   app/mk_solctl.c \
   app/mk_i2c.c \
   app/mk_i2c_drivers.c \
+  app/mk_i2c_bh1750.c \
   bsp/mk_time.c \
   bsp/mk_rails.c \
   bsp/mk_ws2812_io.c \
