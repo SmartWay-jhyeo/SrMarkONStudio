@@ -220,4 +220,83 @@ def test_malformed_telemetry_is_counted_not_raised(rig):
     svc, _sim, _clock = rig
     svc._ingest('{"schema_ver":3,"seq":')
     assert svc.corrupt_total == 1
-    assert svc.records == []
+    assert list(svc.records) == []
+
+
+# ------------------------------------------------------- 원문 줄 · 통계 (스트림)
+
+def _ain_line(seq: int) -> str:
+    return (
+        f'{{"schema_ver":3,"seq":{seq},"t":0,"type":"ain","connector_id":3,'
+        f'"raw":0,"ma":0,"value":0,"status":0}}'
+    )
+
+
+def test_raw_lines_buffer_is_bounded_to_the_most_recent():
+    """🔴 무한히 자라면 안 된다 — 오래된 줄은 밀려나고 최근 것만 남는다.
+
+    벤치에 하루 켜 두는 사용을 상정하므로 상한이 필수다(CLAUDE.md 의
+    "정형화된 부채" 항목, HANDOFF.md §7.4).
+    """
+    svc = BoardService(LoopbackTransport(DeviceSim(default_store())),
+                       clock=lambda: 0, raw_buffer_maxlen=3)
+    for seq in range(5):
+        svc._ingest(_ain_line(seq))
+    assert len(svc.raw_lines) == 3
+    assert '"seq":4' in svc.raw_lines[-1]     # 가장 최근이 마지막에
+    assert '"seq":2' in svc.raw_lines[0]      # 0, 1 은 밀려났다
+
+
+def test_records_buffer_is_bounded_too():
+    """🔴 `self.records` 도 원문 버퍼와 뿌리가 같은 부채였다 — 함께 고친다."""
+    svc = BoardService(LoopbackTransport(DeviceSim(default_store())),
+                       clock=lambda: 0, raw_buffer_maxlen=3)
+    for seq in range(5):
+        svc._ingest(_ain_line(seq))
+    assert len(svc.records) == 3
+    assert svc.records[-1]["seq"] == 4
+
+
+def test_take_records_returns_only_whats_new_since_last_call(rig):
+    """🔴 `self.records` 가 bounded 가 되면 워커의 슬라이스 커서
+    (`records[seen:]`)가 못 쓰게 된다(worker_loop.py 머리말). `take_records`
+    가 그 대안이다."""
+    svc, _sim, clock = rig
+    clock.advance(100)
+    svc.pump()
+    first = svc.take_records()
+    assert len(first) > 0
+    assert svc.take_records() == []            # 두 번 넘어오지 않는다
+
+    clock.advance(100)
+    svc.pump()
+    second = svc.take_records()
+    assert len(second) > 0
+
+
+def test_line_stats_count_lines_bytes_types_and_last_seen(rig):
+    svc, _sim, clock = rig
+    clock.advance(100)
+    svc.pump()
+    assert svc.line_total > 0
+    assert svc.byte_total > 0
+    assert svc.type_counts.get("ain", 0) > 0
+    assert svc.last_line_at == clock.now_ms
+
+
+def test_corrupt_lines_are_recorded_with_a_corrupt_type():
+    """줄 자체가 깨졌어도 원문·통계에는 남아야 한다 — 손상을 눈으로 봐야 한다."""
+    svc = BoardService(LoopbackTransport(DeviceSim(default_store())),
+                       clock=lambda: 0)
+    svc._ingest('{"schema_ver":3,"seq":')
+    assert svc.type_counts.get("corrupt") == 1
+    assert svc.raw_lines[-1] == '{"schema_ver":3,"seq":'
+
+
+def test_take_raw_lines_returns_only_whats_new_since_last_call(rig):
+    svc, _sim, clock = rig
+    clock.advance(100)
+    svc.pump()
+    first = svc.take_raw_lines()
+    assert len(first) > 0
+    assert svc.take_raw_lines() == []

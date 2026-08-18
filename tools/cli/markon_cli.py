@@ -114,12 +114,14 @@ def cmd_set(svc: BoardService, key: str, value: str) -> int:
 
 def cmd_monitor(svc: BoardService, seconds: float) -> int:
     deadline = time.monotonic() + seconds
-    seen = 0
     while time.monotonic() < deadline:
         svc.pump()
-        while seen < len(svc.records):
-            rec = svc.records[seen]
-            seen += 1
+        # 🔴 `svc.records[seen:]` 커서는 안 쓴다. `records` 가
+        #    `deque(maxlen=...)` 가 되면서(host/service/board_service.py)
+        #    누적 수신량이 그 상한을 넘는 순간 `seen` 이 실제 길이를 앞질러
+        #    IndexError 가 난다. `take_records()` 는 상한과 무관하게
+        #    "이번에 새로 온 것" 만 돌려주고 스스로 비운다.
+        for rec in svc.take_records():
             print(rec)
         time.sleep(0.02)
 

@@ -5,6 +5,7 @@ GUI 와 분리돼 있다. GUI 가 없어도 이 계층만으로 수집·저장�
 """
 
 import time
+from collections import deque
 from collections.abc import Callable, Iterator
 from typing import Protocol
 
@@ -17,6 +18,21 @@ from host.core.errors import ProtocolError
 from host.core.limits import DEFAULT_BAUD
 from host.core.framing import Command, build_command, parse_line
 from host.core.records import SeqTracker, is_telemetry, parse_record
+
+#: 원문 줄 버퍼(`raw_lines`)와 파싱된 레코드 버퍼(`records`)의 기본 상한.
+#:
+#: 🔴 둘 다 예전에는 무한히 자랐다(HANDOFF.md §7.4). 근거: `ain` 최소 주기는
+#: 10ms 라 7채널을 전부 최소 주기로 돌리면 700줄/초까지 나온다(이론적
+#: 상한 — `host/core/records.py` 의 `MAX_PLAUSIBLE_GAP` 주석과 같은 계산).
+#: I2C·din·명령 응답까지 얹어도 그 첨두를 오래 유지하는 설정은 실용적이지
+#: 않다 — 링크가 못 따라간다(같은 문서 §7.4의 대역폭 유실 실측 참고).
+#: 기본 설정(ain 100ms 1채널)에서는 초당 10줄 안팎이다.
+#:
+#: 5000줄이면 최악 첨두(700/s)에서도 7초, 기본 설정에서는 8분 넘게
+#: 담는다 — 벤치에서 이상 현상을 보고 "방금 그거 뭐였지" 하고 돌아볼
+#: 여유는 되면서, NDJSON 한 줄이 150~250바이트이니 5000줄이면 1MB
+#: 안팎이라 하루 종일 켜 둬도 무한 성장 걱정이 없다.
+RAW_BUFFER_MAXLEN = 5000
 
 
 class Transport(Protocol):
@@ -95,14 +111,19 @@ class SerialTransport:
 
 class BoardService:
     def __init__(self, transport: Transport, *, clock: Callable[[], int],
-                 timeout_s: float = 2.0):
+                 timeout_s: float = 2.0, raw_buffer_maxlen: int = RAW_BUFFER_MAXLEN):
         self.transport = transport
         self.clock = clock
         #: 명령 응답을 기다리는 최대 벽시계 시간. `$CFG,LIST` 는 7 KB 라
         #: 115200 baud 에서 600 ms 넘게 걸린다 — 여유를 두고 잡는다.
         self.timeout_s = timeout_s
 
-        self.records: list[dict] = []
+        #: 🔴 `deque(maxlen=...)` — 예전에는 `list` 라 무한히 자랐다.
+        #:    상한 근거는 위 `RAW_BUFFER_MAXLEN` 주석.
+        self.records: deque[dict] = deque(maxlen=raw_buffer_maxlen)
+        #: 받은 줄을 **원문 그대로** 담는다 — "정말 오고 있나" 를 눈으로
+        #: 보려면 파싱한 값이 아니라 실제로 온 바이트가 있어야 한다.
+        self.raw_lines: deque[str] = deque(maxlen=raw_buffer_maxlen)
         self.seq_tracker = SeqTracker()
         self.corrupt_total = 0
         self.mode = "RUN"
@@ -111,9 +132,30 @@ class BoardService:
         self.ctl_mode = "ACTIVE"
         self.last_payload: dict | None = None
 
+        #: 원문 줄 통계. `raw_lines`/`records` 는 상한이 있어 오래된 것을
+        #: 밀어내지만, 이 수치들은 세션 전체를 말해야 하므로 **누적**이다.
+        self.line_total = 0
+        self.byte_total = 0
+        #: 타입별 누적 줄 수. `$` 명령 응답은 verb 를, 파싱 실패는
+        #: "corrupt" 를 키로 쓴다 — parse_record 가 주는 `type` 은 텔레메트리
+        #: 에만 있다.
+        self.type_counts: dict[str, int] = {}
+        #: 마지막으로 줄 하나를 받은 시각(`self.clock()` 기준). 아직 아무것도
+        #: 못 받았으면 `None` 이다.
+        self.last_line_at: int | None = None
+
         self._acks: list[Command] = []
         self._catalog: list[str] = []
         self._collect_catalog = False
+        #: `take_records()`/`take_raw_lines()` 가 비우는 대기열.
+        #:
+        #: 🔴 `records`/`raw_lines` 가 `deque(maxlen=N)` 이 되면서 워커의
+        #:    슬라이스 커서(`records[seen:]`)가 못 쓰게 됐다 — 가득 찬 뒤
+        #:    `len()` 이 상한에서 멈추므로 슬라이스가 영원히 빈 목록을 낸다
+        #:    (worker_loop.py 머리말 참고). 이 대기열이 그 대안이다: 넘겨준
+        #:    만큼 비우므로 상한과 무관하게 "이번에 새로 온 것" 을 안다.
+        self._pending_records: deque[dict] = deque(maxlen=raw_buffer_maxlen)
+        self._pending_raw: deque[str] = deque(maxlen=raw_buffer_maxlen)
 
     # ------------------------------------------------------------- 명령 송신
     def send(self, verb: str, *args: str) -> Command:
@@ -202,6 +244,37 @@ class BoardService:
             self.mode = sim.mode
             self.ctl_mode = sim.ctl_mode
 
+    def _record_raw(self, line: str, rtype: str) -> None:
+        """원문 줄 하나를 통계·버퍼에 반영한다.
+
+        🔴 파싱 성패와 무관하게 **모든** 수신 줄에 대해 불린다. "정말 오고
+        있나" 를 보는 화면에서 깨진 줄을 숨기면 손상 자체를 놓친다.
+        """
+        self.raw_lines.append(line)
+        self._pending_raw.append(line)
+        self.line_total += 1
+        self.byte_total += len(line.encode("utf-8"))
+        self.type_counts[rtype] = self.type_counts.get(rtype, 0) + 1
+        self.last_line_at = self.clock()
+
+    def take_records(self) -> list[dict]:
+        """아직 아무도 안 가져간 텔레메트리를 반환하고 비운다.
+
+        `records` 가 상한 있는 버퍼가 되면서 워커의 슬라이스 커서가 못 쓰게
+        된 것의 대안이다(`_pending_records` 주석). `worker_loop.WorkerLoop`
+        는 이 메서드가 있으면 우선 쓴다.
+        """
+        out = list(self._pending_records)
+        self._pending_records.clear()
+        return out
+
+    def take_raw_lines(self) -> list[str]:
+        """아직 아무도 안 가져간 원문 줄을 반환하고 비운다. `take_records`
+        와 같은 이유·같은 모양이다."""
+        out = list(self._pending_raw)
+        self._pending_raw.clear()
+        return out
+
     def _ingest(self, line: str) -> None:
         line = line.strip()
         if not line:
@@ -212,7 +285,9 @@ class BoardService:
                 cmd = parse_line(line)
             except ProtocolError:
                 self.corrupt_total += 1
+                self._record_raw(line, "corrupt")
                 return
+            self._record_raw(line, cmd.verb)
             if cmd.verb == "SACK":
                 self._acks.append(cmd)
             return
@@ -221,9 +296,11 @@ class BoardService:
             rec = parse_record(line)
         except ProtocolError:
             self.corrupt_total += 1
+            self._record_raw(line, "corrupt")
             return
 
         rtype = rec.get("type")
+        self._record_raw(line, rtype if isinstance(rtype, str) else "?")
 
         # 🔴 카탈로그 수집 중이라도 **카탈로그 줄만** 가로챈다.
         #
@@ -249,6 +326,7 @@ class BoardService:
 
         self.seq_tracker.observe(rec["seq"])
         self.records.append(rec)
+        self._pending_records.append(rec)
 
     def close(self) -> None:
         self.transport.close()
