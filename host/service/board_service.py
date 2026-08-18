@@ -226,6 +226,24 @@ class BoardService:
             self._collect_catalog = False
         return parse_catalog(self._catalog)
 
+    def fetch_stat(self) -> dict:
+        """$STAT 으로 지금 상태를 받는다.
+
+        🔴 `din`(J18~J20)이 이걸 쓰는 이유(규격 §7.4, §7.6) — din 레코드는
+           상태가 **바뀔 때만** 온다. 막 연결한 호스트는 엣지를 한 번도
+           못 봤을 수 있어 그것만으로는 지금 상태를 모른다. `$STAT` 의
+           `din` 배열은 그 순간의 실측이라 그 공백을 채운다. 호출부(GUI)는
+           연결 직후·재연결 직후 이것을 **한 번만** 부르면 된다 — 그
+           뒤의 변화는 `din` 레코드가 알려 주므로 주기적으로 다시 물을
+           이유가 없다.
+
+        `fetch_schema()` 와 같은 자리 — `send()` 로 명령을 보내고
+        `last_payload` 를 그대로 돌려준다. `_ingest()` 가 `stat` 레코드를
+        받으면 이미 `mode`/`ctl_mode` 도 갱신해 둔다.
+        """
+        self.send("STAT")
+        return self.last_payload or {}
+
     # ------------------------------------------------------------- 수신 처리
     def pump(self) -> None:
         """트랜스포트에 쌓인 줄을 전부 처리한다."""

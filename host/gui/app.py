@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from dataclasses import replace
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -46,6 +47,7 @@ from host.gui.screen import (
     RAILS,
     Identity,
     ScreenState,
+    build_dins,
     build_screen,
     empty_channels,
 )
@@ -158,6 +160,7 @@ class MainWindow(QMainWindow):
 
         self._load_identity()
         self._load_catalog()
+        self._load_din_state()
 
     # ------------------------------------------------------------- 초기화
 
@@ -193,6 +196,47 @@ class MainWindow(QMainWindow):
             self._top.set_link("보드가 설정 카탈로그를 주지 않았다", bad=True)
             return
         self._settings.set_form(SettingsForm(schema))
+
+    def _load_din_state(self) -> None:
+        """`$STAT` 을 한 번 읽어 din(J18~J20) 의 지금 상태를 세운다.
+
+        🔴 사용자 확정 — "연결이 끊기면 마지막 상태가 지워지는게 아니라
+           바로 읽을 수 있으니까 괜찮아". 그 전제가 성립하려면 호스트가
+           실제로 `$STAT` 을 읽어야 한다. `din` 레코드(규격 §7.6)는 상태가
+           **바뀔 때만** 오므로, 이걸 안 하면 막 연결한 화면은 보드가 이미
+           알고 있는 지금 상태를 몰라 세 칸 다 "확인 불가"로 뜬다.
+
+           연결 직후(`_load_identity`·`_load_catalog` 와 같은 자리) 한 번만
+           부른다. 그 뒤의 변화는 `din` 레코드가 그대로 알려 주므로,
+           주기적으로 다시 묻는 것은 낭비고 "실측은 보드가 안다"(설계
+           원칙 3, CLAUDE.md §3)와도 어긋난다 — 폴링이 아니라 이벤트로
+           받는다.
+
+           지금 이 앱은 재연결을 자동으로 하지 않는다(연결은 시작할 때
+           한 번뿐). 그래도 이 메서드를 `_load_identity`·`_load_catalog`
+           와 나란히 독립된 함수로 둔 이유는, 재연결 흐름이 생기면 그
+           자리에서 이 메서드 하나만 다시 부르면 되게 하기 위해서다.
+        """
+        try:
+            stat = self._service.fetch_stat()
+        except Exception:                    # noqa: BLE001
+            return
+        din = stat.get("din")
+        if not isinstance(din, list) or not din:
+            return
+        # 🔴 `$STAT` 의 din 항목에는 `t` 가 없다(규격 §7.4 예시) — "언제
+        #    바뀌었나" 가 아니라 "지금 무엇인가" 만 준다. build_dins() 는
+        #    `t` 가 없으면 changed_at 을 건드리지 않으므로 그대로 넘긴다.
+        seed = [
+            {"type": "din", "connector_id": d.get("connector_id"),
+             "state": d.get("state")}
+            for d in din if isinstance(d, dict)
+        ]
+        self._state = replace(
+            self._state,
+            dins=build_dins(seed, reachable=True, previous=self._state.dins,
+                            history=self._history, now_s=time.monotonic()),
+        )
 
     def _rail_values(self) -> dict[str, bool]:
         """설정 화면이 들고 있는 레일 값.

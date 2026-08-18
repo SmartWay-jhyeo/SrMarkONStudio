@@ -167,6 +167,22 @@ def test_fetch_schema_builds_from_catalog(rig):
     assert "팬" in schema.items["pwr.5v"].note
 
 
+def test_fetch_stat_returns_the_stat_payload(rig):
+    """🔴 규격 §7.4 — `din` 은 상태가 바뀔 때만 오는 레코드(§7.6)와 달리
+    `$STAT` 응답 안의 실측이다. `fetch_stat()` 은 그 응답을 그대로
+    돌려줘야 GUI 가 연결 직후 지금 상태를 세울 수 있다(사용자 확정
+    2026-08-18 — "연결이 끊기면... 바로 읽을 수 있으니까 괜찮아")."""
+    svc, _sim, _clock = rig
+    stat = svc.fetch_stat()
+    assert stat.get("type") == "stat"
+    assert stat.get("mode") in ("CONFIG", "RUN")
+    din = stat.get("din")
+    assert isinstance(din, list) and len(din) == 3
+    assert {d["connector_id"] for d in din} == {18, 19, 20}
+    # 시뮬레이터 기본값은 전부 꺼짐(raw HIGH = 신호 없음)이다.
+    assert all(d["state"] == 0 for d in din)
+
+
 def test_heartbeat_puts_board_in_config_mode(rig):
     svc, sim, _clock = rig
     svc.heartbeat()

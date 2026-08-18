@@ -83,6 +83,18 @@ def test_catalog_is_loaded_from_the_board(window):
     assert sorted(window._settings._rows) == sorted(form.keys())
 
 
+def test_din_state_is_seeded_from_stat_on_connect(window):
+    """🔴 사용자 확정 — "연결이 끊기면 마지막 상태가 지워지는게 아니라
+    바로 읽을 수 있으니까 괜찮아". 그 전제는 창이 `$STAT` 을 실제로
+    읽어야 성립한다. `din` 레코드(규격 §7.6)는 상태가 바뀔 때만 오므로,
+    이 시험은 **레코드를 하나도 안 거치고**(어떤 `_on_step` 도 부르지
+    않은 채) 창이 뜨자마자 세 칸이 `None`("확인 불가")이 아니라 실제
+    값(시뮬레이터 기본값 = 꺼짐)으로 채워져 있는지 본다."""
+    assert {d.key for d in window._state.dins} == {18, 19, 20}
+    for d in window._state.dins:
+        assert d.state is False, f"J{d.key} 는 아직 상태를 모르는 채로 남았다"
+
+
 def test_switching_pages(window):
     window._pages.setCurrentIndex(1)
     assert window._pages.currentIndex() == 1
