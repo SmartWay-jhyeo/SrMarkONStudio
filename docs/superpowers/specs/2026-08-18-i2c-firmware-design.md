@@ -135,7 +135,7 @@ typedef struct {
 typedef struct {
     uint8_t  kind;           /* 카탈로그 enum 값 */
     uint8_t  default_addr;   /* 설정의 addr 이 0(미지정)일 때 쓴다 */
-    uint16_t warmup_ms;      /* 시작 명령 후 첫 값까지. BH1750 = 120 */
+    uint16_t warmup_ms;      /* 시작 명령 후 첫 값까지. BH1750 = 180 */
 
     /* 없으면 NULL. 매 주기가 아니라 포트를 켤 때 한 번 부른다 */
     int (*start)(const MkI2cIo *io, uint8_t bus, uint8_t addr);
@@ -158,30 +158,52 @@ typedef struct {
 포트마다 독립이다. 한 포트가 죽어도 나머지는 돈다 (채널 장애 격리).
 
 ```
-   OFF ──enabled && kind≠없음──▶ START ──start 성공──▶ WARMUP ──warmup_ms──▶ READY
-    ▲                              │                                            │
-    │ 꺼짐/종류 바뀜                │ 실패                                        │ 주기 도달
-    │                              ▼                                            ▼
-    └────────────────────────── EMIT ◀───────────────────────────────────────  READ
-                          (성공이면 값, 실패면 status 1/2)                        │
-                                    └───────────── READY 로 되돌아간다 ───────────┘
+   OFF ──enabled && kind≠없음──▶ START ──start 성공──▶ WARMUP ──warmup_ms──▶ READY ──┐
+    ▲                              │                                          ▲      │ read 성공
+    │ 꺼짐 · 종류·주소 바뀜         │ 시작 실패                                  │      │ (값을 낸다)
+    │                              ▼                                          │      ▼
+    │                            FAULT ◀── period_ms 마다 재시도 실패 ──────────┘   READY (그대로)
+    │                              │
+    │                              └── period_ms 마다 재시도 성공 ──▶ WARMUP (위와 합류)
+    │
+    └──────────────────────────── read 실패 (status 1/2, OFF 로 되돌아가 start 부터 다시) ── READY
 ```
+
+🔴 구현은 위 브리프 초안에 있던 `EMIT` 상태를 따로 두지 않는다(`app/mk_i2c.c`).
+값·오류는 `READY`(read 성공/실패)와 `START`·`FAULT`(시작 성공/실패) 각
+전이 지점에서 그 자리에 바로 낸다 — 상태를 하나 더 두면 그 상태로
+"들어가는 바퀴"와 "나가는 바퀴"가 갈려 한 바퀴 한 포트 규칙과 부딪힌다.
+
+🔴 **드라이버가 없는 종류(카탈로그엔 있지만 아직 안 붙은 칩)는 START 를
+거치지 않고 곧장 `FAULT`로 간다** — 종류를 바꾸기 전에는 다시 살아나지
+않는다. `FAULT`가 시작 실패와 드라이버 없음을 함께 쓰는 이유는 둘 다
+"버스에 낼 값이 없다"는 사실이 같고, 화면에 보이는 status(1/2 대 3)만
+다르기 때문이다.
 
 🔴 **`start`는 주기마다 부르지 않는다.** 포트를 켤 때 한 번이다. BH1750의
 연속 측정 모드가 그렇게 쓰라고 되어 있고(참고 구현 주석), 매번 모드를 다시
 쓰면 그때마다 변환이 처음부터 다시 시작해 값이 늦어진다. 한 바퀴를 돈 뒤에는
-`READY`로 돌아가 주기만 기다린다.
+`READY`로 돌아가 주기만 기다린다. `FAULT`에서의 재시도도 같은 규칙 —
+`period_ms`마다 딱 한 번이다(실시간으로 재시도하면 안 꽂힌 포트 하나가
+슈퍼루프를 시작-재시도로 채운다).
 
 🔴 **주기가 변환 시간보다 짧으면 변환 시간을 따른다.** `i2cN.period_ms`의
-하한이 10 ms인데 BH1750은 120 ms마다 새 값을 낸다 — 그보다 빨리 읽으면 같은
-값이 여러 줄 나가고, 화면은 갱신되는 것처럼 보이면서 실제로는 멈춘 값이다.
-실효 주기 = `max(period_ms, warmup_ms)` 로 두고, 그 사실을 시험이 못 박는다.
+하한이 10 ms인데 BH1750은 180 ms(첫 측정의 max, p.7 — 구현 상수
+`BH1750_WARMUP_MS`)마다 새 값을 낸다 — 그보다 빨리 읽으면 같은 값이 여러
+줄 나가고, 화면은 갱신되는 것처럼 보이면서 실제로는 멈춘 값이다. 실효
+주기 = `max(period_ms, warmup_ms)` 로 두고, 그 사실을 시험이 못 박는다.
 
 - 🔴 **바이트 전송만 블로킹한다.** 100 kHz에서 3바이트가 약 0.4 ms다.
-  **변환 대기(BH1750 120 ms)는 절대 블로킹하지 않는다** — 상태기계가 시각을
-  기억하고 다음 바퀴에 이어 간다
+  **변환 대기(BH1750 180 ms — 첫 측정의 max, p.7)는 절대 블로킹하지 않는다**
+  — 상태기계가 시각을 기억하고 다음 바퀴에 이어 간다. 구현에서는 xfer 한 번의
+  최악 블로킹이 25ms(HAL BUSY 대기) + 5ms(타임아웃) = 30ms 이고, BH1750의
+  `start`가 xfer 를 두 번 나눠 부르므로 한 스텝의 최악은 60ms 다
+  (`bsp/mk_i2c_io.c`)
 - 🔴 **한 바퀴에 포트 하나만** 처리한다. 여섯을 한 바퀴에 다 돌리면 최악에
-  전송이 여섯 번 겹친다. 라운드로빈은 ADS1256·텔레메트리와 같은 이유다
+  전송이 여섯 번 겹친다. 라운드로빈은 ADS1256·텔레메트리와 같은 이유다.
+  단, 드라이버가 없는 종류(FAULT)는 버스를 안 건드리므로 이 규칙 밖이다 —
+  한 바퀴에 포트 여섯 전부가 status=3 을 낼 수 있다(§9.1, out 버퍼 크기는
+  §6 계약대로 `MK_I2C_COUNT × MK_I2C_VALUES_MAX`)
 - **타임스탬프는 읽기가 끝난 시점**에 찍는다 (설계 원칙 2 — 획득 시각은
   STM32가 확정한다)
 - 설정이 바뀌면(종류·주소·사용 여부) 그 포트만 OFF로 되돌려 `start`부터 다시 한다
@@ -200,8 +222,14 @@ void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c);
 큐를 두면 주기가 둘이 되어(읽기 주기·전송 주기) 느린 쪽이 빠른 쪽을 덮어쓰고,
 그 유실을 세는 코드가 또 필요해진다. 읽자마자 내보내면 그 문제가 없다.
 
-한 바퀴에 포트 하나만 읽으므로 한 번에 나가는 줄은 최대 2줄(온습도)이다.
-`MK_TELEM_MAX_LINES`(16)를 위협하지 않는다.
+🔴 **한 번에 나가는 줄이 최대 2줄이 아니다** [수정 — 검토 지적 I1]. 정상
+경로(READY 에서 값을 읽음)만 보면 한 바퀴 최대 2줄(온습도)이지만, 드라이버
+없는 종류(§9.1)는 버스를 안 건드려 라운드로빈이 멈추지 않으므로 **한 바퀴에
+포트 여섯 전부**가 동시에 status=3 을 낼 수 있다 — 최악은
+`MK_I2C_COUNT × MK_I2C_VALUES_MAX` = 6×2 = **12줄**이다. `MK_TELEM_MAX_LINES`
+(16)는 여전히 위협하지 않지만, 그 여유가 6×2 라는 구체적인 계산에서 나온다는
+것을 `mk_telem.c` 의 주석이 못 박는다 — `MK_I2C_COUNT` 나 `MK_I2C_VALUES_MAX`
+가 커지면 다시 봐야 한다.
 
 ## 9. 오류와 `status`
 
@@ -246,16 +274,30 @@ void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c);
 가짜 io를 물려 보드 없이 돌린다. 확인하는 것:
 
 - 상태 순서 — 켜면 `start` → `warmup_ms` 만큼 기다린 뒤 `read`
-- **변환 대기 동안 읽지 않는다** (120 ms 전에 `read`가 불리면 실패)
+  (`test_does_not_read_during_warmup`)
+- **변환 대기 동안 읽지 않는다** (BH1750 은 180 ms — warmup_ms 전에 `read`가
+  불리면 실패) — 위와 같은 시험이 함께 못 박는다
 - 주기 — `period_ms`마다 한 번씩. 그 사이에는 버스를 안 건드린다
 - **실효 주기** — `period_ms`가 `warmup_ms`보다 짧으면 변환 시간을 따른다
-- `start`는 포트를 켤 때 한 번만 불린다 (주기마다 다시 부르지 않는다)
-- 라운드로빈 — 한 바퀴에 포트 하나
+  (`test_effective_period_is_the_longer_of_period_and_warmup`)
+- `start`는 포트를 켤 때 한 번만 불린다 (주기마다 다시 부르지 않는다) —
+  `test_start_is_called_once_when_turned_on`
+- 라운드로빈 — 한 바퀴에 포트 하나 (`test_one_port_per_tick`)
 - 격리 — 한 포트가 계속 실패해도 다른 포트가 계속 읽힌다
+  (`test_isolation_a_dead_port_does_not_stop_the_rest`)
 - `status` 판정 — io 반환 −1·−2가 1·2로, 미지원 종류가 3으로
+  (`test_io_error_codes_map_to_status_one_and_two`,
+  `test_unsupported_kind_reports_status_three`)
 - 꺼진 포트·종류 "없음"은 **버스를 아예 안 건드린다**
 - 설정 카탈로그의 진짜 키(`i2c10.kind` 등)로 시험한다 — 가짜 키로 하면
   카탈로그에서 이름이 바뀌어도 통과한다 (sol에서 세운 규칙)
+- 🔴 [수정 — 검토 지적 C2·I2] 시작 실패·읽기 실패에 재시도 가드가 있는지도
+  시험한다 — 가드가 없으면 안 꽂힌 포트 하나가 슈퍼루프를 재시도로 채운다.
+  `firmware/stage1/tests/test_telem.c` 의
+  `test_start_failure_is_rate_limited_and_emits_null` 이 줄 수를 세어 못
+  박는다(예전 이름 `test_failed_read_emits_null_not_the_last_value` 는
+  각 줄의 내용만 보고 개수를 안 세어 이 결함을 놓쳤다). 읽기 실패가
+  다시 `start`를 부르는지는 `test_read_failure_forces_a_fresh_start`
 
 ### BH1750 드라이버 시험
 
@@ -263,21 +305,34 @@ void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c);
 - 환산 `lux = raw / 1.2`는 **구현 상수를 시험이 빌려 쓴다.** 손으로 다시 적으면
   구현과 시험이 같은 오해를 나눠 갖는다 (2·VREF 사고)
 
-### 대조 (`crosscheck_i2c.py`)
+### 대조 (`crosscheck_i2c.py`, `crosscheck_i2c_quantities.py`)
 
 C가 만든 `i2c` 레코드와 시뮬레이터 `build_i2c_record`의 출력을 바이트로 맞춘다.
+
+🔴 [추가 — 검토 지적 C1] `crosscheck_i2c_quantities.py`가 따로 하나 더 있다 —
+`mk_i2c_kind_quantities`(종류→양 표, `app/mk_i2c.c`)와 시뮬레이터의
+`I2C_QUANTITIES`(`tools/simulator/config_store.py`)를 종류마다 대조한다.
+조도 하나뿐일 때는 눈으로도 맞았지만, 온습도처럼 값이 둘인 종류가 늘면
+순서가 갈려도 아무도 못 잡는다 — 카탈로그 대조(`crosscheck_cfgtable.py`)와
+같은 이유의 대조다.
 
 ### 안전 검사 (`test_firmware_safety.py`)
 
 - I2C 핀(PA8·PC9·PC11·PC10·PB8·PB9)을 만지는 파일은 `mk_i2c_io.c` 하나
+  — 정방향(`test_i2c_owner_does_not_touch_the_sol_or_led_pins`, `mk_i2c_io.c`
+  가 남의 핀을 안 건드리는지)과 역방향
+  (`test_only_one_file_drives_the_i2c_pins`, 남이 이 핀을 안 건드리는지)을
+  둘 다 본다 [역방향은 검토 지적 I6로 추가]
 - 🔴 **`mk_i2c_io.c`가 sol·WS2812 핀(PA4·PA5·PA6·PA7)을 언급하지 않는다.**
   같은 GPIOA라 초기화하다가 덮을 수 있는 유일한 자리다
 - `app/`은 HAL을 모른다 (기존 검사가 새 파일을 자동으로 훑는다)
 
 ### 되돌림 검사
 
-가드를 뺐을 때 시험이 실제로 깨지는지 확인한다. 최소한 이 셋:
-변환 대기, 라운드로빈, 미지원 종류 판정.
+가드를 뺐을 때 시험이 실제로 깨지는지 확인한다. 최소한 이 다섯:
+변환 대기, 라운드로빈, 미지원 종류 판정, 시작 실패 재시도 가드(C2),
+읽기 실패 뒤 재시작(I2). 결과는 `.superpowers/sdd/2026-08-18-i2c-firmware/
+final-fix-report.md`에 남긴다.
 
 ## 12. 시뮬레이터에 미치는 영향
 

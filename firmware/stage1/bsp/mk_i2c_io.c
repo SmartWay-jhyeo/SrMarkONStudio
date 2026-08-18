@@ -20,11 +20,17 @@
  *
  *    즉 버스가 눌린 채로(전원 없는 센서가 SDA 를 Low 로 잡고 있다든가,
  *    배선 불량) 호출이 시작되면 최악 블로킹은 5 ms 가 아니라
- *    **25 ms + 5 ms = 30 ms** 다.
+ *    **25 ms + 5 ms = 30 ms** 다 — xfer **한 번**의 최악이다.
+ *
+ *    🔴 [검토 지적 I5] BH1750 의 start(app/mk_i2c_bh1750.c)는 Power On·
+ *    모드 선택을 STOP 을 사이에 두고 **두 번** 나눠 보낸다. mk_i2c_tick()
+ *    은 포트가 START 상태를 나아갈 때 이 두 xfer 를 한 스텝(한 바퀴) 안에
+ *    잇달아 부르므로, 버스가 눌린 채로 시작 명령이 오면 최악 블로킹은
+ *    30 ms 가 아니라 **60 ms** 다(HANDOFF.md §7.2도 이 값으로 맞춰 뒀다).
  *
  *    지금은 받아들일 만하다 — mk_i2c_tick() 이 한 바퀴에 포트 하나만
- *    진행하므로 30 ms 는 한 바퀴에 최대 한 번뿐이고, ADS1256 수집은
- *    DRDY 인터럽트 + DMA 라 그 30 ms 동안에도 표본을 잃지 않는다.
+ *    진행하므로 60 ms 는 한 바퀴에 최대 한 번뿐이고, ADS1256 수집은
+ *    DRDY 인터럽트 + DMA 라 그 60 ms 동안에도 표본을 잃지 않는다.
  *
  *    버스 잠김을 스스로 풀거나(SCL 토글) 선행 BUSY 검사를 넣는 것은
  *    계획서 §14 가 "실제로 겪은 뒤에 넣는다" 로 미뤄 둔 항목이다 —
@@ -157,6 +163,14 @@ static void open_bus(I2C_HandleTypeDef *h, I2C_TypeDef *inst)
     h->Init.OwnAddress2Masks = I2C_OA2_NOMASK;
     h->Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
     h->Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+    /* 🔴 [검토 지적 Minor — 그대로 둔다] HAL_I2C_Init 의 반환값을 버린다.
+     *    고쳐 보려 했으나 mk_i2c_io_init() 이 void 이고, 이 bsp 층
+     *    전체(mk_uart.c 의 HAL_UART_Init, mk_ads_io.c 의 HAL_SPI_Init·
+     *    HAL_DMA_Init 등)가 같은 모양이다 — 반환값을 받아도 알릴 통로가
+     *    없어 `(void)` 로 다시 버리는 것과 다를 게 없다. 여기만 고치면
+     *    다른 bsp 초기화들과 관례가 갈려 오히려 헷갈린다. 정말 고치려면
+     *    부팅 오류를 알릴 통로(예: $STAT 에 초기화 실패 비트)부터
+     *    설계해야 하고, 그것은 이 라운드 범위 밖이다. */
     (void)HAL_I2C_Init(h);
 }
 

@@ -367,13 +367,17 @@ python -m host.gui.app --port COM23
 - 센서를 뽑았다 꽂아 본다 — 뽑으면 `status=1`(값 없음)로, 꽂으면 값이
   돌아오는지 확인한다
 - I2C 가 도는 동안 ADS1256 값이 계속 오고 `$STAT` 의 `drops` 가 안 오르는지
-  본다(`markon_cli --port COM23 monitor --seconds 20`) — 아래 30ms 블로킹이
+  본다(`markon_cli --port COM23 monitor --seconds 20`) — 아래 60ms 블로킹이
   실사용에서 표본을 잃지 않는다는 것의 실기기 확인
 
-**🔴 최악 블로킹은 30ms 다.** HAL 이 전송 전 버스 BUSY 를 고정 25ms
+**🔴 최악 블로킹은 60ms 다.** HAL 이 전송 전 버스 BUSY 를 고정 25ms
 (`I2C_TIMEOUT_BUSY`, `stm32h7xx_hal_i2c.c:344`) 로 기다리고 우리 타임아웃이
-5ms 더 있다. 한 바퀴에 포트 하나뿐이라 한 번만 서고, ADS1256 은 DRDY
-인터럽트+DMA 라 표본을 안 잃는다 — 그래도 버스 잠김 복구(SCL 토글)는
+5ms 더 있어 xfer **한 번**의 최악이 30ms — 그런데 BH1750 의 `start`
+(Power On·모드 선택)는 STOP 을 사이에 두고 xfer 를 **두 번** 나눠 부르고,
+`mk_i2c_tick()` 은 이 둘을 같은 스텝(한 바퀴) 안에서 잇달아 부른다(검토
+지적 I5 — 예전에는 30ms 로 적었으나 셈이 한 번짜리 xfer 만 본 것이었다).
+한 바퀴에 포트 하나뿐이라 60ms 도 한 바퀴에 최대 한 번만 서고, ADS1256 은
+DRDY 인터럽트+DMA 라 표본을 안 잃는다 — 그래도 버스 잠김 복구(SCL 토글)는
 아직 안 넣었다. 계획서 §14 대로 **실제로 겪은 뒤에** 넣는다.
 
 🔴 **PA8·PC9 는 AF6 에도 I2C5 가 있다.** AF 를 잘못 고르면 J10/J11 이
