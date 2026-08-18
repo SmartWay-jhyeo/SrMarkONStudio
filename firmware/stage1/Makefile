@@ -53,6 +53,7 @@ C_SRC = \
   bsp/mk_ads_io.c \
   bsp/mk_flash.c \
   bsp/mk_uart.c \
+  bsp/mk_i2c_io.c \
   bsp/stm32h7xx_it.c \
   $(DEV)/Source/Templates/system_stm32h7xx.c \
   $(HAL)/Src/stm32h7xx_hal.c \
@@ -64,6 +65,7 @@ C_SRC = \
   $(HAL)/Src/stm32h7xx_hal_pwr_ex.c \
   $(HAL)/Src/stm32h7xx_hal_uart.c \
   $(HAL)/Src/stm32h7xx_hal_uart_ex.c \
+  $(HAL)/Src/stm32h7xx_hal_i2c.c \
   $(HAL)/Src/stm32h7xx_hal_dma.c \
   $(HAL)/Src/stm32h7xx_hal_dma_ex.c \
   $(HAL)/Src/stm32h7xx_hal_spi.c \

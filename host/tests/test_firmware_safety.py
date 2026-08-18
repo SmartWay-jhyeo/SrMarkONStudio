@@ -257,6 +257,33 @@ def test_makefile_does_not_pull_in_printf_float():
     )
 
 
+#: 🔴 I2C 핀 (데이터시트 §5.4, 넷리스트 확인 2026-08-18).
+#:
+#:    I2C3 PA8/PC9 · I2C5 PC11/PC10 · I2C1 PB8/PB9
+#:
+#:    PA8 이 GPIOA 라는 것이 이 검사의 이유다. 같은 포트에 sol(PA4·PA5·PA6)
+#:    과 WS2812(PA7)가 있어, 한 파일이 GPIOA 를 통째로 초기화하면 서로를
+#:    덮는다.
+I2C_OWNER = "mk_i2c_io.c"
+SOL_AND_LED_PINS = ("GPIO_PIN_4", "GPIO_PIN_5", "GPIO_PIN_6", "GPIO_PIN_7")
+
+
+def test_i2c_owner_does_not_touch_the_sol_or_led_pins():
+    """I2C 파일이 같은 포트의 다른 핀을 건드리지 않는지.
+
+    🔴 GPIOA 를 여는 파일이 셋이 됐다(sol · WS2812 · I2C). 핀별 초기화라
+       서로 덮지 않지만, OR 로 묶어 넣는 실수 한 번이면 밸브가 열리거나
+       LED 체인이 죽는다.
+    """
+    path = FW / "bsp" / I2C_OWNER
+    assert path.exists(), f"{I2C_OWNER} 이 없다"
+    code = _strip_comments(path.read_text(encoding="utf-8"))
+    for pin in SOL_AND_LED_PINS:
+        assert not re.findall(rf"\b{pin}\b", code), (
+            f"{I2C_OWNER} 이 {pin} 을 언급한다 — sol·WS2812 의 핀이다"
+        )
+
+
 def test_makefile_builds_the_tested_sources():
     """보드에 굽는 것이 호스트에서 시험한 바로 그 파일들인지.
 

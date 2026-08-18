@@ -28,9 +28,11 @@
 #include "app/mk_telem.h"
 #include "app/mk_ws2812.h"
 #include "app/mk_solctl.h"
+#include "app/mk_i2c.h"
 #include "bsp/mk_rails.h"
 #include "bsp/mk_ws2812_io.h"
 #include "bsp/mk_sol.h"
+#include "bsp/mk_i2c_io.h"
 #include "mk_config.h"
 #include "mk_flash.h"
 #include "mk_hostlink.h"
@@ -73,6 +75,7 @@ static MkAds    s_ads;
 static MkRailCtl s_rails;
 static MkTelem   s_telem;
 static MkSolCtl  s_sol;
+static MkI2c     s_i2c;
 static int      s_led_on;
 
 /* 채널별 표본 저장소.
@@ -294,6 +297,12 @@ int main(void)
     mk_solctl_init(&s_sol, mk_sol_set, NULL);
     mk_ws2812_io_init();
 
+    /* 🔴 I2C 버스 셋. 카탈로그(mk_cfgtable 의 i2c*.kind·addr)에는 이미
+     *    항목이 있었지만 xfer 뒤가 비어 있어 파형이 안 나갔다. */
+    mk_i2c_io_init();
+    MkI2cIo i2c_io = { mk_i2c_io_xfer, NULL };
+    mk_i2c_init(&s_i2c, &i2c_io);
+
     mk_ads_io_init(&s_ads);
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
         mk_ads_attach_queue(&s_ads, ch, s_samples[ch], SAMPLES_PER_CHANNEL);
@@ -304,6 +313,7 @@ int main(void)
      *    실기기에서 4초를 들어도 0건이었다. */
     mk_telem_init(&s_telem, &s_cfg, &s_ads, fields, n_fields,
                   DEVICE_ID);
+    mk_telem_attach_i2c(&s_telem, &s_i2c);
     mk_hostlink_attach_rails(&link, &s_rails);
 
     char rx[MK_RX_LINE_MAX];
@@ -343,6 +353,10 @@ int main(void)
          *    핀은 그대로였다 — 화면이 거짓말을 하는 상태였다. */
         mk_solctl_tick(&s_sol, &s_cfg);
         sync_leds(&s_cfg, now);
+
+        /* 🔴 I2C 도 매 바퀴 민다. 한 바퀴에 포트 하나만 나아가므로
+         *    전송이 겹치지 않는다. */
+        mk_i2c_tick(&s_i2c, &s_cfg, now);
 
         mk_ads_tick(&s_ads, now);
         mk_telem_tick(&s_telem, now, emit, NULL);
