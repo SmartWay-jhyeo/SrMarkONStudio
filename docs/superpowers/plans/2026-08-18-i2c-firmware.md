@@ -531,55 +531,6 @@ static void test_disabled_ports_never_touch_the_bus(void)
     CHECK(BUS.n == 0, "꺼진 포트는 버스를 안 건드린다");
 }
 
-/* 🔴 start 는 포트를 켤 때 한 번이다. 주기마다 다시 쓰면 연속 측정 모드가
- *    매번 처음부터 시작해 값이 늦어진다. */
-static void test_start_is_issued_once_not_every_period(void)
-{
-    setup();
-    enable_lux_port(10u, 0x23u, 100u);
-    for (int64_t t = 0; t < 1000; t += 10) { mk_i2c_tick(&I2C, &CFG, t); }
-
-    int starts = 0;
-    for (int k = 0; k < BUS.n; k++) {
-        if (BUS.ntx[k] == 1u && BUS.nrx[k] == 0u) { starts++; }
-    }
-    CHECK(starts == 1, "시작 명령은 한 번만 나간다");
-    CHECK(BUS.n > 1, "그 뒤로 읽기는 여러 번 일어난다");
-}
-
-/* 🔴 변환 대기 동안 읽지 않는다. BH1750 은 120 ms 다 — 그전에 읽으면
- *    이전 변환 값이거나 쓰레기다. */
-static void test_no_read_before_the_conversion_time(void)
-{
-    setup();
-    enable_lux_port(10u, 0x23u, 10u);
-    for (int64_t t = 0; t < 110; t += 10) { mk_i2c_tick(&I2C, &CFG, t); }
-
-    int reads = 0;
-    for (int k = 0; k < BUS.n; k++) { if (BUS.nrx[k] > 0u) { reads++; } }
-    CHECK(reads == 0, "120 ms 전에는 읽지 않는다");
-
-    for (int64_t t = 110; t <= 200; t += 10) { mk_i2c_tick(&I2C, &CFG, t); }
-    reads = 0;
-    for (int k = 0; k < BUS.n; k++) { if (BUS.nrx[k] > 0u) { reads++; } }
-    CHECK(reads >= 1, "변환 시간이 지나면 읽는다");
-}
-
-/* 🔴 주기가 변환 시간보다 짧으면 변환 시간을 따른다. 안 그러면 같은 값이
- *    여러 줄 나가고, 화면은 갱신되는 것처럼 보이면서 실제로는 멈춘 값이다. */
-static void test_period_never_goes_below_the_conversion_time(void)
-{
-    setup();
-    enable_lux_port(10u, 0x23u, 10u);      /* 10 ms 를 요구해도 */
-    for (int64_t t = 0; t <= 1000; t += 10) { mk_i2c_tick(&I2C, &CFG, t); }
-
-    int reads = 0;
-    for (int k = 0; k < BUS.n; k++) { if (BUS.nrx[k] > 0u) { reads++; } }
-    /* 1000 ms 동안 120 ms 주기면 많아야 9 번이다. 10 ms 주기였다면 90 번. */
-    CHECK(reads <= 9, "변환 시간보다 빨리 읽지 않는다");
-    CHECK(reads >= 6, "그래도 꾸준히 읽는다");
-}
-
 /* 🔴 한 바퀴에 포트 하나. 여섯이 한 바퀴에 다 돌면 최악에 전송이 여섯 번
  *    겹쳐 슈퍼루프가 길어진다. */
 static void test_one_port_per_tick(void)
@@ -591,41 +542,6 @@ static void test_one_port_per_tick(void)
     BUS.n = 0;
     mk_i2c_tick(&I2C, &CFG, 0);
     CHECK(BUS.n <= 1, "한 바퀴에 전송은 많아야 한 번");
-}
-
-/* 🔴 한 포트가 죽어도 나머지는 돈다 (채널 장애 격리). */
-static void test_a_dead_port_does_not_starve_the_others(void)
-{
-    setup();
-    enable_lux_port(10u, 0x23u, 200u);
-    enable_lux_port(11u, 0x5Au, 200u);
-    BUS.ret = -1;                       /* 둘 다 대답 없음 */
-    for (int64_t t = 0; t < 600; t += 10) { mk_i2c_tick(&I2C, &CFG, t); }
-
-    int seen10 = 0, seen11 = 0;
-    for (int k = 0; k < BUS.n; k++) {
-        if (BUS.addr[k] == 0x23u) { seen10 = 1; }
-        if (BUS.addr[k] == 0x5Au) { seen11 = 1; }
-    }
-    CHECK(seen10 && seen11, "실패해도 두 포트를 모두 시도한다");
-}
-
-/* status 판정: io -1 → 1(응답 없음), -2 → 2(데이터 오류) */
-static void test_status_comes_from_the_bus_result(void)
-{
-    setup();
-    enable_lux_port(10u, 0x23u, 200u);
-    BUS.ret = -1;
-    for (int64_t t = 0; t < 400; t += 10) { mk_i2c_tick(&I2C, &CFG, t); }
-
-    MkI2cOut out;
-    int got = 0;
-    while (mk_i2c_take(&I2C, &out)) {
-        got = 1;
-        CHECK(out.status == 1u, "대답 없음은 status=1");
-        CHECK(out.have_value == 0, "값 자리는 비어 있다 (null)");
-    }
-    CHECK(got, "실패도 레코드를 낸다");
 }
 
 /* 🔴 드라이버가 없는 종류는 status=3 이다. 아무것도 안 보내면 값이 왜
@@ -648,12 +564,7 @@ static void test_unsupported_kind_reports_status_three(void)
 int main(void)
 {
     printf("-- 꺼진 포트 --\n");        test_disabled_ports_never_touch_the_bus();
-    printf("-- 시작 명령 --\n");        test_start_is_issued_once_not_every_period();
-    printf("-- 변환 대기 --\n");        test_no_read_before_the_conversion_time();
-    printf("-- 실효 주기 --\n");        test_period_never_goes_below_the_conversion_time();
     printf("-- 라운드로빈 --\n");       test_one_port_per_tick();
-    printf("-- 격리 --\n");             test_a_dead_port_does_not_starve_the_others();
-    printf("-- status 판정 --\n");      test_status_comes_from_the_bus_result();
     printf("-- 지원 안 하는 종류 --\n"); test_unsupported_kind_reports_status_three();
 
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
@@ -974,17 +885,17 @@ const MkI2cDriver *mk_i2c_driver_for(uint8_t kind)
 }
 ```
 
-> 이 Task의 시험 중 `test_start_is_issued_once...`·`test_no_read_before...`·`test_period_never...`·`test_a_dead_port...`·`test_status_comes_from...`는 드라이버가 있어야 통과한다. **Task 5까지 마쳐야 초록이 된다** — 그때까지는 `test_unsupported_kind_reports_status_three`와 `test_disabled_ports_never_touch_the_bus`, `test_one_port_per_tick`만 통과한다. 이 순서가 맞다: 상태기계가 드라이버 없이도 무엇을 해야 하는지를 먼저 못 박는다.
+> 🔴 **이 Task의 시험은 드라이버 없이 도는 것만 담는다.** 버스를 실제로 두드리는 동작(시작 명령·변환 대기·주기·격리·status 판정)은 드라이버가 있어야 확인되므로 Task 5로 갔다 — 거기서는 시험이 드라이버의 상수(`warmup_ms`)를 빌려 쓸 수 있어 시간 경계를 손으로 다시 적지 않아도 된다.
 
 빌드 목록에 `app/mk_i2c_drivers.c`도 넣는다 (`Makefile`·`run_tests.ps1`·`tests/Makefile`).
 
-- [ ] **Step 5: 시험을 돌려 남은 실패가 "드라이버 없음" 때문인지 확인한다**
+- [ ] **Step 5: 시험이 통과하는 것을 본다**
 
 ```
 powershell -ExecutionPolicy Bypass -File firmware/stage1/tests/run_tests.ps1
 ```
 
-기대: `test_i2c`에서 `꺼진 포트`·`라운드로빈`·`지원 안 하는 종류`는 ok, 나머지는 FAIL. 다른 11묶음과 대조 6종은 그대로 통과.
+기대: `test_i2c` PASSED — 세 시험 전부 ok. 다른 12묶음과 대조 6종도 그대로 통과.
 
 - [ ] **Step 6: 커밋**
 
@@ -997,12 +908,21 @@ git commit -m "feat(fw): I2C 포트 상태기계 — 기다리지 않고 한 바
 
 ### Task 5: BH1750 드라이버 — 첫 칩
 
-**선행 조건 (BLOCKING):** BH1750 데이터시트를 확보해 opcode·변환시간·환산식을 원본으로 확인한다. 참고 구현(`LaneControlSystemQ2/STM32Code/App/Drivers/bh1750.{c,h}`)은 근거이지 원본이 아니다. 확보가 안 되면 **멈추고 사용자에게 알린다** (CLAUDE.md §5).
+**데이터시트 확보 완료** — `docs/datasheet/BH1750FVI.pdf` (ROHM Technical Note, Rev.C, 2010.04). 아래는 전부 원본에서 확인한 것이고, **참고 구현과 두 군데가 다르다.**
 
-참고 구현이 말하는 것 (확인 대상):
-- 주소 `0x23` (ADDR 핀 Low)
-- `0x10` = Continuously High Resolution Mode, 1 lx, **120 ms**
-- 2바이트 **big-endian**, `lux = raw / 1.2`
+| 사실 | 근거 |
+|---|---|
+| 주소: ADDR='L' → `0100011`(0x23) · ADDR='H' → `1011100`(0x5C) | p.10 "2) Slave Address" |
+| Continuously H-Resolution Mode = `0001_0000`(0x10), "Measurement Time is typically 120ms" | p.5 "Instruction Set Architecture" |
+| 🔴 **첫 측정 대기는 최대 180 ms** — "Wait to complete 1st H-resolution mode measurement.( max. 180ms. )" | p.7 ex1) ② |
+| 🔴 **전원을 먼저 켜야 한다** — "Initial state is Power Down mode after VCC and DVI supply", Power On = `0000_0001`, "Waiting for measurement command" | p.4·p.5 |
+| 명령마다 STOP 이 필요하다 — "BH1750FVI is not able to accept plural command without stop condition. Please insert SP every 1 Opecode." | p.10 "3) Write Format" |
+| 읽기는 High Byte[15:8] → Low Byte[7:0], `raw / 1.2` = lx | p.10 "4) Read Format" |
+
+🔴 **계획 수정 둘** (데이터시트가 참고 구현보다 우선한다):
+
+1. `start` 는 **Power On(0x01) 을 먼저 보내고, 그다음 모드(0x10)** 를 보낸다. 칩은 전원 인가 직후 Power Down 상태라, 모드 명령만 보내면 아무 일도 안 일어날 수 있다. 두 명령은 **각각 STOP 으로 끝나야 한다** — 우리 `xfer` 가 한 번 부를 때마다 STOP 을 내므로 두 번 부르면 된다.
+2. `warmup_ms` 는 **120 이 아니라 180** 이다. 120 은 typ 이고 첫 측정의 max 는 180 이다 — 120 에 읽으면 변환이 안 끝난 값을 읽는다. 값이 나오기는 나오므로 눈으로는 못 가린다.
 
 **Files:**
 - Create: `firmware/stage1/app/mk_i2c_bh1750.c`
@@ -1013,7 +933,7 @@ git commit -m "feat(fw): I2C 포트 상태기계 — 기다리지 않고 한 바
 
 **Interfaces:**
 - Consumes: `MkI2cIo` · `MkI2cValue` · `MkI2cDriver` (Task 4)
-- Produces: `extern const MkI2cDriver MK_I2C_BH1750;`, `float mk_bh1750_lux(uint16_t raw);`
+- Produces: `extern const MkI2cDriver MK_I2C_BH1750;`, `float mk_bh1750_lux(uint16_t raw);` (그리고 `MK_I2C_BH1750.warmup_ms` 를 시험이 상수로 빌려 쓴다)
 
 - [ ] **Step 1: 실패하는 시험을 쓴다**
 
@@ -1057,17 +977,37 @@ static void test_bh1750_reads_two_bytes_msb_first(void)
           "명령 없이 2바이트만 읽는다");
 }
 
-static void test_bh1750_start_sends_the_continuous_mode_opcode(void)
+/* 🔴 전원을 먼저 켠다. 칩은 전원 인가 직후 Power Down 이라(p.4) 모드 명령만
+ *    보내면 받지 않을 수 있다. 순서가 뒤바뀌어도 "안 켜진다" 로만 보인다. */
+static void test_bh1750_start_powers_on_before_selecting_the_mode(void)
 {
     setup();
     MkI2cIo io = { fake_xfer, &BUS };
     int rc = MK_I2C_BH1750.start(&io, 3u, 0x23u);
 
     CHECK(rc == 0, "시작 성공");
-    CHECK(BUS.n == 1 && BUS.ntx[0] == 1u && BUS.nrx[0] == 0u, "1바이트를 쓴다");
-    CHECK(BUS.n == 1 && BUS.first_tx[0] == 0x10u, "연속 고해상도 모드 0x10");
-    CHECK(MK_I2C_BH1750.warmup_ms == 120u, "변환 120 ms");
+    CHECK(BUS.n == 2, "명령을 두 번 나눠 보낸다 (STOP 이 사이에 든다)");
+    CHECK(BUS.n == 2 && BUS.first_tx[0] == 0x01u, "먼저 Power On 0x01");
+    CHECK(BUS.n == 2 && BUS.first_tx[1] == 0x10u, "그다음 연속 고해상도 0x10");
+    for (int k = 0; k < BUS.n; k++) {
+        CHECK(BUS.ntx[k] == 1u && BUS.nrx[k] == 0u, "각각 1바이트 쓰기");
+    }
+    /* 🔴 180 이다. 120(typ)이 아니라 첫 측정의 max 를 기다린다 (p.7). */
+    CHECK(MK_I2C_BH1750.warmup_ms == 180u, "변환 대기 180 ms");
     CHECK(MK_I2C_BH1750.default_addr == 0x23u, "기본 주소 0x23");
+}
+
+/* 🔴 전원 켜기가 실패하면 모드를 보내지 않는다. 대답 없는 버스에 계속
+ *    쓰면 실패가 어디서 났는지 흐려진다. */
+static void test_bh1750_start_stops_if_power_on_fails(void)
+{
+    setup();
+    BUS.ret = -1;
+    MkI2cIo io = { fake_xfer, &BUS };
+    int rc = MK_I2C_BH1750.start(&io, 3u, 0x23u);
+
+    CHECK(rc == -1, "실패를 그대로 돌려준다");
+    CHECK(BUS.n == 1, "두 번째 명령을 보내지 않는다");
 }
 ```
 
@@ -1114,9 +1054,14 @@ float mk_bh1750_lux(uint16_t raw);
 ```c
 #include "mk_i2c_bh1750.h"
 
-#define BH1750_ADDR_DEFAULT   0x23u
-#define BH1750_OP_CONT_HRES   0x10u
-#define BH1750_WARMUP_MS      120u
+/* 🔴 근거는 전부 docs/datasheet/BH1750FVI.pdf (ROHM Rev.C, 2010.04) 다. */
+#define BH1750_ADDR_DEFAULT   0x23u   /* p.10 ADDR='L' → 0100011 */
+#define BH1750_OP_POWER_ON    0x01u   /* p.5 "Waiting for measurement command" */
+#define BH1750_OP_CONT_HRES   0x10u   /* p.5 연속 고해상도, typ 120ms */
+/* 🔴 120 이 아니라 180 이다. 120 은 typ 이고, p.7 ex1) 는 첫 측정을
+ *    "max. 180ms." 기다리라고 한다. 120 에 읽으면 변환이 안 끝난 값을
+ *    읽는데 값은 나오므로 눈으로 못 가린다. */
+#define BH1750_WARMUP_MS      180u
 #define BH1750_LUX_DIVISOR    1.2f
 
 float mk_bh1750_lux(uint16_t raw)
@@ -1126,8 +1071,19 @@ float mk_bh1750_lux(uint16_t raw)
 
 static int bh1750_start(const MkI2cIo *io, uint8_t bus, uint8_t addr)
 {
-    uint8_t cmd = BH1750_OP_CONT_HRES;
-    return io->xfer(io->ctx, bus, addr, &cmd, 1u, NULL, 0u);
+    /* 🔴 전원부터 켠다. "Initial state is Power Down mode after VCC and DVI
+     *    supply"(p.4) 라 모드 명령만 보내면 칩이 받지 않을 수 있다.
+     *
+     * 🔴 두 번 나눠 보내는 것이 요건이다 — "not able to accept plural
+     *    command without stop condition. Please insert SP every 1
+     *    Opecode."(p.10) 우리 xfer 는 한 번 부를 때마다 STOP 을 낸다. */
+    uint8_t on = BH1750_OP_POWER_ON;
+    int rc = io->xfer(io->ctx, bus, addr, &on, 1u, NULL, 0u);
+    if (rc != 0) {
+        return rc;
+    }
+    uint8_t mode = BH1750_OP_CONT_HRES;
+    return io->xfer(io->ctx, bus, addr, &mode, 1u, NULL, 0u);
 }
 
 static int bh1750_read(const MkI2cIo *io, uint8_t bus, uint8_t addr,
