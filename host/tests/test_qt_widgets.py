@@ -621,6 +621,33 @@ def test_dashboard_renders_screen_state(app):
     assert d._cards[1].gauge._ma is None
 
 
+def test_dashboard_has_three_digital_input_pills(app):
+    """J18~J20 은 카탈로그와 무관하게 늘 세 자리다 (규격 §7.6)."""
+    from host.gui.qt.dashboard import Dashboard
+
+    d = Dashboard()
+    assert len(d._din_pills) == 3
+    assert set(d._din_pills) == {18, 19, 20}
+
+
+def test_dashboard_renders_din_state(app):
+    from host.gui.qt.dashboard import Dashboard
+    from host.gui.screen import DinState, ScreenState
+
+    d = Dashboard()
+    d.render(ScreenState(
+        reachable=True,
+        dins=(
+            DinState(connector="J18", key=18, state=True, changed_at=5000),
+            DinState(connector="J19", key=19, state=False, changed_at=None),
+            DinState(connector="J20", key=20, state=None, changed_at=None),
+        ),
+    ))
+    assert d._din_pills[18]._state.text() != ""
+    # 렌더가 예외 없이 세 자리 모두를 훑었는지가 이 시험의 요점이다 —
+    # 문구 자체의 옳음은 host/tests/test_dins.py 가 Qt 없이 본다.
+
+
 def test_stylesheet_applies(app):
     assert "background" in stylesheet()
     assert app.styleSheet()

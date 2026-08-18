@@ -197,6 +197,8 @@ class ScreenState:
     #: I2C 센서 카드 (규격 §7.5). 아날로그와 따로 두는 이유는 정체가
     #: 번호가 아니라 (커넥터, 양) 짝이기 때문이다 — `SensorState` 머리말.
     sensors: tuple[SensorState, ...] = ()
+    #: 디지털 입력 카드 J18~J20 (규격 §7.6). `DinState` 머리말 참조.
+    dins: tuple[DinState, ...] = ()
 
     def channel(self, index: int) -> ChannelState | None:
         for ch in self.channels:
@@ -275,6 +277,8 @@ def build_screen(previous: ScreenState, *, identity: Identity, mode: str,
                                 units=units),
         sensors=build_sensors(records, reachable=reachable,
                               previous=previous.sensors, ports=i2c_ports),
+        dins=build_dins(records, reachable=reachable,
+                        previous=previous.dins, history=history, now_s=now),
     )
 
 
@@ -632,3 +636,104 @@ def _gap_t(trace: tuple[float | None, ...],
     if trace and trace[-1] is None:
         return trace_t
     return _push(trace_t, None)
+
+
+# ---- 디지털 입력 J18~J20 (규격 §7.6) -----------------------------------------
+#
+# 🔴 이 셋은 **출력이 아니라 입력**이다(사용자 확정 2026-08-18). 넷리스트
+#    확인 결과 옵토커플러가 커넥터 반대편에 붙고 보드는 그 신호를 읽는다.
+#    그래서 `sol.j18` 같은 설정 항목이 없다 — I2C 처럼 카탈로그에서 시드할
+#    "종류·사용 여부" 자체가 존재하지 않는다. 세 자리는 **보드 리비전이
+#    고정**이므로 `build_dins` 가 설정과 무관하게 항상 깐다.
+
+#: J18~J20 (데이터시트 §5.7, 규격 §7.6).
+DIN_PORTS: tuple[int, ...] = (18, 19, 20)
+
+
+@dataclass(frozen=True)
+class DinState:
+    """디지털 입력 하나. 보드가 옵토 신호를 EXTI 로 읽어 보낸다.
+
+    🔴 `rails`(RailState)와 반대다 — 레일은 **명령**이고 이건 **실측**이다.
+       그런데도 `RailState` 와 같은 화면 어법(`commanded`/`state` +
+       `last_known`)을 쓴다. 이유는 값이 아니라 **상태**(켜짐/꺼짐 둘뿐)
+       이기 때문이다 — 흐름 이력(`trace`)보다 "지금 상태 + 마지막으로
+       알던 것" 쪽이 뜻이 통한다(아래 `build_dins` 판단 참조).
+
+    🔴 `state` 가 `None` 이면 "모른다"다. 두 가지 경우가 있다 —
+       (1) 아직 한 번도 엣지가 온 적이 없다(규격 §7.6 — 상태 변화에만
+       오므로, 막 연결했는데 신호가 한 번도 안 바뀌었으면 지금 상태를
+       모른다), (2) 연결이 끊겼다. 둘 다 화면은 "확인 불가"로 그리되,
+       (1)은 `last_known` 이 비어 있고 (2)는 끊기기 전에 알았다면 채워
+       진다 — `Verification.UNKNOWN` 이 두 경우를 가리지 않는 것과 같은
+       한계이고, `StateHistory` 가 있어야 나머지를 구분할 수 있다.
+    """
+
+    connector: str
+    key: int
+    state: bool | None = None
+    changed_at: int | None = None
+    """마지막으로 상태가 바뀐 시각 — 보드가 찍은 `t`(ms). 한 번도 안
+    바뀌었으면 `None` 이고, 화면은 그 사실을 그대로 말해야 한다.
+
+    🔴 연결이 끊겨도 지우지 않는다. `state` 와 달리 이것은 **과거의
+       사실**이라 지금 모른다고 없던 일이 되지 않는다 — `trace` 를 남기는
+       것과 같은 이유(`build_channels`·`build_sensors` 머리말).
+    """
+    last_known: str = ""
+    """연결이 끊긴 동안 곁들일 문구. `RailPill` 이 쓰는 것과 같은 어법."""
+
+
+def seed_dins() -> tuple[DinState, ...]:
+    """J18~J20 세 자리를 깐다. `empty_channels()` 와 같은 이유(설계 원칙 3)
+    이지만, I2C 의 `seed_sensors()` 와 달리 시드할 설정이 없다 — 이 셋은
+    카탈로그에 아예 없는 항목이라, 채울 수 있는 것은 커넥터 번호뿐이다."""
+    return tuple(DinState(connector=f"J{c}", key=c) for c in DIN_PORTS)
+
+
+def build_dins(records, *, reachable: bool,
+              previous: tuple[DinState, ...] = (),
+              history: StateHistory, now_s: float) -> tuple[DinState, ...]:
+    """`type` 이 `din` 인 레코드를 디지털 입력 카드로 (규격 §7.6).
+
+    🔴 **주기 송신이 아니다** — `build_channels`·`build_sensors` 와 달리
+       "이번에 안 온 것은 지운다"가 아니라 "이번에 안 온 것은 **그대로
+       둔다**"가 맞다. din 은 상태가 바뀔 때만 오므로, 조용한 포트는
+       값이 없는 게 아니라 마지막 상태 그대로다.
+
+    🔴 연결이 끊기면 전원 레일과 같은 결로 다룬다 — 지금 상태는 지우고
+       `StateHistory` 로 "마지막으로 알던 것 (n초 전)"을 곁들인다. 판단:
+       아날로그·I2C 처럼 이력 트레이스를 남기는 대신 이 어법을 고른
+       이유는 din 이 값이 아니라 두 상태뿐인 신호라 레일과 성격이
+       같기 때문이다(위 `DinState` 머리말).
+    """
+    base = {d.key: d for d in (previous or seed_dins())}
+
+    for rec in records or ():
+        if not isinstance(rec, dict) or rec.get("type") != "din":
+            continue
+        cid = rec.get("connector_id")
+        state = rec.get("state")
+        if not isinstance(cid, int) or cid not in base:
+            continue
+        if isinstance(state, bool) or not isinstance(state, int):
+            continue                     # bool 은 int 서브클래스라 별도 취급
+        t = rec.get("t")
+        base[cid] = replace(
+            base[cid], state=bool(state),
+            changed_at=t if isinstance(t, int) else base[cid].changed_at,
+        )
+
+    out: list[DinState] = []
+    for cid in DIN_PORTS:
+        d = base[cid]
+        state = d.state if reachable else None
+        verification = (Verification.VERIFIED
+                        if (reachable and d.state is not None)
+                        else Verification.UNKNOWN)
+        level = Level.OK if d.state else Level.IDLE
+        chip = build_chip_state(history, f"din.{cid}", d.connector,
+                                level, verification, now_s)
+        out.append(replace(d, state=state,
+                           last_known=chip.last_known.text or ""))
+    return tuple(out)

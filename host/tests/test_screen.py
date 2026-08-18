@@ -362,6 +362,35 @@ def test_build_screen_seeds_i2c_cards_from_the_configured_ports():
         "J10", "J11", "J12", "J13", "J14", "J15"}
 
 
+def test_build_screen_always_carries_three_din_cards():
+    """🔴 J18~J20 은 카탈로그에서 오지 않는다(사용자 확정 2026-08-18 —
+    입력이라 `sol.j18` 같은 설정 항목이 없다). `build_screen` 이 항상 세
+    자리를 깐다 — I2C 가 포트를 설정에서 시드하는 것과 대칭이지만, 이건
+    시드할 설정 자체가 없다."""
+    h = StateHistory()
+    state = build_screen(
+        ScreenState(channels=empty_channels()),
+        identity=Identity(port="sim"), mode="RUN", error=None,
+        rail_values={}, records=[], history=h, now_s=0.0,
+    )
+    assert {d.connector for d in state.dins} == {"J18", "J19", "J20"}
+
+
+def test_build_screen_carries_din_records_into_state():
+    h = StateHistory()
+    state = build_screen(
+        ScreenState(channels=empty_channels()),
+        identity=Identity(port="sim"), mode="RUN", error=None,
+        rail_values={}, records=[
+            {"schema_ver": 3, "seq": 1, "t": 2000, "type": "din",
+             "connector_id": 18, "state": 1},
+        ], history=h, now_s=0.0,
+    )
+    (j18,) = [d for d in state.dins if d.connector == "J18"]
+    assert j18.state is True
+    assert j18.changed_at == 2000
+
+
 def test_build_screen_is_pure_enough_to_repeat():
     """🔴 같은 입력으로 두 번 부르면 같은 화면이 나와야 한다.
 

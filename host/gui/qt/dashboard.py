@@ -30,7 +30,9 @@ from host.gui.qt.parts import hairline
 from host.gui.screen import (
     AIN_COUNT,
     CONNECTOR_OFFSET,
+    DIN_PORTS,
     RAILS,
+    DinState,
     ScreenState,
     summarize,
 )
@@ -141,6 +143,78 @@ class RailPill(QFrame):
             self._last.setStyleSheet(
                 f"color: {colour}; font-size: {Font.SIZE_SM}pt;"
             )
+
+
+class DinPill(QFrame):
+    """디지털 입력 하나 (J18~J20, 규격 §7.6). `RailPill` 과 같은 모양이지만
+    **누를 수 없다** — 이것은 보드가 관측한 값이지 사용자가 명령하는 값이
+    아니다. 옵토 신호를 EXTI 로 읽어 보내므로 켜고 끄는 주체가 반대편이다.
+
+    🔴 이 화면에서 유일하게 `Verification.VERIFIED` 가 실제로 채워지는
+       자리다 — 전원 레일은 피드백이 없어 영원히 COMMANDED 지만, din 은
+       보드가 직접 측정한 값이다. 그래서 `rail_label` 이 내는 "정상 ON"
+       문구가 여기서는 거짓말이 아니다.
+    """
+
+    def __init__(self, label: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._name = QLabel(label)
+        self._name.setStyleSheet(f"font-weight: 600; color: {Color.INK};")
+        self._state = QLabel("확인 불가")
+        self._state.setStyleSheet(
+            f"color: {Color.UNKNOWN}; font-size: {Font.SIZE_SM}pt;"
+        )
+        # 🔴 "마지막으로 바뀐 시각" — 보드가 찍은 원시 ms(`t`) 를 그대로
+        #    보여 준다. 사람이 읽는 날짜·시각으로 바꾸지 않는다: time_source
+        #    가 device_clock 이면 이 값은 UTC epoch 이 아니라 부팅 후 경과
+        #    ms 다(규격 §7.1.2). 여기서 임의로 "n초 전" 을 지어내면, GNSS/PPS
+        #    가 들어오기 전까지는 근거 없는 정밀도를 주장하는 것이 된다.
+        self._changed = QLabel("")
+        self._changed.setStyleSheet(
+            f"color: {Color.INK_FAINT}; font-size: {Font.SIZE_SM}pt;"
+        )
+        self._last = QLabel("")
+        self._last.setStyleSheet(
+            f"color: {Color.INK_DIM}; font-size: {Font.SIZE_SM}pt;"
+        )
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(Space.MD, Space.SM, Space.MD, Space.SM)
+        col.setSpacing(1)
+        col.addWidget(self._name)
+        col.addWidget(self._state)
+        col.addWidget(self._changed)
+        col.addWidget(self._last)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._apply_border(Color.LINE)
+
+    def _apply_border(self, colour: str) -> None:
+        self.setStyleSheet(
+            f"DinPill {{ background: {Color.SURFACE};"
+            f" border: 1.5px solid {colour}; border-radius: 16px; }}"
+        )
+
+    def render(self, d: DinState) -> None:
+        if d.state is None:
+            level, verification = Level.IDLE, Verification.UNKNOWN
+        else:
+            level = Level.OK if d.state else Level.IDLE
+            verification = Verification.VERIFIED
+
+        style = chip_style(level, verification)
+        self._apply_border(style.border)
+        text = ("확인 불가" if d.state is None
+                else rail_label(d.state, verification))
+        self._state.setText(text)
+        self._state.setStyleSheet(
+            f"color: {style.border}; font-size: {Font.SIZE_SM}pt;"
+        )
+        self._changed.setText(
+            "바뀐 적 없음" if d.changed_at is None
+            else f"바뀜: t={d.changed_at:,} ms"
+        )
+        self._last.setText(d.last_known)
+        self._last.setVisible(bool(d.last_known))
 
 
 class _Summary(QFrame):
@@ -258,6 +332,24 @@ class Dashboard(QWidget):
         col = QVBoxLayout(self)
         col.setContentsMargins(Space.LG, Space.LG, Space.LG, Space.LG)
         col.setSpacing(Space.SM)
+        # ── 디지털 입력 (규격 §7.6) ──────────────────────────────
+        #
+        # 🔴 J18~J20 은 카탈로그에 없다 — 출력이 아니라 입력이라 "켤 종류·
+        #    사용 여부" 를 설정할 것이 없다(사용자 확정 2026-08-18). I2C 는
+        #    포트 종류에 따라 카드 수가 늘거나 주는데, 이 셋은 **보드
+        #    리비전이 고정**이라 항상 셋이다 — 그래서 I2C 처럼 처음 나타난
+        #    키만 지연 생성하지 않고 여기서 미리 셋 다 만든다(채널 카드와
+        #    같은 방식).
+        self._din_title = SectionTitle("디지털 입력")
+        din_row = QHBoxLayout()
+        din_row.setSpacing(Space.MD)
+        self._din_pills: dict[int, DinPill] = {}
+        for cid in DIN_PORTS:
+            pill = DinPill(f"J{cid}")
+            self._din_pills[cid] = pill
+            din_row.addWidget(pill)
+        din_row.addStretch(1)
+
         # ── I2C 센서 ─────────────────────────────────────────────
         #
         # 🔴 여기서는 자리를 만들지 않는다. 여섯 포트를 항상 세우는 것은
@@ -278,6 +370,10 @@ class Dashboard(QWidget):
         col.addWidget(self._ch_title)
         col.addSpacing(Space.XS)
         col.addLayout(grid, 1)
+        col.addSpacing(Space.SM)
+        col.addWidget(self._din_title)
+        col.addSpacing(Space.XS)
+        col.addLayout(din_row)
         col.addSpacing(Space.SM)
         col.addWidget(self._sensor_title)
         col.addSpacing(Space.XS)
@@ -319,8 +415,15 @@ class Dashboard(QWidget):
             #    언젠가 갈리고, 그때 어느 쪽을 믿어야 할지 알 수 없다.
             card.set_state(ch.level, ch.verification)
 
+        self._render_dins(state)
         self._render_sensors(state)
         self._summary.render(state)
+
+    def _render_dins(self, state: ScreenState) -> None:
+        for d in state.dins:
+            pill = self._din_pills.get(d.key)
+            if pill is not None:
+                pill.render(d)
 
     def _render_sensors(self, state: ScreenState) -> None:
         """🔴 카드를 매번 새로 만들지 않는다. 텔레메트리는 초당 열 번 오는데
