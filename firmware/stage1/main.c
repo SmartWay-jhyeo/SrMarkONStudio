@@ -293,8 +293,13 @@ int main(void)
      *    (VREFP). 디지털(DVDD pin16)만 V3V3 상시다. WS2812(J21~J24)도
      *    같은 레일이다. */
     mk_railctl_init(&s_rails, mk_rails_set, NULL);
-    mk_sol_init();
-    mk_solctl_init(&s_sol, mk_sol_set, NULL);
+    /* 🔴 J18~J20 은 입력이다(사용자 확정 2026-08-18) — mk_solctl_init() 이
+     *    큐를 먼저 비운 뒤에 mk_sol_init() 을 부른다. mk_sol_init() 은 핀을
+     *    열자마자 실제 레벨을 동기적으로 읽어 mk_solctl_prime() 으로 초기
+     *    상태를 세우므로, 순서가 바뀌면 prime() 이 아직 초기화 안 된
+     *    구조체에 쓰게 된다. */
+    mk_solctl_init(&s_sol);
+    mk_sol_init(&s_sol);
     mk_ws2812_io_init();
 
     /* 🔴 I2C 버스 셋. 카탈로그(mk_cfgtable 의 i2c*.kind·addr)에는 이미
@@ -314,7 +319,9 @@ int main(void)
     mk_telem_init(&s_telem, &s_cfg, &s_ads, fields, n_fields,
                   DEVICE_ID);
     mk_telem_attach_i2c(&s_telem, &s_i2c);
+    mk_telem_attach_sol(&s_telem, &s_sol);
     mk_hostlink_attach_rails(&link, &s_rails);
+    mk_hostlink_attach_sol(&link, &s_sol);
 
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;
@@ -346,12 +353,12 @@ int main(void)
         sync_channels(&s_ads, &s_cfg, now);
         sync_rails(&s_rails, &s_cfg, now);
 
-        /* 🔴 디지털 출력도 같은 이유로 매 바퀴 민다. 설정이 바뀐 것을
-         *    알아챌 다른 통로가 없다. 바뀐 채널만 쓰므로 싸다.
-         *
-         *    이것이 없던 동안 GUI 의 J18~J20 스위치는 저장까지 되면서
-         *    핀은 그대로였다 — 화면이 거짓말을 하는 상태였다. */
-        mk_solctl_tick(&s_sol, &s_cfg);
+        /* 🔴 디지털 입력도 매 바퀴 민다 — ISR 이 큐에 쌓아 둔 엣지를
+         *    비우고 디바운스를 진행한다. `sol.debounce_ms` 를 여기서
+         *    직접 읽으므로(mk_solctl_tick 내부) 설정이 바뀐 것을 알아챌
+         *    다른 통로가 필요 없다. mk_telem_tick() 이 그 뒤에 확정된
+         *    레코드를 mk_solctl_take() 로 꺼내 din 으로 내보낸다. */
+        mk_solctl_tick(&s_sol, &s_cfg, now);
         sync_leds(&s_cfg, now);
 
         /* 🔴 I2C 도 매 바퀴 민다. 한 바퀴에 포트 하나만 나아가므로

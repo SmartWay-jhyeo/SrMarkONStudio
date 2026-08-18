@@ -2,6 +2,7 @@
 
 #include "mk_ads1256.h"
 #include "mk_railctl.h"
+#include "mk_solctl.h"
 #include "mk_json.h"
 
 #include <string.h>
@@ -274,6 +275,11 @@ void mk_hostlink_attach_rails(MkHostlink *h, struct MkRailCtl *rails)
     h->rails = rails;
 }
 
+void mk_hostlink_attach_sol(MkHostlink *h, struct MkSolCtl *sol)
+{
+    h->sol = sol;
+}
+
 static void on_stat(MkHostlink *h, int64_t now_ms)
 {
     if (h->cfg == NULL) {
@@ -307,15 +313,20 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
      *
      *      머리(schema_ver..uptime_ms, 최악값)      178
      *      rails                                     47
+     *      din 3개(connector_id·state 고정)          97
      *      queues 7개 (ch/depth/peak/drops 최댓값)   397
      *      + 줄바꿈 + NUL                              2
      *      ---------------------------------------------
-     *                                               624
+     *                                               721
      *
      *    처음에 400 으로 잡아 두었다가 되돌림 검사에서 발견했다. 꺼진 채널을
      *    거르는 코드를 지웠더니 $STAT 이 ERR,BUSY 로 떨어졌는데, 그것은
      *    **7채널을 다 켜면 정상 동작에서도 그렇게 된다**는 뜻이었다.
      *    사용자가 채널을 다 켜는 순간 진단 창구가 닫히는 셈이다.
+     *
+     *    din 은 항상 3개 고정(J18~J20)이라 채널 수와 무관하게 더해진다.
+     *    버퍼를 768 로 두면 여유가 47 바이트뿐이라 넉넉하지 않다 — 896 으로
+     *    올려 둔다.
      *
      *    이 줄은 $ 프레임이 아니라 NDJSON 이라 MK_LINE_MAX(192)의 제약을
      *    받지 않는다. 그쪽은 명령·SACK 의 payload 한도다(규격 §3). */
@@ -331,7 +342,20 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         rs.v5    = (uint8_t)mk_railctl_is_on(h->rails, MK_RAIL_5V);
     }
 
-    char body[768];
+    /* 🔴 din 은 rails 와 반대로 실측이다(규격 §7.4·§7.6) — 설정표가 아니라
+     *    mk_solctl 이 EXTI 로 읽은 값을 그대로 싣는다. 안 붙어 있으면
+     *    빈 배열이다. */
+    MkDinState ds[MK_SOL_COUNT];
+    size_t n_din = 0;
+    if (h->sol != NULL) {
+        for (int c = 0; c < MK_SOL_COUNT; c++) {
+            ds[n_din].connector_id = (uint16_t)mk_sol_connector_of((MkSolCh)c);
+            ds[n_din].state        = (uint8_t)mk_solctl_is_on(h->sol, (MkSolCh)c);
+            n_din++;
+        }
+    }
+
+    char body[896];
     int n = mk_cfgwire_stat(
         now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
@@ -342,6 +366,7 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
          *    3단계에서 시간 소스가 붙으면 여기가 바뀐다. */
         "device_clock", 0u,
         &rs,
+        n_din > 0 ? ds : NULL, n_din,
         n_q > 0 ? qs : NULL, n_q, body, sizeof body);
 
     if (!emit_json(h, body, sizeof body, n)) {

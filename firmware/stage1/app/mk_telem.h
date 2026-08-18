@@ -16,6 +16,7 @@
 #include "mk_cfgwire.h"
 #include "mk_config.h"
 #include "mk_i2c.h"
+#include "mk_solctl.h"
 
 /* 한 줄을 내보낸다. 줄바꿈은 이미 붙어 있다. */
 typedef void (*MkTelemEmit)(void *ctx, const char *line, size_t len);
@@ -37,6 +38,7 @@ typedef struct {
     size_t            n_fields;
     const char       *device_id;
     MkI2c            *i2c;                  /* 없으면 NULL — ain 만 낸다 */
+    MkSolCtl         *sol;                  /* 없으면 NULL — din 을 안 낸다 */
 
     /* 규격 §7.1 — 레코드마다 1씩 오른다. 호스트가 누락을 검출한다. */
     uint32_t          seq;
@@ -52,6 +54,10 @@ void mk_telem_init(MkTelem *t, MkConfig *cfg, MkAds *ads,
 /* I2C 층을 물린다. 🔴 seq 와 tx.fields 를 ain 과 나눠 쓰기 위해서다.
  *    따로 내보내면 두 곳이 갈린다 (규격 §7.5). */
 void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c);
+
+/* 디지털 입력(J18~J20) 층을 물린다. 붙이지 않으면 `din` 을 내지 않는다.
+ * i2c 와 같은 이유로 seq·tx.fields 를 나눠 쓴다 (규격 §7.6). */
+void mk_telem_attach_sol(MkTelem *t, MkSolCtl *sol);
 
 /* 전송 주기가 됐으면 큐를 비워 내보낸다. 반환은 내보낸 줄 수.
  *

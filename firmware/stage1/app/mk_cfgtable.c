@@ -3,17 +3,20 @@
 #include <string.h>
 
 #include "mk_ws2812.h"      /* MK_LED_COUNT — 정의는 저쪽이 들고 있다 */
-#include "mk_solctl.h"      /* MK_SOL_COUNT — 정의는 저쪽이 들고 있다 */
 #include "mk_i2c.h"         /* MK_I2C_COUNT · 버스 표 — 정의는 저쪽이 들고 있다 */
 
 /* 이 보드가 가진 것들 (데이터시트 §5).
- *   J18~J20  디지털 출력 3
+ *   J18~J20  디지털 입력 3 — 카탈로그에는 sol.debounce_ms 하나만 남는다
+ *            (사용자 확정 2026-08-18. "켜라/꺼라" 가 성립하지 않는 입력
+ *            이라, 남는 설정은 디바운스 시간뿐이다 — 아래 add_sol() 참고)
  *   J21~J24  WS2812 체인 — 개수·밝기 + 램프마다 R·G·B
  *   J10~J15  I2C 6포트 — 버스·사용·종류·주소·주기
  *
- * 🔴 MK_LED_COUNT 도 MK_SOL_COUNT 도 MK_I2C_COUNT 도 여기 다시 적지
- *    않는다. 저쪽이 핀을 내는 층이라, 두 곳에 적으면 카탈로그가 말하는
- *    개수와 실제로 움직이는 핀 수가 갈린다. */
+ * 🔴 MK_LED_COUNT 도 MK_I2C_COUNT 도 여기 다시 적지 않는다. 저쪽이 핀을
+ *    내는 층이라, 두 곳에 적으면 카탈로그가 말하는 개수와 실제로 움직이는
+ *    핀 수가 갈린다. sol 은 이제 채널 수와 무관하게 항목이 하나뿐이라
+ *    MK_SOL_COUNT 를 끌어오지 않는다(app/mk_solctl.h 가 그 상수를 들고
+ *    있다). */
 
 /* I2C 포트에 꽂을 수 있는 센서 **종류**.
  *
@@ -29,9 +32,10 @@ static const char *const I2C_KIND_LABELS[] = {
     "없음", "조도", "온습도", "적외 온도", "방수 온도"
 };
 
-/* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 3 + led 3+3×4 + i2c 5×6 */
+/* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 1(디바운스) + led 3+3×4
+ * + i2c 5×6 */
 #define ITEM_COUNT   (1 + 3 + 4 + 2 + MK_AIN_COUNT * 5 \
-                      + MK_SOL_COUNT \
+                      + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 5)
 
@@ -306,31 +310,33 @@ static size_t add_ain(size_t i)
     return i;
 }
 
-/* 디지털 출력 J18~J20. */
+/* 디지털 입력 J18~J20. */
 static size_t add_sol(size_t i)
 {
-    /* ── 디지털 출력 J18~J20 (데이터시트 §5.7) ───────────────────────
+    /* ── 디지털 입력 J18~J20 (데이터시트 §5.7, 사용자 확정 2026-08-18) ──
      *
-     * 🔴 MCU GPIO 가 커넥터에 직결이다 — 버퍼도 직렬저항도 클램프도 없다.
-     *    핀당 20 mA 가 상한이라 밸브를 직접 못 구동하고 외부 옵토커플러/
-     *    드라이버 모듈이 반드시 붙는다. 그 사실을 note 로 실어 화면이
-     *    조작 옆에 띄우게 한다.
+     * 🔴 출력이 아니라 입력이다. 넷리스트 확인 결과 커넥터 pin1 이 MCU
+     *    핀에 직결이고 사이에 부품이 없다 — 옵토커플러가 커넥터 반대편
+     *    (외부)에 붙고, 보드는 그 신호를 읽는다. "켜라/꺼라" 가 성립하지
+     *    않으므로 sol.j18~sol.j20 은 카탈로그에 없다. 지금 상태는 규격
+     *    §7.6 의 `din` 텔레메트리와 `$STAT` 의 `din` 배열로 온다.
      *
-     * 🔴 보드는 3채널이지만 하우징 설계는 2채널로 확정됐다. 남는 한 채널을
-     *    감추지 않는다 — 보드에 있는 것은 보드가 말한다. */
-    static const char *const SOL_KEYS[MK_SOL_COUNT] = {
-        "sol.j18", "sol.j19", "sol.j20"
-    };
-    static const char *const SOL_LABELS[MK_SOL_COUNT] = {
-        "J18 출력", "J19 출력", "J20 출력"
-    };
-    for (int s = 0; s < MK_SOL_COUNT; s++) {
-        s_items[i] = (MkCfgItem){
-            .key = SOL_KEYS[s], .group = "sol", .vtype = MK_VT_BOOL,
-            .out = 1, .label = SOL_LABELS[s],
-            .note = "외부 옵토·드라이버 필요 — 핀당 20 mA 가 상한이다" };
-        i++;
-    }
+     * 🔴 남는 것은 디바운스 시간뿐이다. 옵토 접점이 흔들리는 정도는
+     *    커넥터마다 물리는 외부 장치에 따라 달라질 수 있어, 펌웨어
+     *    상수로 고정하지 않고 현장에서 조정할 수 있게 카탈로그에
+     *    남긴다. `out` 이 아니다 — 켜고 끄는 출력이 아니라 필터 값이라
+     *    TEST 이탈 때 되돌릴 "출력" 이 없다.
+     *
+     * 🔴 값·라벨·note·범위가 시뮬레이터(tools/simulator/config_store.py
+     *    의 sol.debounce_ms)와 한 글자도 다르면 안 된다 —
+     *    crosscheck_cfgtable.py 가 대조한다. */
+    s_items[i] = (MkCfgItem){
+        .key = "sol.debounce_ms", .group = "sol", .vtype = MK_VT_U16,
+        .min = 0, .max = 1000, .has_min = 1, .has_max = 1, .unit = "ms",
+        .label = "디바운스",
+        .note = "이보다 짧게 흔들리는 신호는 상태 변화로 보지 않는다" };
+    s_items[i].def.u = 5;
+    i++;
     return i;
 }
 

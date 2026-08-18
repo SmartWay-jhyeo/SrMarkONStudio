@@ -198,11 +198,49 @@ static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
     return mk_json_end(&j);
 }
 
+/* din 레코드 조립 (규격 §7.6). **필드 순서는 시뮬레이터 build_din_record 와
+ * 같게** 둔다 (`schema_ver` `seq` `t` `type` `connector_id` `state`
+ * `device_id` `time_source` `time_quality`). */
+static int build_din_record(MkTelem *t, const MkSolOut *o,
+                            char *out, size_t cap)
+{
+    uint32_t mask = cfg_u32(t->cfg, "tx.fields", 0u);
+
+    MkJson j;
+    mk_json_begin(&j, out, cap);
+    mk_json_u32(&j, "schema_ver", 3u);
+    mk_json_u32(&j, "seq", t->seq);
+    mk_json_i64(&j, "t", o->t_ms);
+    mk_json_str(&j, "type", "din");
+
+    /* 🔴 connector_id·state 는 마스크로 끌 수 없다 (규격 §7.6) — 둘이
+     *    빠지면 레코드가 아무 말도 안 한다(i2c 의 quantity·value 와
+     *    같은 이유). */
+    mk_json_u32(&j, "connector_id", (uint32_t)o->connector_id);
+    mk_json_u32(&j, "state", o->state);
+
+    if (field_on(t, mask, "device_id")) {
+        mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
+    }
+    if (field_on(t, mask, "time_source")) {
+        mk_json_str(&j, "time_source", "device_clock");
+    }
+    if (field_on(t, mask, "time_quality")) {
+        mk_json_u32(&j, "time_quality", 0u);
+    }
+    return mk_json_end(&j);
+}
+
 /* ---- 주기 처리 ---------------------------------------------------------- */
 
 void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c)
 {
     t->i2c = i2c;
+}
+
+void mk_telem_attach_sol(MkTelem *t, MkSolCtl *sol)
+{
+    t->sol = sol;
 }
 
 int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
@@ -241,6 +279,30 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
             body[len + 1] = '\0';
             emit(ctx, body, (size_t)len + 1u);
             sent_i2c++;
+        }
+    }
+
+    /* 🔴 din 도 i2c 와 같은 자리, 같은 방식이다 — `tx.period_ms` 를
+     *    기다리지 않는다. 상태 변화가 곧 이벤트라 즉시 내보내지 않으면
+     *    "언제 들어왔나" 가 다음 주기까지 묻힌다(규격 §7.6). 같은 `seq`,
+     *    같은 `tx.fields` 마스크를 쓴다.
+     *
+     *    out 이 채널마다 한 바퀴에 최대 하나(MK_SOL_COUNT=3)라
+     *    MK_TELEM_MAX_LINES(16)를 절대 넘지 않는다 — mk_i2c 처럼
+     *    "다 비우지 않으면 다음 tick 이 dropped 로 밀어낸다"는 계약이
+     *    걱정할 계제가 아니다. */
+    int sent_din = 0;
+    if (t->sol != NULL) {
+        MkSolOut o;
+        while (sent_din < MK_TELEM_MAX_LINES && mk_solctl_take(t->sol, &o)) {
+            char body[MK_LINE_MAX + 8];
+            t->seq++;
+            int len = build_din_record(t, &o, body, sizeof body);
+            if (len <= 0 || (size_t)len + 2u > sizeof body) { continue; }
+            body[len] = '\n';
+            body[len + 1] = '\0';
+            emit(ctx, body, (size_t)len + 1u);
+            sent_din++;
         }
     }
 
@@ -294,5 +356,5 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
     }
     /* 다음에는 그다음 채널부터 본다. */
     t->next_ch = (t->next_ch + 1) % MK_ADS_CHANNELS;
-    return sent + sent_i2c;
+    return sent + sent_i2c + sent_din;
 }

@@ -161,6 +161,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
                     const MkRailState *rails,
+                    const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
                     char *out, size_t cap)
 {
@@ -192,6 +193,17 @@ int mk_cfgwire_stat(int64_t now_ms,
     mk_json_bool(&j, "v14v9", rails != NULL ? rails->v14v9 : 0);
     mk_json_bool(&j, "v5", rails != NULL ? rails->v5 : 0);
     mk_json_object_end(&j);
+
+    /* 🔴 `din` 은 rails 와 달리 실측이다(규격 §7.4·§7.6) — 보드가 EXTI 로
+     *    핀을 직접 읽는다. 없으면(NULL) 빈 배열이다. */
+    mk_json_array_begin(&j, "din");
+    for (size_t i = 0; i < n_din; i++) {
+        mk_json_array_object_begin(&j);
+        mk_json_u32(&j, "connector_id", din[i].connector_id);
+        mk_json_u32(&j, "state", din[i].state);
+        mk_json_array_object_end(&j);
+    }
+    mk_json_array_end(&j);
 
     mk_json_array_begin(&j, "queues");
     for (size_t i = 0; i < n_queues; i++) {

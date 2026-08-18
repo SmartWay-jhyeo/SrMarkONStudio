@@ -397,6 +397,84 @@ static void test_tick_drains_every_pending_i2c_record_in_one_call(void)
     CHECK(i2c == 2, "한 바퀴에 쌓인 i2c 레코드 둘이 한 번의 tick 으로 다 나간다");
 }
 
+/* ---- 디지털 입력 din (규격 §7.6) -----------------------------------------
+ *
+ * 🔴 mk_solctl_tick() 의 디바운스를 다시 거치지 않는다 — i2c 시험의
+ *    emit_i2c() 와 같은 방식으로 MkSolCtl.out 에 직접 채운다. 여기서
+ *    보는 것은 오직 mk_telem 이 그것을 어떻게 줄로 만드는가다. 디바운스
+ *    자체는 tests/test_sol.c 의 몫이다. */
+
+static void test_din_records_share_the_sequence_with_ain(void)
+{
+    setup();
+    static MkSolCtl SOL;
+    mk_solctl_init(&SOL);
+    mk_telem_attach_sol(&T, &SOL);
+    mk_queue_push(mk_ads_queue(&ADS, 0), 500, 4000000);   /* ain 쪽에도 한 건 */
+
+    SOL.out[0] = (MkSolOut){ .connector_id = 18u, .state = 1u, .t_ms = 1000 };
+    SOL.n_out = 1;
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    int ain = 0, din = 0;
+    uint32_t last_seq = 0;
+    int monotonic = 1;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"ain\"")) { ain++; }
+        if (strstr(LINES[k], "\"type\":\"din\"")) { din++; }
+        uint32_t seq = parse_seq(LINES[k]);
+        if (k > 0 && seq != last_seq + 1u) { monotonic = 0; }
+        last_seq = seq;
+    }
+    CHECK(ain > 0 && din > 0, "두 종류가 함께 나간다");
+    CHECK(monotonic, "seq 가 종류를 가리지 않고 1씩 오른다");
+}
+
+static void test_din_record_shape(void)
+{
+    setup();
+    static MkSolCtl SOL;
+    mk_solctl_init(&SOL);
+    mk_telem_attach_sol(&T, &SOL);
+
+    SOL.out[0] = (MkSolOut){ .connector_id = 20u, .state = 0u, .t_ms = 4242 };
+    SOL.n_out = 1;
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK(N == 1, "레코드 하나가 나간다");
+    if (N == 1) {
+        CHECK_HAS(LINES[0], "\"type\":\"din\"", "type");
+        CHECK_HAS(LINES[0], "\"t\":4242", "t 는 엣지를 잡은 시각(o->t_ms)");
+        CHECK_HAS(LINES[0], "\"connector_id\":20", "connector_id");
+        CHECK_HAS(LINES[0], "\"state\":0", "state");
+    }
+}
+
+static void test_din_is_not_gated_by_tx_period(void)
+{
+    /* 🔴 i2c 와 같은 이유 — 상태 변화는 이벤트라 tx.period_ms 를 기다리면
+     *    "언제 들어왔나" 가 다음 주기까지 묻힌다(규격 §7.6). 주기를 크게
+     *    두고도 즉시 나가는지 본다. */
+    setup();
+    set_u32("tx.period_ms", 10000u);
+    static MkSolCtl SOL;
+    mk_solctl_init(&SOL);
+    mk_telem_attach_sol(&T, &SOL);
+
+    SOL.out[0] = (MkSolOut){ .connector_id = 19u, .state = 1u, .t_ms = 10 };
+    SOL.n_out = 1;
+
+    mk_telem_tick(&T, 10, sink, NULL);   /* 주기가 한참 남았다 */
+
+    int din = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"din\"")) { din++; }
+    }
+    CHECK(din == 1, "tx.period_ms 를 기다리지 않고 즉시 나간다");
+}
+
 /* ---- 카탈로그 덤프 ------------------------------------------------------ */
 
 static void emit_samples(void)
@@ -475,6 +553,9 @@ int main(int argc, char **argv)
     test_disabled_channel_is_silent();
     test_i2c_records_share_the_sequence_with_ain();
     test_start_failure_is_rate_limited_and_emits_null();
+    test_din_records_share_the_sequence_with_ain();
+    test_din_record_shape();
+    test_din_is_not_gated_by_tx_period();
     test_tick_drains_every_pending_i2c_record_in_one_call();
 
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);

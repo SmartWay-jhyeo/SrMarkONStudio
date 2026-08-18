@@ -74,6 +74,10 @@ typedef struct {
      * 싣는다. 없으면 전부 false 다 — 설정표를 대신 읽지 않는다. */
     struct MkRailCtl *rails;
 
+    /* 디지털 입력 J18~J20. 붙어 있으면 $STAT 의 `din` 이 **실측 상태**를
+     * 싣는다(규격 §7.4). 없으면 빈 배열이다. */
+    struct MkSolCtl *sol;
+
     /* 제어 모드 (규격 §6.4). `mk_hostlink_tick` 이 CONFIG->RUN 전이를
      * 보고 스스로 ACTIVE 로 되돌린다. */
     MkCtlMode   ctl_mode;
@@ -104,6 +108,11 @@ void mk_hostlink_attach_ads(MkHostlink *h, struct MkAds *ads);
 
 struct MkRailCtl;
 void mk_hostlink_attach_rails(MkHostlink *h, struct MkRailCtl *rails);
+
+/* 디지털 입력 J18~J20 을 붙인다. 부르지 않으면 $STAT 의 `din` 이 빈
+ * 배열이다. */
+struct MkSolCtl;
+void mk_hostlink_attach_sol(MkHostlink *h, struct MkSolCtl *sol);
 
 /* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
  *

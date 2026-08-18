@@ -7,6 +7,7 @@
 #include "../app/mk_hostlink.h"
 #include "../app/mk_framing.h"
 #include "../app/mk_ads1256.h"
+#include "../app/mk_solctl.h"
 
 static int failures = 0;
 
@@ -718,6 +719,51 @@ static void test_stat_fits_with_all_seven_channels(void)
     }
 }
 
+static void test_stat_without_sol_reports_empty_din(void)
+{
+    /* 🔴 queues 와 같은 규칙 — 안 붙어 있으면 0 을 채워 보내지 않고 빈
+     *    배열이다. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0], "\"din\":[]") != NULL,
+              "sol 이 안 붙어 있으면 빈 배열");
+    }
+}
+
+static void test_stat_reports_real_din_state(void)
+{
+    /* 🔴 din 은 rails 와 반대로 실측이다(규격 §7.4·§7.6) — mk_solctl 이
+     *    EXTI 로 읽은 값을 그대로 싣는다. mk_solctl_prime() 으로 부팅
+     *    시각의 실제 핀 상태를 흉내 낸다(bsp/mk_sol.c 가 하는 일과 같다).
+     *
+     *    raw LOW(0) = 신호 있음 = state 1(켜짐) — 극성 반전은 mk_solctl.c
+     *    한 곳에서만 하므로 이 시험이 그 결과만 본다. */
+    MkSolCtl sol;
+    MkHostlink h; Sink s;
+
+    setup_cfg(&h, &s);
+    mk_solctl_init(&sol);
+    mk_solctl_prime(&sol, MK_SOL_J18, 0, 0);   /* raw LOW  -> state 1 */
+    mk_solctl_prime(&sol, MK_SOL_J19, 1, 0);   /* raw HIGH -> state 0 */
+    mk_solctl_prime(&sol, MK_SOL_J20, 1, 0);
+    mk_hostlink_attach_sol(&h, &sol);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"din\":[{\"connector_id\":18,\"state\":1},"
+                     "{\"connector_id\":19,\"state\":0},"
+                     "{\"connector_id\":20,\"state\":0}]") != NULL,
+              "din 이 실측 상태를 커넥터 번호 순으로 싣는다");
+    }
+}
+
 static void test_stat_without_an_ads_reports_no_queues(void)
 {
     /* 🔴 0 을 채워 보내지 않는다. "채널이 없다" 와 "채널이 있는데 유실이
@@ -1019,6 +1065,8 @@ int main(int argc, char **argv)
     test_stat_works_in_run_mode();
     test_stat_reports_real_queue_state();
     test_stat_fits_with_all_seven_channels();
+    test_stat_without_sol_reports_empty_din();
+    test_stat_reports_real_din_state();
     test_stat_without_an_ads_reports_no_queues();
     test_stat_unsupported_without_a_store();
     test_cfg_unknown_subcommand();

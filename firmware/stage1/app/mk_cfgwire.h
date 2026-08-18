@@ -65,6 +65,16 @@ typedef struct {
     uint32_t drops;
 } MkQueueStat;
 
+/* J18~J20 디지털 입력의 **지금 상태** (규격 §7.4·§7.6).
+ *
+ * 🔴 `rails` 와 반대로 이것은 실측이다 — 보드가 EXTI 로 핀을 직접 읽는다.
+ *    상태 변화는 §7.6 의 `din` 텔레메트리로도 오지만 그것은 바뀔 때만
+ *    오므로, 막 연결한 호스트는 `$STAT` 으로 지금 상태를 채운다. */
+typedef struct {
+    uint16_t connector_id;   /* 18·19·20 */
+    uint8_t  state;          /* 이미 반전된 값 — 1 = 켜짐(신호 있음) */
+} MkDinState;
+
 /* 🔴 `time_source`·`time_quality` 는 규격 §7.4 예시에는 없지만 시뮬레이터와
  *    함께 낸다. 규격 §7.1.2 대로 `t` 는 시간 소스에 따라 UTC epoch 이기도
  *    하고 부팅 후 경과 ms 이기도 한데, 명령 응답에는 필드 마스크가 없어
@@ -73,11 +83,16 @@ typedef struct {
 /* 🔴 설정표를 받지 않는다. 예전에는 여기서 pwr.* 를 읽어 rails 를 만들었는데,
  *    그것이 설계 원칙 4 위반이었다 — 설정은 사용자가 원하는 것이지 보드가
  *    낸 것이 아니다. 이제 rails 를 인자로 받는다. */
+/* 🔴 `din` 도 rails 와 같은 계약이다 — 보드가 **실제로 읽은 것**을 싣는다.
+ *    없으면(NULL) 빈 배열이다. 정상 경로에서는 항상 MK_SOL_COUNT(3)개를
+ *    받는다 — 커넥터가 있으면 상태는 항상 있다(레일과 달리 "아직 안 낸"
+ *    중간 상태가 없다). */
 int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *ctl_mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
                     const MkRailState *rails,
+                    const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
                     char *out, size_t cap);
 
