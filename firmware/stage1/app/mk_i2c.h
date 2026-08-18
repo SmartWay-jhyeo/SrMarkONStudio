@@ -66,6 +66,20 @@ typedef struct {
 /* 🔴 값이 둘인 종류는 온습도뿐이다 (규격 §7.5.1). 그래서 2 다. */
 #define MK_I2C_VALUES_MAX  2
 
+/* 🔴 종류 → 양 목록 (규격 §7.5.1 표). 드라이버 유무와 무관하게 항상 있다 —
+ *    양은 종류가 정하지 드라이버가 정하지 않는다. 실패(status 1·2)·
+ *    미지원(status 3) 레코드도 quantity 를 실어야 한다 — 없으면
+ *    host/gui/screen.py 가 그 레코드를 통째로 버린다(`if not quantity:
+ *    continue`), 화면은 마지막 값을 붙든 채로 멈추고 "지원 안 함" 도
+ *    영영 안 뜬다 (검토 지적 C1, 2026-08-18).
+ *
+ *    out[MK_I2C_VALUES_MAX] 를 채우고 채운 개수를 돌려준다. 모르는
+ *    종류(카탈로그에 없는 값 포함 MK_I2C_KIND_NONE)는 0.
+ *
+ *    시뮬레이터(tools/simulator/config_store.py 의 I2C_QUANTITIES)와 같은
+ *    표여야 한다 — crosscheck_i2c_quantities.py 가 대조한다. */
+int mk_i2c_kind_quantities(uint8_t kind, const char *out[MK_I2C_VALUES_MAX]);
+
 typedef struct {
     uint8_t  kind;               /* MkI2cKind */
     uint8_t  default_addr;       /* 설정의 addr 이 0(미지정)일 때 */
@@ -82,7 +96,12 @@ typedef enum {
     MK_I2C_START,
     MK_I2C_WARMUP,
     MK_I2C_READY,
-    MK_I2C_FAULT                 /* 지원 안 하는 종류 · 시작 실패 */
+    /* 지원 안 하는 종류(드라이버 없음 — 절대 회복 안 됨, 종류를 바꿔야
+     * 벗어난다) · 시작 실패(드라이버는 있는데 응답이 없음 — period_ms
+     * 마다 재시도한다, C2). 둘 다 같은 상태를 쓰는 이유는 "버스에
+     * 아무것도 없다" 는 사실이 같고 화면에 보이는 status(3 vs 1/2)만
+     * 다르기 때문이다. */
+    MK_I2C_FAULT
 } MkI2cState;
 
 typedef struct {
@@ -94,8 +113,19 @@ typedef struct {
     int64_t     t_ms;
 } MkI2cOut;
 
-/* 내보낼 것을 담아 두는 자리. 한 바퀴에 포트 하나만 읽으므로 2 면 넉넉하다. */
-#define MK_I2C_OUT_MAX  MK_I2C_VALUES_MAX
+/* 🔴 내보낼 것을 담아 두는 자리 — 2 로는 모자란다 (검토 지적 I1).
+ *
+ *    READY 에서 실제로 버스를 두드리는 포트는 한 바퀴에 하나뿐이지만,
+ *    FAULT(드라이버 없음 · status=3)는 버스를 안 건드려 순회를 안 멈춘다
+ *    — 한 바퀴 안에서 **포트 여섯 전부**가 gate 를 동시에 통과할 수
+ *    있다(부팅 직후 last_read_ms 가 다 0이라 그렇다). 종류마다 최대
+ *    MK_I2C_VALUES_MAX(2, 온습도)줄을 내므로 최악은
+ *    MK_I2C_COUNT × MK_I2C_VALUES_MAX 다.
+ *
+ *    mk_telem.c 의 MK_TELEM_MAX_LINES(16)보다 작아야 배출이 한 바퀴 안에
+ *    끝난다는 그쪽 가정이 깨지지 않는다 — 지금 6×2=12 < 16 이라 괜찮지만,
+ *    MK_I2C_COUNT 나 MK_I2C_VALUES_MAX 가 늘면 그 가정도 다시 본다. */
+#define MK_I2C_OUT_MAX  (MK_I2C_COUNT * MK_I2C_VALUES_MAX)
 
 typedef struct {
     MkI2cState state;
@@ -125,14 +155,14 @@ void mk_i2c_init(MkI2c *i, const MkI2cIo *io);
 
 /* 한 바퀴에 포트 **하나**만 나아간다. 매 루프 불러도 된다.
  *
- * 🔴 out 버퍼는 MK_I2C_OUT_MAX(2)칸뿐이다. 정상 경로(READY 에서 값을
- *    읽음)는 한 바퀴에 버스를 건드리는 포트가 하나뿐이고 그 포트가 내는
- *    값도 최대 2개(온습도)라 절대 안 넘친다. 하지만 **지원 안 하는
- *    종류(FAULT)는 버스를 건드리지 않으므로 한 바퀴 안에서 여러 포트가
- *    동시에 status=3 을 낼 수 있다** — 그래서 이 함수를 부른 직후에는
- *    mk_i2c_take() 로 **반드시 완전히** 비워야 한다. 안 비우고 다음
- *    바퀴를 돌리면 새 레코드가 자리가 없어 조용히 버려지고 dropped 만
- *    올라간다. */
+ * 🔴 out 버퍼는 MK_I2C_OUT_MAX 칸이다(위 정의 참고). 정상 경로(READY 에서
+ *    값을 읽음)는 한 바퀴에 버스를 건드리는 포트가 하나뿐이고 그 포트가
+ *    내는 값도 최대 2개(온습도)라 절대 안 넘친다. 하지만 **지원 안 하는
+ *    종류(드라이버 없음)는 버스를 건드리지 않으므로 한 바퀴 안에서
+ *    포트 여섯 전부가 동시에 status=3 을 낼 수 있다** — 그래서 이 함수를
+ *    부른 직후에는 mk_i2c_take() 로 **반드시 완전히** 비워야 한다. 안
+ *    비우고 다음 바퀴를 돌리면 새 레코드가 자리가 없어 조용히 버려지고
+ *    dropped 만 올라간다. */
 void mk_i2c_tick(MkI2c *i, MkConfig *cfg, int64_t now_ms);
 
 /* 내보낼 것이 있으면 1 을 돌려주고 out 을 채운다. 없으면 0.
