@@ -293,6 +293,16 @@ def test_group_labels_are_korean(form):
     assert group_label("adc") == "ADC"
 
 
+def test_sol_group_label_matches_the_boards_actual_direction(form):
+    """🔴 J18~J20 은 입력이다(사용자 확정 2026-08-18, 넷리스트 확인). 대시보드는
+    이미 "디지털 입력" 이라고 말한다(host/gui/screen.py, qt/dashboard.py의
+    SectionTitle) — 설정 화면이 같은 커넥터를 "디지털 출력" 이라고 부르면
+    사용자에게 보이는 유일한 방향 거짓말이 된다. 그 문구가 다시 새어 들어오면
+    이 시험이 잡는다."""
+    assert group_label("sol") == "디지털 입력"
+    assert group_label("sol") != "디지털 출력"
+
+
 def test_bool_values_are_wire_text(form):
     """전선에 나갈 형태로 들고 있는다 — `True` 가 아니라 `true`."""
     row = form.row("pwr.24v")

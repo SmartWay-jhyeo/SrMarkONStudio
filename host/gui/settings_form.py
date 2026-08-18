@@ -255,7 +255,7 @@ GROUP_LABELS = {
     "pwr": "전원",
     "adc": "ADC",
     "ain": "아날로그 입력",
-    "sol": "디지털 출력",
+    "sol": "디지털 입력",
     "led": "LED",
     "i2c": "I2C 센서",
 }
