@@ -219,7 +219,14 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
      * 🔴 mk_i2c_tick() 을 부른 매 바퀴 뒤 mk_i2c_take() 가 0 을 돌려줄 때까지
      *    비우는 것이 mk_i2c.h 의 계약이다 — while 로 끝까지 꺼낸다. 한 번만
      *    꺼내면 남은 것이 다음 mk_i2c_tick() 의 push_out 자리를 막아
-     *    dropped 로 조용히 사라진다. */
+     *    dropped 로 조용히 사라진다.
+     *
+     * 🔴 `sent_i2c < MK_TELEM_MAX_LINES` 가 이 계약과 원리적으로는 충돌한다
+     *    — 상한에 걸리면 while 이 다 비우기 전에 멈춘다. 지금은 안전하다:
+     *    mk_i2c.h 의 out 버퍼가 MK_I2C_OUT_MAX(2)칸뿐이라 한 바퀴에 쌓이는
+     *    레코드가 MK_TELEM_MAX_LINES(16)에 절대 못 미친다. 값이 셋 이상인
+     *    센서가 늘어 MK_I2C_VALUES_MAX 가 커지면 이 가정이 깨질 수 있다 —
+     *    그때는 여기를 다시 본다. */
     int sent_i2c = 0;
     if (t->i2c != NULL) {
         MkI2cOut o;

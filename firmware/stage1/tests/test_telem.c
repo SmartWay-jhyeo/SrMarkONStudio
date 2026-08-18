@@ -341,6 +341,43 @@ static void test_failed_read_emits_null_not_the_last_value(void)
     CHECK(found, "실패해도 레코드가 나간다");
 }
 
+/* 🔴 [검토 지적 — 근거가 틀렸다] "while → if 로 바꿔도 시험이 안 깨진다" 는
+ *    공백을 처음에는 "test_i2c.c 의 시험들이 그 경로를 이미 덮는다" 는
+ *    근거로 넘겼는데, 사실이 아니었다 — test_one_port_per_tick 은 여섯
+ *    포트를 전부 지원 종류로 켜서 매 바퀴 touched=1 로 조기 반환하는
+ *    경로만 돌고, 지원 안 하는 종류 시험은 포트 하나만 켜서 n_out 이
+ *    2 가 되는 상황을 만들지 않는다. 저장소 전체에 "한 바퀴에 out 이
+ *    둘 쌓인 채로 mk_telem_tick 이 한 번만 불린다" 를 보는 시험이
+ *    없었다.
+ *
+ *    mk_i2c_tick·상태기계는 건드리지 않는다 — out 버퍼를 직접 채워
+ *    mk_telem_tick 의 배출 계약(mk_i2c.h: "매 바퀴 뒤 0 이 나올 때까지
+ *    비운다")만 좁혀서 본다. emit_i2c() 가 이미 쓰는 방식이다. */
+static void test_tick_drains_every_pending_i2c_record_in_one_call(void)
+{
+    setup();
+    static MkI2c I2C;
+    MkI2cIo io = { fake_xfer_ok, NULL };
+    mk_i2c_init(&I2C, &io);
+    mk_telem_attach_i2c(&T, &I2C);
+
+    I2C.out[0] = (MkI2cOut){ .connector_id = 12u, .quantity = "temp",
+                             .value = 20.0f, .have_value = 1,
+                             .status = 0u, .t_ms = 1000 };
+    I2C.out[1] = (MkI2cOut){ .connector_id = 12u, .quantity = "humidity",
+                             .value = 55.0f, .have_value = 1,
+                             .status = 0u, .t_ms = 1000 };
+    I2C.n_out = 2;
+
+    mk_telem_tick(&T, 100, sink, NULL);   /* 딱 한 번 */
+
+    int i2c = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"i2c\"")) { i2c++; }
+    }
+    CHECK(i2c == 2, "한 바퀴에 쌓인 i2c 레코드 둘이 한 번의 tick 으로 다 나간다");
+}
+
 /* ---- 카탈로그 덤프 ------------------------------------------------------ */
 
 static void emit_samples(void)
@@ -419,6 +456,7 @@ int main(int argc, char **argv)
     test_disabled_channel_is_silent();
     test_i2c_records_share_the_sequence_with_ain();
     test_failed_read_emits_null_not_the_last_value();
+    test_tick_drains_every_pending_i2c_record_in_one_call();
 
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;
