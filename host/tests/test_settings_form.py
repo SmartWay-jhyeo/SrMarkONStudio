@@ -5,6 +5,8 @@ import pytest
 from host.core.config_schema import ConfigItem, ConfigSchema, parse_catalog
 from host.core.framing import build_command
 from host.gui.settings_form import (
+    FIELD_MASK_KEYS,
+    LOCKED_FIELDS,
     SettingsForm,
     Widget,
     build_row,
@@ -13,6 +15,7 @@ from host.gui.settings_form import (
     channel_units,
     i2c_ports,
     matrix_of,
+    record_shape,
     telemetry_shape,
 )
 from tools.simulator.config_store import default_store
@@ -440,6 +443,57 @@ def test_telemetry_shape_counts_only_the_channels_that_are_on(form):
     assert shape.channels == 1          # 시뮬레이터 기본값은 J3 하나
     form.edit("ain1.enabled", "true")
     assert telemetry_shape(form).channels == 2
+
+
+def test_telemetry_shape_ignores_i2c_channels(form):
+    """🔴 [신규, 2026-08-19] `ain` 카드의 대역폭은 `i2c` 채널을 세면 안
+    된다 — 마스크가 하나였을 때는 둘을 합쳐도 우연히 맞았지만, 지금은
+    `tx.fields_ain`·`tx.fields_i2c` 가 독립이라 서로의 채널 수까지
+    섞이면 안 된다."""
+    before = telemetry_shape(form).channels
+    form.edit("i2c10.enabled", "true")
+    assert telemetry_shape(form).channels == before
+
+
+def test_record_shape_i2c_counts_i2c_ports_only(form):
+    """🔴 [신규, 2026-08-19] `i2c` 카드는 자기 포트만 센다 — `ain` 채널이
+    몇 개 켜져 있든 무관하다."""
+    assert record_shape(form, "i2c").channels == 0
+    form.edit("i2c10.enabled", "true")
+    assert record_shape(form, "i2c").channels == 1
+    form.edit("ain1.enabled", "true")
+    assert record_shape(form, "i2c").channels == 1
+
+
+def test_record_shape_din_has_no_channel_count():
+    """🔴 [신규, 2026-08-19] din(J18~J20)은 켜고 끄는 채널이 없다 — 항상
+    감시되는 입력이고, 이벤트성 레코드라(규격 §7.6) 채널 수 × 주기로
+    대역폭을 지어낼 근거가 없다."""
+    from tools.simulator.config_store import default_store
+    from tools.simulator.device_sim import DeviceSim
+
+    sim = DeviceSim(default_store())
+    sim.feed(build_command("HB"))
+    lines = [ln for ln in sim.feed(build_command("CFG", "LIST"))
+             if ln.startswith("{")]
+    f = SettingsForm(parse_catalog(lines))
+    assert record_shape(f, "din").channels == 0
+
+
+def test_field_mask_keys_cover_all_three_record_kinds(form):
+    """🔴 [신규, 2026-08-19] 세 키 모두 카탈로그에 실제로 있어야 한다."""
+    assert set(FIELD_MASK_KEYS) == {"ain", "i2c", "din"}
+    for key in FIELD_MASK_KEYS.values():
+        assert form.row(key) is not None
+
+
+def test_locked_fields_are_defined_for_every_record_kind():
+    """🔴 [신규, 2026-08-19] 잠긴 필드 목록이 규격과 같다 — time_source는
+    모든 레코드, i2c는 quantity·value, din은 connector_id·state(§7.1·
+    §7.5·§7.6)."""
+    assert LOCKED_FIELDS["ain"] == ("time_source",)
+    assert set(LOCKED_FIELDS["i2c"]) == {"time_source", "quantity", "value"}
+    assert set(LOCKED_FIELDS["din"]) == {"time_source", "connector_id", "state"}
 
 
 def test_telemetry_shape_reads_the_spec_named_keys(form):

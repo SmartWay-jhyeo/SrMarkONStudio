@@ -7,7 +7,8 @@ from tools.simulator.config_store import default_store
 def test_default_store_has_spec_items():
     """스펙 §6.1 의 항목이 전부 있어야 한다."""
     store = default_store()
-    for key in ("dev.id", "tx.fields", "tx.period_ms", "tx.float_digits",
+    for key in ("dev.id", "tx.fields_ain", "tx.fields_i2c", "tx.fields_din",
+                "tx.period_ms", "tx.float_digits",
                 "adc.pga", "adc.drate", "pwr.24v", "pwr.14v9", "pwr.5v",
                 "pwr.seq_delay_ms"):
         assert key in store.items, f"{key} 누락"
@@ -366,7 +367,39 @@ def test_field_mask_default_matches_spec():
     tx.fields 마스크로 끌 수 없도록 FIELD_BITS 밖으로 옮겼다(항상 실린다).
     비트 1 자리는 비워 둔다."""
     store = default_store()
-    assert store.field_mask == 0b1010111000
+    assert store.field_mask("ain") == 0b1010111000
+
+
+def test_field_mask_is_split_per_record_kind():
+    """🔴 [신규, 2026-08-19] `tx.fields` 하나였던 것을 셋으로 나눴다 —
+    `i2c`·`din` 은 `ain` 과 다른 비트 집합·기본값을 가진다(규격 §7.5·§7.6).
+
+    `i2c` 는 status(7)·connector_id(9) 만 켤 수 있다 — quantity·value 는
+    끌 수 없는 필드라 애초에 비트가 없다. `din` 은 기본으로 아무 비트도
+    켜지지 않는다 — device_id·time_quality 뿐이고 둘 다 기본 off 다."""
+    store = default_store()
+    assert store.field_mask("i2c") == 0b1010000000     # status + connector_id
+    assert store.field_mask("din") == 0
+
+    ain_item = store.items["tx.fields_ain"]
+    i2c_item = store.items["tx.fields_i2c"]
+    din_item = store.items["tx.fields_din"]
+    assert ain_item.maximum != i2c_item.maximum, "ain 은 raw 등 i2c 에 없는 비트도 켤 수 있다"
+    # i2c 는 device_id·time_quality·status·connector_id 넷을 켤 수 있다
+    # (기본은 그중 status·connector_id 만 켜짐 — 위 field_mask("i2c") 검사).
+    assert i2c_item.maximum == 0b1010000101
+    assert din_item.maximum == 0b0000000101             # device_id + time_quality 만
+
+
+def test_ain_mask_change_does_not_affect_i2c_or_din():
+    """🔴 [신규, 2026-08-19] 셋이 나뉜 핵심 계약 — 한쪽을 바꿔도 나머지는
+    그대로다. 예전에는 tx.fields 하나였으므로 이 시험이 성립할 수 없었다."""
+    store = default_store()
+    before_i2c = store.field_mask("i2c")
+    before_din = store.field_mask("din")
+    store.set("tx.fields_ain", "0")
+    assert store.field_mask("i2c") == before_i2c
+    assert store.field_mask("din") == before_din
 
 
 def test_catalog_lines_end_with_cfg_end_matching_count():
@@ -406,11 +439,12 @@ def test_sol_debounce_ms_replaces_the_removed_outputs():
     assert item.out is False           # 출력이 아니다 — TEST 이탈에 안 걸린다
 
 
-def test_catalog_item_count_is_ninety_four():
-    """91 + 3 (gnss.enabled · gnss.baud · gnss.echo, Phase 3) = 94.
+def test_catalog_item_count_is_ninety_six():
+    """94 + 2 (`tx.fields` 하나가 `tx.fields_ain`·`tx.fields_i2c`·
+    `tx.fields_din` 셋으로 나뉘며 순증가, 2026-08-19 개정 §7.2·§7.5·§7.6) = 96.
 
     이 수가 흔들리면 십중팔구 항목을 늘리거나 줄인 것이다 — 실수인지
     의도인지 이 시험이 먼저 묻는다.
     """
     store = default_store()
-    assert len(store.items) == 94
+    assert len(store.items) == 96

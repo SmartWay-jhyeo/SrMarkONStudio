@@ -72,6 +72,29 @@ def test_more_float_digits_make_a_longer_line():
     assert long > short
 
 
+def test_sample_record_locks_i2c_quantity_and_value():
+    """🔴 [신규, 2026-08-19] i2c 는 quantity·value 를 마스크로 못 끈다
+    (규격 §7.5) — 무엇을 골랐든 표본에 항상 실려야 실제 크기를 잰다."""
+    rec = sample_record([], record_type="i2c")
+    assert rec["type"] == "i2c"
+    assert "quantity" in rec and "value" in rec
+
+
+def test_sample_record_locks_din_connector_id_and_state():
+    """🔴 [신규, 2026-08-19] din 은 connector_id·state 를 마스크로 못 끈다
+    (규격 §7.6)."""
+    rec = sample_record([], record_type="din")
+    assert rec["type"] == "din"
+    assert "connector_id" in rec and "state" in rec
+
+
+def test_sample_record_defaults_to_ain_and_has_no_extra_locked_fields():
+    """옛 호출부(record_type 생략)는 예전과 똑같이 ain 만 만든다."""
+    rec = sample_record([])
+    assert rec["type"] == "ain"
+    assert "quantity" not in rec and "connector_id" not in rec
+
+
 def test_sample_is_not_optimistic_about_width():
     """🔴 넉넉한 값으로 잰다. 좁은 표본으로 재면 실제보다 작게 나오고,
        작게 나온 만큼이 정확히 여유가 없을 때 문제가 된다."""
@@ -251,7 +274,7 @@ def test_all_fields_on_is_measurable():
     from tools.simulator.telemetry import build_ain_record
 
     store = default_store()
-    store.set("tx.fields", str((1 << len(FIELD_BITS)) - 1))
+    store.set("tx.fields_ain", str((1 << len(FIELD_BITS)) - 1))
     rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
                            raw=8388608, capture_counter=123456789)
     b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=115200)
