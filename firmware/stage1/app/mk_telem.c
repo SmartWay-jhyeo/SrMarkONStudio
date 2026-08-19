@@ -95,6 +95,39 @@ static uint32_t time_quality_of(const MkTelem *t)
     return t->timeax ? mk_timeax_time_quality(t->timeax) : 0u;
 }
 
+/* 획득 시각(장치 카운터, ms — 지금까지 `mk_time_ms()` 가 채워 온 값)을
+ * 시간축으로 변환한다. timeax 가 안 붙어 있으면(1단계 빌드) 변환 없이
+ * 그대로 — 예전 동작 그대로다.
+ *
+ * 🔴 [판단, 2026-08-19] `mk_time_ms()`(SysTick, 1ms)와 `mk_timeax` 의
+ *    `dev_us`(TIM8, 1µs)는 서로 다른 카운터다 — mk_timeax.h 상단 주석이
+ *    "두 시계를 섞으면 안 된다"고 명시한다. 이 저장소에서는 둘 다 같은
+ *    64MHz HCLK 에서 분주 없이 나온다(mk_gnss_io.h 의 "APB2 도 64MHz다"
+ *    주석 — SysTick 도 HCLK, TIM8 도 프리스케일 63 으로 1MHz). 같은
+ *    클럭이라 **상대 드리프트는 없고**, 남는 오차는 두 타이머가 부팅 후
+ *    각각 켜지는 시점 차이뿐이다 — SysTick 은 `HAL_Init()` 직후, TIM8 은
+ *    `main()` 뒷부분의 `mk_gnss_io_init()` 호출 시점이다. 그 사이는
+ *    레지스터 설정뿐이고 블로킹 대기가 없어 수십~수백 µs 수준이다.
+ *
+ *    카메라 프레임 정렬(≤33ms)이 목적인 이 시간축에는 무시할 수 있는
+ *    크기라 판단해 **단위만(×1000) 맞춰 그대로 넘긴다** — ADS1256·I2C·
+ *    디지털 입력 각각의 획득 타임스탬프 자체를 TIM8 dev_us 로 다시 찍는
+ *    것은 bsp 세 곳(mk_ads_io·mk_i2c_io·mk_sol)을 다시 여는 훨씬 큰
+ *    변경이라 이번 범위 밖으로 둔다. 더 정밀한 정합이 필요해지면(예:
+ *    실기기에서 두 카운터의 시작 오프셋을 재 보니 무시할 크기가 아니면)
+ *    그쪽을 먼저 본다.
+ *
+ *    device_clock 일 때는 `mk_timeax_now_ms_monotonic()` 이 `dev_us/1000`
+ *    을 그대로 돌려주므로(mk_timeax.c) 이 변환은 **정확히 원래 값과
+ *    같다** — 위 오차는 gnss_pps/gnss_nmea 로 등급이 오른 뒤에만 남는다. */
+static int64_t acquired_epoch_ms(MkTelem *t, int64_t acq_ms)
+{
+    if (t->timeax == NULL) {
+        return acq_ms;
+    }
+    return mk_timeax_now_ms_monotonic(t->timeax, (uint64_t)acq_ms * 1000ULL);
+}
+
 /* ---- 레코드 ------------------------------------------------------------- */
 
 static int build_record(MkTelem *t, int ch, const MkSample *s,
@@ -107,10 +140,13 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
     MkJson j;
     mk_json_begin(&j, out, cap);
 
-    /* 규격 §7.1 — 이 넷은 마스크와 무관하게 항상 들어간다. */
+    /* 규격 §7.1 — 이 넷은 마스크와 무관하게 항상 들어간다.
+     *
+     * 🔴 `t` 는 **획득 시각**(s->t_ms)을 시간축으로 변환한 값이다 —
+     *    지금(now_ms)이 아니다. acquired_epoch_ms() 주석 참고. */
     mk_json_u32(&j, "schema_ver", 3u);
     mk_json_u32(&j, "seq", t->seq);
-    mk_json_i64(&j, "t", s->t_ms);
+    mk_json_i64(&j, "t", acquired_epoch_ms(t, s->t_ms));
     mk_json_str(&j, "type", "ain");
 
     /* 순서는 규격 §7.2 의 표 순서 = 시뮬레이터가 담는 순서다. 두 카탈로그를
@@ -149,21 +185,24 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
     if (field_on(t, mask, "device_id")) {
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
-    if (field_on(t, mask, "time_source")) {
-        /* 🔴 Phase 3 — timeax 가 없으면(1단계 빌드) "device_clock" 고정,
-         *    붙어 있으면 실제 등급(gnss_pps/gnss_nmea/device_clock)이다.
-         *    device_clock 일 때 `t` 는 부팅 후 경과 ms 이지 UTC 가
-         *    아니다 — 호스트가 그 상태에서 이것을 시각으로 저장하면 안 된다. */
-        mk_json_str(&j, "time_source", time_source_of(t));
-    }
+    /* 🔴 [판단, 2026-08-19] time_source 는 마스크로 못 끈다 — `t` 가
+     *    UTC epoch_ms 인지 부팅 후 경과 ms 인지는 이 필드만이 말해 준다.
+     *    끌 수 있으면 device_clock 의 `t` 를 호스트가 UTC 로 오해해
+     *    저장하는 사고가 되돌아온다(mk_cfgtable.c FIELDS 주석과 같은
+     *    근거). i2c 의 quantity·value, din 의 connector_id·state 와
+     *    같은 자리다 — timeax 가 없으면(1단계 빌드) "device_clock" 고정,
+     *    붙어 있으면 실제 등급(gnss_pps/gnss_nmea/device_clock)이다. */
+    mk_json_str(&j, "time_source", time_source_of(t));
     if (field_on(t, mask, "time_quality")) {
         mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
     if (field_on(t, mask, "capture_counter")) {
-        /* 🔴 지금은 획득 시각이 곧 이것이다. 고분해능 타이머 캡처는 Phase 3
-         *    (PPS)에서 들어온다 — 그전까지 여기에 ×1000 같은 것을 곱해
-         *    마이크로초처럼 보이게 하지 않는다. 없는 정밀도를 지어내면
-         *    호스트가 그것을 믿는다. */
+        /* 🔴 `t` 와 달리 이것은 **변환하지 않은** 원시 획득 카운터다 —
+         *    `t` 가 등급에 따라 UTC 로 바뀌는 것과 별개로, capture_counter
+         *    는 항상 장치 카운터(지금은 s->t_ms, 곧 mk_time_ms() 값) 그대로
+         *    싣는다. 고분해능 타이머 캡처는 Phase 3(PPS)에서 들어온다 —
+         *    그전까지 여기에 ×1000 같은 것을 곱해 마이크로초처럼 보이게
+         *    하지 않는다. 없는 정밀도를 지어내면 호스트가 그것을 믿는다. */
         mk_json_i64(&j, "capture_counter", s->t_ms);
     }
 
@@ -183,7 +222,9 @@ static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
     mk_json_begin(&j, out, cap);
     mk_json_u32(&j, "schema_ver", 3u);
     mk_json_u32(&j, "seq", t->seq);
-    mk_json_i64(&j, "t", o->t_ms);
+    /* 🔴 `t` 는 획득 시각(o->t_ms)을 시간축으로 변환한 값이다 — ain 과
+     *    같은 규칙(acquired_epoch_ms() 주석 참고). */
+    mk_json_i64(&j, "t", acquired_epoch_ms(t, o->t_ms));
     mk_json_str(&j, "type", "i2c");
 
     if (field_on(t, mask, "connector_id")) {
@@ -204,9 +245,9 @@ static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
     if (field_on(t, mask, "device_id")) {
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
-    if (field_on(t, mask, "time_source")) {
-        mk_json_str(&j, "time_source", time_source_of(t));
-    }
+    /* 🔴 time_source 는 마스크로 못 끈다 — ain 의 build_record 와 같은
+     *    근거(위 주석 참고). */
+    mk_json_str(&j, "time_source", time_source_of(t));
     if (field_on(t, mask, "time_quality")) {
         mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
@@ -225,7 +266,9 @@ static int build_din_record(MkTelem *t, const MkSolOut *o,
     mk_json_begin(&j, out, cap);
     mk_json_u32(&j, "schema_ver", 3u);
     mk_json_u32(&j, "seq", t->seq);
-    mk_json_i64(&j, "t", o->t_ms);
+    /* 🔴 `t` 는 엣지를 잡은 시각(o->t_ms)을 시간축으로 변환한 값이다 —
+     *    ain 과 같은 규칙(acquired_epoch_ms() 주석 참고). */
+    mk_json_i64(&j, "t", acquired_epoch_ms(t, o->t_ms));
     mk_json_str(&j, "type", "din");
 
     /* 🔴 connector_id·state 는 마스크로 끌 수 없다 (규격 §7.6) — 둘이
@@ -237,9 +280,9 @@ static int build_din_record(MkTelem *t, const MkSolOut *o,
     if (field_on(t, mask, "device_id")) {
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
-    if (field_on(t, mask, "time_source")) {
-        mk_json_str(&j, "time_source", time_source_of(t));
-    }
+    /* 🔴 time_source 는 마스크로 못 끈다 — ain 의 build_record 와 같은
+     *    근거(위 주석 참고). */
+    mk_json_str(&j, "time_source", time_source_of(t));
     if (field_on(t, mask, "time_quality")) {
         mk_json_u32(&j, "time_quality", time_quality_of(t));
     }

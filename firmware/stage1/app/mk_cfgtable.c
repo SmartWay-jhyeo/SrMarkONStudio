@@ -78,9 +78,21 @@ static char s_keys[GEN_COUNT][MK_CFG_KEY_MAX + 1];
 static char s_labels[GEN_COUNT][24];
 static size_t s_gen;              /* 다음에 쓸 자리 */
 
+/* 🔴 [판단, 2026-08-19] `time_source` 는 여기 없다 — 일부러 뺐다.
+ *
+ *    레코드의 `t` 는 등급에 따라 뜻이 다르다(규격 §7.1.2): device_clock
+ *    이면 부팅 후 경과 ms, gnss_* 면 UTC epoch_ms. `time_source` 가 바로
+ *    그 구분을 말해 주는 필드인데, 마스크로 끌 수 있으면 호스트가
+ *    device_clock 의 `t` 를 UTC 로 오해해 저장할 길이 열린다 — 이 시간축을
+ *    만든 이유(카메라 프레임 정렬) 자체가 무너지는 사고다.
+ *
+ *    그래서 `i2c` 의 `quantity`·`value`, `din` 의 `connector_id`·`state`
+ *    와 같은 자리(mk_telem.c 의 build_record 계열)로 옮겼다 — 마스크
+ *    비트가 아예 없고 항상 실린다. bit=1 자리는 다른 필드가 새로 쓰지
+ *    않는다(예전에 이 값을 저장했던 보드의 `tx.fields` 에 그 비트가 서
+ *    있어도 이제는 조용히 무시될 뿐이다). */
 static const MkFieldBit FIELDS[] = {
     { 0, "device_id",       0, "보드 식별자" },
-    { 1, "time_source",     1, "시간 소스" },
     { 2, "time_quality",    0, "시간 품질" },
     { 3, "raw",             1, "ADS1256 원시 카운트" },
     { 4, "ma",              1, "전류 (mA)" },

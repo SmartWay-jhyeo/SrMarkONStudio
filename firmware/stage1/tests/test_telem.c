@@ -118,6 +118,16 @@ static uint32_t parse_seq(const char *line)
     return v;
 }
 
+static int64_t parse_t(const char *line)
+{
+    const char *p = strstr(line, "\"t\":");
+    if (p == NULL) { return -1; }
+    p += 4;
+    int64_t v = 0;
+    while (*p >= '0' && *p <= '9') { v = v * 10 + (int64_t)(*p - '0'); p++; }
+    return v;
+}
+
 /* ---- 환산 --------------------------------------------------------------- */
 
 static void test_raw_to_ma_matches_the_shunt(void)
@@ -269,6 +279,135 @@ static void test_time_source_follows_attached_timeax_grade(void)
     CHECK_HAS(LINES[0], "\"time_source\":\"gnss_pps\"",
               "timeax 를 붙이면 실제 등급을 싣는다");
     CHECK_HAS(LINES[0], "\"time_quality\":2", "품질도 등급 숫자를 싣는다");
+}
+
+/* ---- `t` 를 시간축으로 변환한다 (Phase 3 — 마지막 한 칸) ------------------
+ *
+ * 🔴 카메라(≤33ms 주기)와 시각을 맞추는 것이 목적이라 절대 시각이 필요하다
+ *    (브리프). 세 규칙을 ain·i2c·din 모두 같이 지킨다:
+ *
+ *      1) device_clock 이면 `t` 는 여전히 획득 시각(부팅 ms) 그대로다 —
+ *         UTC 로 지어내지 않는다(설계 원칙 3·4, 정직해야 한다).
+ *      2) gnss_pps/gnss_nmea 로 오르면 `t` 는 **획득 시각을** UTC epoch_ms
+ *         로 바꾼 값이다 — 송신 시각이 아니다(설계 원칙 2).
+ *      3) 등급이 오르내려도 `t` 는 뒤로 가지 않는다(mk_timeax_now_ms_
+ *         monotonic, 위 test_timeax.c 참고).
+ */
+
+static void test_t_stays_boot_ms_when_grade_is_device_clock_even_with_timeax_attached(void)
+{
+    /* timeax 를 붙였어도 아직 아무 GNSS 신호가 없으면(device_clock) t 를
+     * 손대지 않는다 — "timeax 가 붙어 있으니 뭔가 바꾼다"가 아니라
+     * "등급이 실제로 올랐을 때만" 바꾼다. */
+    setup();
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_telem_attach_timeax(&T, &tx);
+
+    set_last(0, 4242, 4000000);
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK_HAS(LINES[0], "\"t\":4242",
+              "device_clock 이면 t 는 획득 시각(부팅 ms) 그대로다");
+}
+
+static void test_t_becomes_utc_once_gnss_pps_locks(void)
+{
+    setup();
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_telem_attach_timeax(&T, &tx);
+
+    mk_timeax_on_pps(&tx, 1000000ULL);            /* PPS @ dev_us=1.000s */
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1772200855000LL;
+    mk_timeax_on_rmc(&tx, &rmc, 1050000ULL);       /* 짝지어져 gnss_pps */
+
+    set_last(0, 1500, 4000000);                    /* 획득: 부팅 1.5s */
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK_HAS(LINES[0], "\"t\":1772200855500",
+              "gnss_pps 로 바뀌면 t 가 획득 시각 기준 UTC epoch_ms 로 바뀐다");
+}
+
+static void test_repeated_value_keeps_its_acquisition_epoch_not_send_time(void)
+{
+    /* 🔴 [되돌림 검사] 송신 시각(now_ms)을 넣으면 이 시험이 깨진다 — 두
+     *    번째 tick 의 now_ms(200)가 첫 번째(100)와 달라 t 도 달라져야
+     *    하기 때문이다. t 는 획득 시각(2000)의 변환값 그대로여야 한다. */
+    setup();
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_telem_attach_timeax(&T, &tx);
+    mk_timeax_on_pps(&tx, 0ULL);
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1772200800000LL;
+    mk_timeax_on_rmc(&tx, &rmc, 50000ULL);
+
+    set_last(0, 2000, 4000000);                    /* 딱 한 번만 수집 */
+    mk_telem_tick(&T, 100, sink, NULL);             /* 1회차 */
+    mk_telem_tick(&T, 200, sink, NULL);             /* 2회차 — 새 수집 없음 */
+
+    CHECK(N == 2, "두 번 다 나간다");
+    CHECK_HAS(LINES[0], "\"t\":1772200802000", "1회차: 획득 시각 기준 변환");
+    CHECK_HAS(LINES[1], "\"t\":1772200802000",
+              "2회차도 같은 값 — 송신 시각(200)이 아니라 획득 시각(2000)이 "
+              "그대로 반복된다");
+}
+
+static void test_t_never_goes_backward_when_grade_drops_after_sync(void)
+{
+    setup();
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_telem_attach_timeax(&T, &tx);
+
+    mk_timeax_on_pps(&tx, 0ULL);
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1772200800000LL;
+    mk_timeax_on_rmc(&tx, &rmc, 50000ULL);
+
+    set_last(0, 1000, 4000000);
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK(N == 1, "첫 레코드");
+
+    /* PPS·RMC 가 오래 끊겨 device_clock 까지 내려간다. */
+    uint64_t stale = 50000ULL + MK_TIMEAX_NMEA_STALE_US + 1ULL;
+    mk_timeax_tick(&tx, stale);
+    CHECK(mk_timeax_grade(&tx) == MK_TIMEAX_DEVICE_CLOCK, "등급이 내려갔다");
+
+    /* 다음 획득은 부팅 2초 근처다 — 보정이 없으면 t 가 UTC(십수억)에서
+     * 2000 으로 뚝 떨어진다. */
+    set_last(0, 2000, 4000000);
+    mk_telem_tick(&T, 200, sink, NULL);   /* 기본 주기(100)가 다시 찼다 */
+
+    CHECK(N == 2, "두 번째 레코드도 나간다");
+    int64_t t1 = parse_t(LINES[0]);
+    int64_t t2 = parse_t(LINES[1]);
+    CHECK(t2 >= t1,
+          "등급이 device_clock 으로 떨어져도 t 는 이전에 낸 값보다 뒤로 "
+          "가지 않는다");
+}
+
+static void test_time_source_field_cannot_be_masked_off(void)
+{
+    /* 🔴 [판단, 2026-08-19] time_source 를 꺼두면 t 의 뜻(UTC epoch_ms 인지
+     *    부팅 후 경과 ms 인지)을 구분할 길이 없어진다 — device_clock 의
+     *    t 를 호스트가 UTC 로 오해해 저장하는 바로 그 사고가 재발한다.
+     *    i2c 의 quantity·value, din 의 connector_id·state 와 같은 이유로
+     *    tx.fields 밖에 둔다(마스크로 못 끈다). */
+    setup();
+    set_u32("tx.fields", 0u);      /* 전부 끈다 */
+    set_last(0, 1000, 4000000);
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK_HAS(LINES[0], "\"time_source\":\"device_clock\"",
+              "tx.fields 를 전부 꺼도 time_source 는 실린다");
 }
 
 static void test_seq_increases_so_the_host_can_find_gaps(void)
@@ -613,6 +752,54 @@ static void test_reads_i2c_values_straight_from_the_last_value_cache(void)
     CHECK(i2c == 2, "한 바퀴에 쌓인 i2c 레코드 둘이 한 번의 tick 으로 다 나간다");
 }
 
+/* 🔴 디지털 입력(엣지)·I2C·아날로그 전부 같은 규칙을 따라야 한다(브리프) —
+ * i2c 도 ain 과 똑같이 획득 시각을 시간축으로 변환하고, time_source 를
+ * 마스크로 못 끈다. */
+static void test_i2c_t_follows_the_same_timeax_conversion_as_ain(void)
+{
+    setup();
+    static MkI2c I2C;
+    MkI2cIo io = { fake_xfer_ok, NULL };
+    mk_i2c_init(&I2C, &io);
+    mk_telem_attach_i2c(&T, &I2C);
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_telem_attach_timeax(&T, &tx);
+    mk_timeax_on_pps(&tx, 0ULL);
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1772200800000LL;
+    mk_timeax_on_rmc(&tx, &rmc, 50000ULL);
+
+    I2C.last[0][0] = (MkI2cOut){ .connector_id = 10u, .quantity = "lux",
+                                 .value = 401.5f, .have_value = 1,
+                                 .status = 0u, .t_ms = 1500 };
+    I2C.last_valid[0][0] = 1u;
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK_HAS(LINES[0], "\"t\":1772200801500",
+              "i2c 도 ain 과 같은 규칙 — 획득 시각(1500)이 UTC 로 변환된다");
+}
+
+static void test_i2c_time_source_field_cannot_be_masked_off(void)
+{
+    setup();
+    static MkI2c I2C;
+    MkI2cIo io = { fake_xfer_ok, NULL };
+    mk_i2c_init(&I2C, &io);
+    mk_telem_attach_i2c(&T, &I2C);
+    set_u32("tx.fields", 0u);
+
+    I2C.last[0][0] = (MkI2cOut){ .connector_id = 10u, .quantity = "lux",
+                                 .value = 401.5f, .have_value = 1,
+                                 .status = 0u, .t_ms = 1000 };
+    I2C.last_valid[0][0] = 1u;
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK_HAS(LINES[0], "\"time_source\":\"device_clock\"",
+              "i2c 도 time_source 를 마스크로 못 끈다");
+}
+
 /* ---- 디지털 입력 din (규격 §7.6) -----------------------------------------
  *
  * 🔴 mk_solctl_tick() 의 디바운스를 다시 거치지 않는다 — i2c 시험의
@@ -689,6 +876,46 @@ static void test_din_is_not_gated_by_tx_period(void)
         if (strstr(LINES[k], "\"type\":\"din\"")) { din++; }
     }
     CHECK(din == 1, "tx.period_ms 를 기다리지 않고 즉시 나간다");
+}
+
+static void test_din_t_follows_the_same_timeax_conversion_as_ain(void)
+{
+    setup();
+    static MkSolCtl SOL;
+    mk_solctl_init(&SOL, NULL, NULL);
+    mk_telem_attach_sol(&T, &SOL);
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_telem_attach_timeax(&T, &tx);
+    mk_timeax_on_pps(&tx, 0ULL);
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1772200800000LL;
+    mk_timeax_on_rmc(&tx, &rmc, 50000ULL);
+
+    SOL.out[0] = (MkSolOut){ .connector_id = 18u, .state = 1u, .t_ms = 3000 };
+    SOL.n_out = 1;
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK_HAS(LINES[0], "\"t\":1772200803000",
+              "din 도 ain 과 같은 규칙 — 엣지를 잡은 시각(3000)이 UTC 로 "
+              "변환된다");
+}
+
+static void test_din_time_source_field_cannot_be_masked_off(void)
+{
+    setup();
+    static MkSolCtl SOL;
+    mk_solctl_init(&SOL, NULL, NULL);
+    mk_telem_attach_sol(&T, &SOL);
+    set_u32("tx.fields", 0u);
+
+    SOL.out[0] = (MkSolOut){ .connector_id = 18u, .state = 1u, .t_ms = 1000 };
+    SOL.n_out = 1;
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK_HAS(LINES[0], "\"time_source\":\"device_clock\"",
+              "din 도 time_source 를 마스크로 못 끈다");
 }
 
 /* ---- 카탈로그 덤프 ------------------------------------------------------ */
@@ -812,6 +1039,11 @@ int main(int argc, char **argv)
     test_record_shape();
     test_time_source_defaults_to_device_clock_without_timeax();
     test_time_source_follows_attached_timeax_grade();
+    test_t_stays_boot_ms_when_grade_is_device_clock_even_with_timeax_attached();
+    test_t_becomes_utc_once_gnss_pps_locks();
+    test_repeated_value_keeps_its_acquisition_epoch_not_send_time();
+    test_t_never_goes_backward_when_grade_drops_after_sync();
+    test_time_source_field_cannot_be_masked_off();
     test_seq_increases_so_the_host_can_find_gaps();
     test_repeats_the_last_value_without_new_acquisition();
     test_queue_drains_fully_each_sample_gets_its_own_line();
@@ -826,9 +1058,13 @@ int main(int argc, char **argv)
     test_disabled_channel_is_silent();
     test_i2c_records_share_the_sequence_with_ain();
     test_failure_repeats_at_the_tx_period_not_the_retry_period();
+    test_i2c_t_follows_the_same_timeax_conversion_as_ain();
+    test_i2c_time_source_field_cannot_be_masked_off();
     test_din_records_share_the_sequence_with_ain();
     test_din_record_shape();
     test_din_is_not_gated_by_tx_period();
+    test_din_t_follows_the_same_timeax_conversion_as_ain();
+    test_din_time_source_field_cannot_be_masked_off();
     test_reads_i2c_values_straight_from_the_last_value_cache();
 
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);

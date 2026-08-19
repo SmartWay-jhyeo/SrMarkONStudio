@@ -212,6 +212,24 @@ static void test_all_channels_are_present(void)
     CHECK(missing == 0, "J3~J9 일곱 채널이 모두 있다");
 }
 
+/* 🔴 [판단, 2026-08-19] time_source 는 tx.fields 마스크 비트에서 뺐다.
+ *    레코드의 `t` 가 UTC epoch_ms 인지 부팅 후 경과 ms 인지는 오직 이
+ *    필드가 말해 준다 — 꺼둘 수 있으면 device_clock 의 t 를 호스트가
+ *    UTC 로 오해해 저장하는 사고가 되돌아온다(브리프의 바로 그 우려).
+ *    i2c 의 quantity·value, din 의 connector_id·state 가 이미 이 표
+ *    밖에 있는 것과 같은 이유·같은 자리다(mk_telem.c 참고). */
+static void test_time_source_is_not_a_maskable_field_bit(void)
+{
+    setup();
+    size_t n = 0;
+    const MkFieldBit *f = mk_cfgtable_fields(&n);
+    int found = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(f[i].name, "time_source") == 0) { found = 1; }
+    }
+    CHECK(!found, "time_source 는 필드 비트 표에 없다 — 항상 실린다");
+}
+
 /* 🔴 카탈로그의 버스 이름표와 드라이버가 쓰는 버스 번호가 갈리면, 화면에는
  *    I2C3 이라고 뜨는데 보드는 I2C1 을 두드린다. 한 곳에서 나오는지 본다. */
 static void test_bus_table_matches_the_catalog(void)
@@ -311,6 +329,7 @@ int main(int argc, char **argv)
     test_interlocked_items_say_why();
     test_five_volt_rail_is_settable_but_warns();
     test_all_channels_are_present();
+    test_time_source_is_not_a_maskable_field_bit();
     test_bus_table_matches_the_catalog();
     test_pack_unpack_round_trips();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
