@@ -184,3 +184,84 @@ def test_catalog_items_fit_the_wire():
     assert not over_value, (
         f"문자열 항목의 maximum 이 {limits.MAX_ARG_BYTES} 를 넘는다: {over_value}"
     )
+
+
+# ---- 링크 속도 (규격 §4.2) ---------------------------------------------------
+#
+# 🔴 여기가 어긋나면 증상은 또 침묵이다. 호스트가 목록에 없는 속도를 보내면
+#    보드가 거부하고(그건 낫다), 반대로 펌웨어에만 있는 속도를 호스트가 못
+#    고르면 그 속도는 존재하지 않는 것이 된다. 그리고 시한이 갈리면 호스트가
+#    아직 확인 중인데 보드는 이미 되돌아가 있다 — 그 어긋남은 실기기에서만,
+#    그것도 링크가 끊긴 채로 드러난다.
+
+LINKBAUD_H = (
+    Path(__file__).resolve().parents[2]
+    / "firmware" / "stage1" / "app" / "mk_linkbaud.h"
+)
+
+
+def _linkbaud_text() -> str:
+    assert LINKBAUD_H.exists(), f"펌웨어 헤더를 찾을 수 없다: {LINKBAUD_H}"
+    return LINKBAUD_H.read_text(encoding="utf-8")
+
+
+def test_link_baud_choices_match_the_firmware():
+    """🔴 고를 수 있는 속도가 두 곳에서 같아야 한다.
+
+    펌웨어 쪽은 X 매크로 목록 하나뿐이고(`MK_LINKBAUD_CHOICE_LIST`), 설정
+    카탈로그와 컴파일 시 오차 검사가 **그 목록을 펼쳐 쓴다.** 호스트는
+    그것을 다시 적을 수밖에 없으므로 여기서 대조한다.
+    """
+    text = _linkbaud_text()
+    m = re.search(r"#define\s+MK_LINKBAUD_CHOICE_LIST\(X\)((?:.*\\s*\n)*.*)",
+                  text)
+    assert m, "MK_LINKBAUD_CHOICE_LIST 를 못 찾았다 — 형식이 바뀌었나?"
+    fw = tuple(int(v) for v in re.findall(r"X\((\d+)u?\)", m.group(1)))
+    assert fw, "목록에서 값을 하나도 못 뽑았다"
+    assert fw == limits.LINK_BAUD_CHOICES, (
+        f"펌웨어 {fw}, 호스트 {limits.LINK_BAUD_CHOICES} — 갈렸다"
+    )
+
+
+def test_link_baud_confirm_deadline_matches_the_firmware():
+    """🔴 시한이 갈리면 호스트가 아직 확인 중인데 보드는 이미 되돌아간다."""
+    m = re.search(r"^#define\s+MK_LINKBAUD_CONFIRM_MS\s+(\d+)\s*$",
+                  _linkbaud_text(), re.M)
+    assert m, "MK_LINKBAUD_CONFIRM_MS 를 못 찾았다"
+    assert int(m.group(1)) == limits.LINK_BAUD_CONFIRM_MS
+
+
+def test_the_boot_default_is_the_catalog_default():
+    """🔴 저장이 없는 보드가 카탈로그와 다른 속도로 말하면 안 된다.
+
+    펌웨어에도 같은 `_Static_assert` 가 있지만 그것은 ARM 빌드를 돌려야만
+    돈다 — 이 저장소의 기본 확인 절차는 보드도 크로스 컴파일러도 없이 도는
+    것이 원칙이다(CLAUDE.md §0).
+    """
+    m = re.search(r"^#define\s+MK_LINKBAUD_DEFAULT\s+(\d+)u?\s*$",
+                  _linkbaud_text(), re.M)
+    assert m, "MK_LINKBAUD_DEFAULT 를 못 찾았다"
+    assert int(m.group(1)) == limits.DEFAULT_BAUD
+
+    main_c = HEADER.parent.parent / "main.c"
+    text = main_c.read_text(encoding="utf-8")
+    assert re.search(r"_Static_assert\(UART_BAUD == MK_LINKBAUD_DEFAULT", text), (
+        "main.c 가 UART_BAUD 와 카탈로그 기본값이 같은지 컴파일 때 확인하지 "
+        "않는다 — 둘이 갈리면 저장 없는 보드가 카탈로그와 다른 속도로 말한다"
+    )
+
+
+def test_the_default_is_still_the_only_speed_anyone_has_verified():
+    """🔴 기본값을 올리지 않는다 (규격 §4.2.5).
+
+    921600 만 실기기에서 확인됐다($ID 200회 왕복, 누락·손상 0). 선행
+    프로젝트(Q2)에서 2 Mbps 직결에 ~2 % 유실이 실측된 채 미해결이고
+    (CLAUDE.md §1.2), 이 보드는 거기에 F103(BMP) 브리지가 하나 더 낀다.
+
+    이 시험은 "성능이 좋아 보이니 기본값을 올리자" 를 막는 자리다. 올리려면
+    실기기 근거를 먼저 만들고 이 시험을 함께 고쳐야 한다.
+    """
+    assert limits.DEFAULT_BAUD == 921600
+    assert max(limits.LINK_BAUD_CHOICES) > limits.DEFAULT_BAUD, (
+        "더 빠른 선택지가 있어야 사용자가 시험해 볼 수 있다"
+    )

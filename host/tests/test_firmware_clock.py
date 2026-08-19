@@ -398,3 +398,72 @@ def test_main_no_longer_owns_the_clock():
     src = _strip_comments((FW / "main.c").read_text(encoding="utf-8"))
     assert "SystemClock_Config" not in src, "main.c 가 아직 클럭을 설정한다"
     assert "mk_clock_init" in src
+
+
+def test_every_selectable_link_baud_is_reachable_at_this_clock(clk):
+    """🔴 카탈로그에 있는 링크 속도가 **실제로 나오는 값**인지 (규격 §4.2.6).
+
+    BRR 은 정수라 반드시 오차가 생기고, 오차가 2 % 를 넘으면 프레임이
+    깨진다. 못 내는 값을 목록에 두면 그것은 사용자가 고르는 순간에만
+    드러나고 — 그 순간은 이미 링크가 끊긴 뒤다. 되돌리는 길은 보드가
+    10초 뒤 스스로 돌아오는 것뿐이니 치명적이지는 않지만, 애초에 고를 수
+    없어야 한다.
+
+    🔴 **반올림**으로 계산한다. HAL 의 `UART_DIV_SAMPLING16` 이 그렇고
+       (`(pclk + baud/2) / baud`), 실제로 레지스터에 들어가는 값이 그것이다.
+       버림으로 계산하면 검사는 통과하는데 전선은 다른 속도로 도는 조합이
+       생긴다.
+
+    이 시험이 `test_uart_baud_error_...`(부팅 기본값 하나)를 대체하지 않는다 —
+    저쪽은 main.c 의 상수를, 이쪽은 카탈로그의 목록 전체를 본다.
+    """
+    text = _strip_comments(
+        (FW / "app" / "mk_linkbaud.h").read_text(encoding="utf-8"))
+    m = re.search(r"#define\s+MK_LINKBAUD_CHOICE_LIST\(X\)((?:.*\\s*\n)*.*)",
+                  text)
+    assert m, "MK_LINKBAUD_CHOICE_LIST 를 못 찾았다"
+    choices = [int(v) for v in re.findall(r"X\((\d+)u?\)", m.group(1))]
+    assert choices, "목록에서 값을 하나도 못 뽑았다"
+
+    kernel = clk["MK_USART3_KERNEL_HZ"]
+    for baud in choices:
+        brr = (kernel + baud // 2) // baud           # HAL 과 같은 반올림
+        assert 16 <= brr <= 65535, (
+            f"{baud}: BRR={brr} — 오버샘플 16 으로 낼 수 있는 범위 밖이다"
+        )
+        actual = Fraction(kernel, brr)
+        err = abs(actual - baud) / baud
+        assert err < Fraction(2, 100), (
+            f"{baud}: 실제 {float(actual):.1f}, 오차 {float(err) * 100:.3f} % "
+            f"— 목록에서 빼야 한다"
+        )
+
+
+def test_the_documented_baud_error_table_is_the_real_calculation(clk):
+    """🔴 규격 §4.2.6 의 오차 표가 계산과 맞는지.
+
+    표는 사람이 손으로 적은 것이고, 클럭이 바뀌면 조용히 틀린 값이 된다.
+    사용자가 "1 Mbaud 는 오차가 없다" 를 보고 그것을 고르는데 실제로는
+    아니라면, 이 문서가 사람을 잘못된 자리로 데려간 것이다.
+    """
+    spec = (FW.parents[1] / "protocol" / "specification.md").read_text(
+        encoding="utf-8")
+    rows = re.findall(
+        r"^\|\s*\**([\d  ]+?)\**\s*\|\s*(\d+)\s*\|\s*([\d  ]+\.\d)\s*\|"
+        r"\s*([+−-]?[\d.]+)\s*%\s*\|",
+        spec, re.M)
+    assert len(rows) >= 6, f"§4.2.6 표에서 행을 못 뽑았다 (찾은 것 {len(rows)})"
+
+    kernel = clk["MK_USART3_KERNEL_HZ"]
+    for baud_s, brr_s, actual_s, err_s in rows:
+        baud = int(baud_s.replace(" ", "").replace(" ", ""))
+        brr = (kernel + baud // 2) // baud
+        assert brr == int(brr_s), f"{baud}: BRR 표 {brr_s}, 계산 {brr}"
+        actual = Fraction(kernel, brr)
+        assert abs(float(actual) - float(actual_s.replace(" ", ""))) < 0.1, (
+            f"{baud}: 실제 속도 표 {actual_s}, 계산 {float(actual):.1f}")
+        # 표는 부호를 함께 적는다 — 빠르냐 느리냐가 사람에게는 다른 정보다.
+        want = float(err_s.replace("−", "-"))
+        got = float((actual - baud) / baud * 100)
+        assert abs(got - want) < 0.001, (
+            f"{baud}: 오차 표 {err_s} %, 계산 {got:.3f} %")

@@ -7,6 +7,7 @@ GUI 와 분리돼 있다. GUI 가 없어도 이 계층만으로 수집·저장�
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from typing import Protocol
 
 #: 응답을 기다리는 동안 다시 읽기까지의 간격. 짧게 잡아 응답 지연을 줄이되
@@ -15,7 +16,12 @@ _POLL_INTERVAL_S = 0.005
 
 from host.core.config_schema import ConfigSchema, parse_catalog
 from host.core.errors import ProtocolError
-from host.core.limits import DEFAULT_BAUD
+from host.core.limits import (
+    DEFAULT_BAUD,
+    LINK_BAUD_CHOICES,
+    LINK_BAUD_CONFIRM_MS,
+    LINK_BAUD_KEY,
+)
 from host.core.framing import Command, build_command, parse_line
 from host.core.records import SeqTracker, is_telemetry, parse_record
 
@@ -38,29 +44,99 @@ RAW_BUFFER_MAXLEN = 5000
 class Transport(Protocol):
     """보드와 줄 단위로 주고받는 통로."""
 
+    #: 지금 이 통로가 쓰고 있는 속도 (규격 §4.2).
+    baud: int
+
     def write(self, data: str) -> None: ...
     def read_lines(self) -> Iterator[str]: ...
+    def reopen(self, baud: int) -> None: ...
     def close(self) -> None: ...
 
 
-class LoopbackTransport:
-    """DeviceSim 을 직접 물리는 트랜스포트. 시리얼 없이 전 구간을 시험한다."""
+@dataclass(frozen=True)
+class BaudChangeResult:
+    """링크 속도 변경 시도의 결말 (규격 §4.2).
 
-    def __init__(self, sim) -> None:
+    🔴 **거부·통신 실패·성공을 한 값으로 뭉개지 않는다.** 사용자가 알아야
+       하는 것은 "지금 보드와 말이 되는가" 와 "어디서 멈췄는가" 둘이고,
+       실패했을 때 그 둘을 말해 주지 못하면 화면 앞의 사람이 할 수 있는
+       판단이 "전원을 뽑는다" 밖에 없다.
+    """
+
+    ok: bool
+    #: 이 호출이 끝난 뒤 **호스트가 실제로 쓰고 있는** 속도.
+    baud: int
+    #: 어디까지 갔나 — "same"·"set"·"reopen"·"confirm"·"confirmed"·"reverted"
+    stage: str
+    #: 보드가 돌려준 거부 사유(RANGE·MODE·CAPACITY…). 거부일 때만.
+    reason: str = ""
+    #: 보드에 닿지 못한 경우. 거부와는 다른 사실이다.
+    error: str = ""
+    #: 옛 속도로 되돌아와 보드와 다시 말이 되는 것을 확인했는가.
+    #: 🔴 실패했을 때 이 값이 거짓이면 사람이 손을 대야 한다.
+    recovered: bool = False
+
+
+class LoopbackTransport:
+    """DeviceSim 을 직접 물리는 트랜스포트. 시리얼 없이 전 구간을 시험한다.
+
+    🔴 **속도가 맞지 않으면 줄이 오가지 않는다** (규격 §4.2).
+
+       진짜 UART 가 없다고 이 통로를 언제나 통하게 두면, 링크 속도 변경의
+       실패 경로 — 이 기능의 본체 — 를 시뮬레이터로는 한 번도 못 밟는다.
+       보드가 새 속도로 말하는데 호스트가 옛 속도로 듣는 상태를 여기서
+       그대로 재현한다: 양쪽 값이 다르면 쓴 것도 읽을 것도 사라진다.
+    """
+
+    def __init__(self, sim, baud: int = DEFAULT_BAUD) -> None:
         self.sim = sim
-        self._pending: list[str] = []
+        self.baud = baud
+        #: 🔴 `(내보낸 속도, 줄)`. 속도를 줄마다 붙들어 둬야 하는 이유가
+        #:    있다 — 보드는 응답을 **옛 속도로 내보낸 다음** 속도를 바꾼다
+        #:    (규격 §4.2.2 규칙 1). 읽을 때의 속도로 판정하면 그 응답까지
+        #:    버려져, 규격이 지키라고 한 순서를 시뮬레이터가 어기는 꼴이
+        #:    된다. 실제로 그렇게 만들었다가 잡았다.
+        self._pending: list[tuple[int, str]] = []
+
+    def _board_baud(self) -> int:
+        return getattr(self.sim, "link_baud", self.baud)
 
     def write(self, data: str) -> None:
+        if self.baud != self._board_baud():
+            return                       # 보드가 못 알아듣는 파형이다
         for line in data.splitlines():
-            if line.strip():
-                self._pending.extend(self.sim.feed(line + "\r\n"))
+            if not line.strip():
+                continue
+            out = self.sim.feed(line + "\r\n")
+            # 🔴 태그는 feed **뒤의** 속도다. 명령 응답은 그 명령을 다 처리한
+            #    끝에 나가므로, 처리 중에 속도가 바뀌었다면 응답은 새 속도로
+            #    나간 것이다 — 그것이 규격 §4.2.2 규칙 1 이 금지하는 순서이고,
+            #    여기서 앞의 속도로 태그하면 그 위반이 시험을 통과해 버린다.
+            #    (제대로 된 구현에서는 feed 가 속도를 안 바꾸므로 앞뒤가 같다.)
+            self._pending.extend((self._board_baud(), ln) for ln in out)
 
     def read_lines(self) -> Iterator[str]:
         pending, self._pending = self._pending, []
-        yield from pending
+        for baud, line in pending:
+            if baud == self.baud:
+                yield line
+            # 속도가 다를 때 온 줄은 **조용히 사라진다.** 실물에서는
+            # 프레이밍 오류가 되고, 어느 쪽이든 호스트에는 안 온 것과 같다.
 
     def tick(self, now_ms: int) -> None:
-        self._pending.extend(self.sim.tick(now_ms))
+        # 🔴 여기는 반대로 tick **전의** 속도로 태그한다. 주기 송신(하트비트·
+        #    텔레메트리)은 슈퍼루프 위쪽에서 만들어지고 속도 전환은 그 아래
+        #    에서 일어나므로(device_sim._link_tick), 이번 바퀴의 줄들은 옛
+        #    속도로 나간 것이 맞다. `write()` 와 앞뒤가 다른 것은 실수가
+        #    아니라 두 자리의 순서가 실제로 다르기 때문이다.
+        board = self._board_baud()
+        self._pending.extend((board, out) for out in self.sim.tick(now_ms))
+
+    def reopen(self, baud: int) -> None:
+        # 🔴 옛 속도로 오던 바이트는 버린다. 실물에서도 포트를 닫는 순간
+        #    커널 버퍼가 사라지고, 남겨 봐야 새 속도에서는 깨진 바이트다.
+        self._pending = []
+        self.baud = baud
 
     def close(self) -> None:
         pass
@@ -81,6 +157,7 @@ class SerialTransport:
         #    끊었다 넣어야 했다.
         #
         #    포트를 만들고 → 두 선을 내리고 → 그 다음에 연다. 순서가 전부다.
+        self.baud = baud
         self._ser = serial.Serial()
         self._ser.port = port
         self._ser.baudrate = baud
@@ -92,6 +169,34 @@ class SerialTransport:
         self._ser.dtr = False
         self._ser.rts = False
         self._buf = b""
+
+    def reopen(self, baud: int) -> None:
+        """포트를 닫고 새 속도로 다시 연다 (규격 §4.2).
+
+        🔴 **여기서도 DTR/RTS 를 열기 전에 내린다** (CLAUDE.md §4).
+
+           `baudrate` 만 바꾸는 방법도 있지만 쓰지 않는다. USB CDC 에서
+           그것이 실제로 line-coding 요청을 내보내는지는 드라이버에 달려
+           있고, 안 내보내면 F103 브리지는 옛 속도로 남는다 — 그러면 확인이
+           안 가고 보드가 되돌아간다. 닫았다 여는 것은 확실하다.
+
+           그리고 닫았다 여는 순간이 바로 이 보드가 멈추는 순간이다. 한 번은
+           보드가 죽어 GDB 로 리셋했고, 한 번은 F103 의 UART 브리지가 멈춰
+           보드 전원을 끊었다 넣어야 했다(2026-08-14 실증). 순서가 전부다:
+           닫고 → 속도를 바꾸고 → 두 선을 내리고 → 그 다음에 연다.
+        """
+        self._ser.close()
+        # 🔴 옛 속도로 오다 만 바이트를 버린다. 남기면 새 속도로 온 첫 줄에
+        #    앞에 붙어 그 줄까지 못 쓰게 만든다.
+        self._buf = b""
+        self._ser.baudrate = baud
+        self._ser.dtr = False
+        self._ser.rts = False
+        self._ser.open()
+        self._ser.dtr = False
+        self._ser.rts = False
+        self._ser.reset_input_buffer()
+        self.baud = baud
 
     def write(self, data: str) -> None:
         self._ser.write(data.encode("utf-8"))
@@ -137,9 +242,17 @@ class SerialTransport:
 
 class BoardService:
     def __init__(self, transport: Transport, *, clock: Callable[[], int],
-                 timeout_s: float = 2.0, raw_buffer_maxlen: int = RAW_BUFFER_MAXLEN):
+                 timeout_s: float = 2.0, raw_buffer_maxlen: int = RAW_BUFFER_MAXLEN,
+                 sleep: Callable[[float], None] = time.sleep,
+                 monotonic: Callable[[], float] = time.monotonic):
         self.transport = transport
         self.clock = clock
+        #: 🔴 링크 속도 변경(§4.2)이 쓰는 **벽시계**. `clock` 은 시뮬레이터에
+        #:    주입하는 장치 시간이라 시험에서 멈춰 있을 수 있는데, 보드의
+        #:    10초 시한은 장치 시간이 아니라 실제 경과 시간의 문제다.
+        #:    시험이 10초를 진짜로 기다리지 않도록 주입 가능하게 둔다.
+        self._sleep = sleep
+        self._monotonic = monotonic
         #: 명령 응답을 기다리는 최대 벽시계 시간. `$CFG,LIST` 는 7 KB 라
         #: 115200 baud 에서 600 ms 넘게 걸린다 — 여유를 두고 잡는다.
         self.timeout_s = timeout_s
@@ -213,15 +326,19 @@ class BoardService:
         # 마감시각은 **벽시계**로 잰다. `self.clock()` 은 시뮬레이터에 주입하는
         # 장치 시간이라 시험에서 멈춰 있을 수 있고, 그걸로 마감을 재면 영원히
         # 돈다. 전송 타임아웃은 장치 시간이 아니라 실제 경과 시간의 문제다.
-        deadline = time.monotonic() + self.timeout_s
+        # 🔴 `self._monotonic`/`self._sleep` 을 쓴다. 기본값은 `time` 의 그것
+        #    이라 실기기 동작은 그대로이고, 시험은 링크 속도 변경의 실패
+        #    경로(응답이 영영 안 오는 상태 × 재시도 3회)를 진짜 8초를
+        #    기다리지 않고 밟을 수 있다.
+        deadline = self._monotonic() + self.timeout_s
         while True:
             self.pump()
             for ack in self._acks:
                 if ack.args and ack.args[0] == verb:
                     return ack
-            if time.monotonic() >= deadline:
+            if self._monotonic() >= deadline:
                 break
-            time.sleep(_POLL_INTERVAL_S)
+            self._sleep(_POLL_INTERVAL_S)
 
         if self._acks:
             others = [a.args[0] if a.args else "?" for a in self._acks]
@@ -241,6 +358,122 @@ class BoardService:
         if ack.args[-1] == "OK":
             return True, ""
         return False, ack.args[-1]
+
+    # ------------------------------------------------------- 링크 속도 (§4.2)
+    def change_baud(self, new_baud: int, *, settle_s: float = 0.3,
+                    attempts: int = 3) -> BaudChangeResult:
+        """호스트 링크 속도를 바꾼다 — 규격 §4.2 의 절차를 그대로 밟는다.
+
+        🔴 **이 메서드는 실패하는 것이 정상 경로에 있다.** 921600 보다 높은
+           속도는 아무도 시험한 적이 없고(§4.2.5), F103(BMP) 브리지가 그것을
+           견디는지 모른다. 그래서 여기서 하는 일의 절반은 "바꾸기" 이고
+           나머지 절반은 **"안 되면 옛 속도로 돌아오기"** 다.
+
+        순서 (한 단계라도 뒤집으면 링크를 잃는다):
+
+          1. 옛 속도로 `$CFG,SET,link.baud,<new>` — 보드가 응답까지 옛
+             속도로 마친 뒤에 스스로 속도를 바꾼다
+          2. 포트를 닫고 **새 속도로** 다시 연다
+          3. `$HB` 를 먼저 보낸다 — 포트를 여는 동안 하트비트가 끊겨 보드가
+             RUN 으로 떨어졌을 수 있다(§6.2). `$BAUD,CONFIRM` 자체는 RUN
+             에서도 되지만, 이어질 `$CFG,SAVE` 는 CONFIG 가 필요하다
+          4. `$BAUD,CONFIRM,<new>` — 여기까지 오면 확정이다
+          5. 안 되면 옛 속도로 되돌아가 **보드의 시한이 지나기를 기다린다.**
+             그 뒤 `$ID` 로 링크가 살아났는지 확인한다
+
+        반환값의 `recovered` 가 거짓이면 사람이 손을 대야 한다는 뜻이다.
+        """
+        old = getattr(self.transport, "baud", DEFAULT_BAUD)
+        if new_baud == old:
+            return BaudChangeResult(True, old, "same", recovered=True)
+        if new_baud not in LINK_BAUD_CHOICES:
+            # 🔴 보내기 전에 막는다. 보드도 거부하겠지만, 그 거부를 받으려면
+            #    링크가 살아 있어야 하고 여기서 막으면 아예 안 건드린다.
+            return BaudChangeResult(
+                False, old, "set", reason="RANGE",
+                error=f"낼 수 없는 속도다: {new_baud}", recovered=True)
+
+        # 1) 옛 속도로 요청. 응답도 옛 속도로 온다 (§4.2.2 규칙 1).
+        try:
+            ack = self.send("CFG", "SET", LINK_BAUD_KEY, str(new_baud))
+        except ProtocolError as exc:
+            return BaudChangeResult(False, old, "set", error=str(exc),
+                                    recovered=True)
+        if not ack.args or ack.args[-1] != "OK":
+            reason = ack.args[-1] if ack.args else "MALFORMED"
+            # 🔴 보드가 거부했으면 **아무것도 안 바뀐다.** 포트를 다시 열지
+            #    않는다 — 여는 순간이 이 보드가 멈추는 순간이다.
+            return BaudChangeResult(False, old, "set", reason=reason,
+                                    recovered=True)
+
+        # 여기서부터 보드의 10초 시한이 흐른다.
+        deadline = self._monotonic() + LINK_BAUD_CONFIRM_MS / 1000.0
+
+        # 2) 새 속도로 다시 연다.
+        try:
+            self.transport.reopen(new_baud)
+        except Exception as exc:                          # noqa: BLE001
+            return self._baud_fallback(old, deadline, "reopen", error=str(exc))
+
+        # 3~4) 확인. 포트가 늦게 열리는 일이 있으므로 몇 번 시도한다.
+        last_error = ""
+        for _ in range(max(1, attempts)):
+            self._sleep(settle_s)
+            try:
+                self.heartbeat()
+                ack = self.send("BAUD", "CONFIRM", str(new_baud))
+            except ProtocolError as exc:
+                last_error = str(exc)
+                continue
+            if ack.args and ack.args[-1] == "OK":
+                return BaudChangeResult(True, new_baud, "confirmed",
+                                        recovered=True)
+            # 🔴 보드가 **응답은 했는데 거부**했다. 링크는 멀쩡하다는 뜻이라
+            #    다시 시도해 봐야 답이 달라지지 않는다 — 곧장 되돌린다.
+            reason = ack.args[-1] if ack.args else "MALFORMED"
+            return self._baud_fallback(old, deadline, "confirm", reason=reason)
+
+        return self._baud_fallback(
+            old, deadline, "confirm",
+            error=last_error or "새 속도로는 응답이 오지 않았다")
+
+    def _baud_fallback(self, old_baud: int, deadline: float, stage: str, *,
+                       reason: str = "", error: str = "") -> BaudChangeResult:
+        """옛 속도로 돌아가 보드가 스스로 되돌아오기를 기다린다 (§4.2.2 규칙 4).
+
+        🔴 **기다리는 것이 일의 절반이다.** 포트만 옛 속도로 열어 두면 보드는
+           아직 새 속도로 말하고 있어서 그 사이 오가는 모든 것이 쓰레기다.
+           호스트가 그것을 보고 "보드가 죽었다" 고 판단하면, 사람은 전원을
+           뽑는다 — 10초만 기다리면 저절로 살아나는데도.
+        """
+        try:
+            self.transport.reopen(old_baud)
+        except Exception as exc:                          # noqa: BLE001
+            return BaudChangeResult(False, old_baud, stage, reason=reason,
+                                    error=error or str(exc), recovered=False)
+
+        # 보드의 시한이 지날 때까지 기다린다. 여유 0.5초는 우리 시계와 보드
+        # 시계가 정확히 같지 않기 때문이다.
+        remaining = deadline + 0.5 - self._monotonic()
+        if remaining > 0:
+            self._sleep(remaining)
+
+        # 🔴 시한이 지났다고 곧바로 물으면 안 된다. 보드가 실제로 되돌아가는
+        #    것은 슈퍼루프의 다음 바퀴이고, 그 전에 보낸 바이트는 아직 새
+        #    속도로 도는 보드에게 잡음이다 — 첫 시도가 실패하는 것이 정상이다.
+        #    한 번 더 물어본다.
+        recovered = False
+        for attempt in range(2):
+            self.pump()
+            try:
+                self.send("ID")
+                recovered = True
+                break
+            except ProtocolError:
+                if attempt == 0:
+                    self._sleep(0.3)
+        return BaudChangeResult(False, old_baud, stage, reason=reason,
+                                error=error, recovered=recovered)
 
     def fetch_schema(self) -> ConfigSchema:
         """$CFG,LIST 로 카탈로그를 받아 스키마를 만든다."""
