@@ -252,6 +252,29 @@ static void test_init_command_order_is_exactly_what_the_datasheet_needs(void)
     CHECK(same, "3A 36 11 2A 2B 2C ... 29 순서로 나간다");
 }
 
+/* 🔴 MADCTL 의 BGR 비트는 **실물이 정했다**. [실증 2026-08-19]
+ *
+ *    D3=0 으로 굽고 주황(255,128,0)을 채웠더니 화면이 파랑으로 나왔다.
+ *    패널이 첫 바이트를 B 로 받는다 — 컬러필터가 BGR 이다. 데이터시트의
+ *    리셋 기본값 00h(p.194)는 칩 기준이고 모듈의 필터 배열은 거기 없다.
+ *
+ *    이 시험이 있는 이유: 누군가 "데이터시트 기본값이 00h 인데 왜 08h 지"
+ *    하고 되돌리면 화면 색이 통째로 뒤집힌다. 그런데 그 사실은 **실물을
+ *    봐야만** 안다 — 시험이 없으면 아무것도 안 막는다. */
+static void test_madctl_sets_bgr_because_the_panel_is_bgr(void)
+{
+    setup();
+    set_enabled(1);
+    run_ms(4000, 1);
+    int e = index_of_command(0x36u);
+    CHECK(e >= 0 && e + 1 < BUS.n, "MADCTL 뒤에 파라미터가 있다");
+    if (e >= 0 && e + 1 < BUS.n) {
+        CHECK(BUS.dc[e + 1] == 1 && BUS.len[e + 1] == 1u
+              && BUS.first[e + 1] == 0x08u,
+              "MADCTL 파라미터가 0x08 (BGR=1, 나머지 0)");
+    }
+}
+
 /* 🔴 18bpp 를 고른다. ILI9488.pdf p.200 §5.2.34: 파라미터는
  *    `X DPI[2:0] X DBI[2:0]` 이고 110 = 18 bits/pixel. 둘 다 110 → 0x66. */
 static void test_colmod_selects_eighteen_bits_per_pixel(void)
@@ -455,6 +478,7 @@ int main(void)
     test_reset_pulse_comes_first_and_is_long_enough();
     test_no_command_before_the_reset_cancel_time();
     test_init_command_order_is_exactly_what_the_datasheet_needs();
+    test_madctl_sets_bgr_because_the_panel_is_bgr();
     test_colmod_selects_eighteen_bits_per_pixel();
     test_address_window_covers_the_whole_panel();
     test_tick_never_waits_for_the_transfer();
