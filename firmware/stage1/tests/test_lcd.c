@@ -26,7 +26,10 @@ static int failures = 0;
 
 /* ---- 가짜 버스 ---------------------------------------------------------- */
 
-#define MAX_EV 1024
+/* 🔴 전면 한 장이 480행 + 명령 몇 개다. 주기 갱신 시험은 그것을 네 번쯤
+ *    보므로 1024 로는 통째로 모자란다 — 기록이 넘치면 시험이 "갱신이 안
+ *    됐다" 고 거짓말한다(실제로 그렇게 한 번 속았다). */
+#define MAX_EV 8192
 
 typedef struct {
     /* 전송 기록 */
@@ -49,6 +52,26 @@ typedef struct {
     int      reset_pulses;
 
     int      backlight_on_at_ev;  /* 백라이트를 켤 때까지 나간 전송 수 */
+
+    /* ── 되읽기 기록 ────────────────────────────────────────────────
+     *
+     * 🔴 `send` 와 **따로** 센다. 되읽기는 그림을 안 그리므로, 같은 통에
+     *    넣으면 "다 그린 뒤에는 조용하다" 같은 시험이 되읽기 때문에
+     *    깨지는지 되읽기가 그림을 밀어낸 것인지 구분되지 않는다. */
+    int      xf_dc[MAX_EV];
+    size_t   xf_len[MAX_EV];
+    uint8_t  xf_first[MAX_EV];
+    int      xf_cs_low[MAX_EV];
+    int      xf_n;
+
+    /* 패널이 되돌려줄 값. 시험이 바꿔 가며 "깨진 패널" 을 흉내 낸다. */
+    uint8_t  reply_madctl;
+    uint8_t  reply_colmod;
+    uint8_t  last_read_cmd;
+
+    /* SPI 클럭 창구 */
+    uint32_t clock_khz;
+    int      clock_calls;
 } Bus;
 
 static Bus     BUS;
@@ -108,17 +131,66 @@ static int fake_send(void *ctx, const uint8_t *buf, size_t n)
     return 1;
 }
 
+/* 🔴 되읽기도 저절로 끝나지 않는다. `send` 와 같은 규약이다 — 시험이
+ *    mk_lcd_on_tx_done() 을 불러야 다음 걸음이 나간다. 되읽기 중에도
+ *    상태기계가 완료를 기다리며 돌면 시험이 멈춘다.
+ *
+ *    ILI9488.pdf p.122 Figure 108 "4-Line SPI Mode Read Data": 명령
+ *    바이트 뒤에 **8 Dummy Clock** 이 붙고 그 다음이 실제 데이터다.
+ *    명령표(p.155 §5.2.6 등)의 "1st Parameter is a dummy data" 와 같은
+ *    말이다. 그래서 여기서도 첫 바이트를 쓰레기로 돌려준다. */
+static int fake_xfer(void *ctx, const uint8_t *tx, uint8_t *rx, size_t n)
+{
+    Bus *b = (Bus *)ctx;
+    if (b->xf_n < MAX_EV) {
+        b->xf_dc[b->xf_n] = b->cur_dc;
+        b->xf_len[b->xf_n] = n;
+        b->xf_first[b->xf_n] = n ? tx[0] : 0u;
+        b->xf_cs_low[b->xf_n] = b->cur_cs_low;
+        b->xf_n++;
+    }
+    if (b->cur_dc == 0 && n > 0u) {
+        b->last_read_cmd = tx[0];       /* 명령 단계 */
+        rx[0] = 0xFFu;
+        return 1;
+    }
+    /* 데이터 단계 — 첫 바이트는 더미다. */
+    for (size_t k = 0; k < n; k++) { rx[k] = 0x5Au; }
+    if (n >= 2u) {
+        rx[1] = (b->last_read_cmd == 0x0Bu) ? b->reply_madctl
+              : (b->last_read_cmd == 0x0Cu) ? b->reply_colmod
+              : 0x00u;
+    }
+    return 1;
+}
+
+static void fake_set_clock(void *ctx, uint32_t khz)
+{
+    Bus *b = (Bus *)ctx;
+    b->clock_khz = khz;
+    b->clock_calls++;
+}
+
 static void setup(void)
 {
     memset(&BUS, 0, sizeof BUS);
     BUS.reset_low_ms = -1;
     BUS.reset_high_ms = -1;
     BUS.backlight_on_at_ev = -1;
+    /* 기본은 "패널이 우리가 써 넣은 값을 그대로 돌려준다". */
+    BUS.reply_madctl = MK_LCD_MADCTL;
+    BUS.reply_colmod = MK_LCD_COLMOD;
     mk_cfgtable_init(&CFG);
 
     MkLcdIo io = { fake_cs, fake_dc, fake_reset, fake_backlight,
-                   fake_send, &BUS };
+                   fake_send, fake_xfer, fake_set_clock, &BUS };
     mk_lcd_init(&LCD, &io, CMDBUF, sizeof CMDBUF, ROWBUF, sizeof ROWBUF);
+}
+
+static void set_u32(const char *key, uint32_t v)
+{
+    MkCfgItem *it = mk_cfg_find(&CFG, key);
+    if (it) { it->cur.u = v; }
 }
 
 static void set_enabled(int on)
@@ -158,6 +230,26 @@ static int index_of_command(uint8_t cmd)
         if (BUS.dc[e] == 0 && BUS.first[e] == cmd) { return e; }
     }
     return -1;
+}
+
+/* cmd 가 몇 번 나갔나. */
+static int count_command(uint8_t cmd)
+{
+    int k = 0;
+    for (int e = 0; e < BUS.n; e++) {
+        if (BUS.dc[e] == 0 && BUS.first[e] == cmd) { k++; }
+    }
+    return k;
+}
+
+/* cmd 가 나간 시각들. 반환 = 개수. */
+static int times_of_command(uint8_t cmd, int64_t *out, int cap)
+{
+    int k = 0;
+    for (int e = 0; e < BUS.n && k < cap; e++) {
+        if (BUS.dc[e] == 0 && BUS.first[e] == cmd) { out[k++] = BUS.at[e]; }
+    }
+    return k;
 }
 
 /* ---- 시험 ---------------------------------------------------------------- */
@@ -468,12 +560,319 @@ static void test_a_short_row_buffer_stops_it_before_it_starts(void)
     memset(&BUS, 0, sizeof BUS);
     mk_cfgtable_init(&CFG);
     MkLcdIo io = { fake_cs, fake_dc, fake_reset, fake_backlight,
-                   fake_send, &BUS };
+                   fake_send, fake_xfer, fake_set_clock, &BUS };
     static uint8_t small[16];
     mk_lcd_init(&LCD, &io, CMDBUF, sizeof CMDBUF, small, sizeof small);
     set_enabled(1);
     run_ms(4000, 1);
     CHECK(BUS.n == 0, "행 버퍼가 짧으면 아무것도 안 보낸다");
+}
+
+/* ══ 회복 ══════════════════════════════════════════════════════════════════
+ *
+ * 🔴 왜 이것이 필요한가 [실기기 2026-08-19, 사용자]: "LCD는 가끔 리셋을
+ *    해줘야겠다. 노이즈 타면 픽셀이 다 깨지는데?" — 깨진 뒤 **저절로 안
+ *    돌아온다**는 것이 요지다. 부분 갱신은 값이 바뀐 칸만 다시 그리므로,
+ *    한 번 어긋난 그림은 그 칸의 값이 바뀔 때까지 그대로 남는다. 즉
+ *    부분 갱신의 효율이 곧 회복 불능의 원인이다.
+ *
+ * 🔴 그래서 **패널에게 되물어본다.** ILI9488 은 레지스터를 되읽을 수 있고
+ *    (0Bh RDDMADCTL p.157 §5.2.7 · 0Ch RDDCOLMOD p.159 §5.2.8),
+ *    MISO(PB14)가 실제로 물려 있다(J25.9, 넷리스트 확인 2026-08-19).
+ *
+ *    되읽은 값이 다르면 **명령이 깨진 것**이고 초기화부터 다시 한다.
+ *    같은데 화면이 이상하면 **GRAM 동기가 어긋난 것**이라 전면 다시
+ *    그리기로 족하다 — 그 둘을 가르는 것이 이 되읽기의 존재 이유다.
+ */
+
+/* 🔴 되읽기는 데이터시트가 시키는 모양이어야 한다.
+ *
+ *    ILI9488.pdf p.122 Figure 108 "4-Line SPI Mode Read Data": 명령
+ *    바이트 뒤에 **8 Dummy Clock** 이 붙고 그 다음에 실제 데이터가 나온다.
+ *    명령표도 같은 말을 한다 — p.155 §5.2.6(0Ah)·p.157 §5.2.7(0Bh)·
+ *    p.159 §5.2.8(0Ch) 모두 "1st Parameter" 가 더미이고 "2nd Parameter"
+ *    가 값이다.
+ *
+ *    더미를 안 건너뛰면 되읽은 값이 늘 틀리고, 그러면 이 회복 장치가
+ *    **멀쩡한 패널을 1초마다 다시 켜는** 장치가 된다. 지어낸 회복이
+ *    고장보다 나쁘다. */
+static void test_readback_asks_the_panel_the_way_the_datasheet_says(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 1000);
+    set_u32("lcd.redraw_ms", 0);
+    run_ms(4000, 1);
+
+    CHECK(BUS.xf_n >= 4, "되읽기가 네 걸음(명령·데이터 × 2) 이상 나갔다");
+    if (BUS.xf_n >= 4) {
+        CHECK(BUS.xf_dc[0] == 0 && BUS.xf_len[0] == 1u
+              && BUS.xf_first[0] == 0x0Bu,
+              "먼저 0Bh(RDDMADCTL)를 명령으로 보낸다");
+        CHECK(BUS.xf_dc[1] == 1 && BUS.xf_len[1] == 2u,
+              "그 다음 데이터 2바이트를 받는다 — 더미 1 + 값 1");
+        CHECK(BUS.xf_dc[2] == 0 && BUS.xf_len[2] == 1u
+              && BUS.xf_first[2] == 0x0Cu,
+              "이어서 0Ch(RDDCOLMOD)");
+        CHECK(BUS.xf_dc[3] == 1 && BUS.xf_len[3] == 2u,
+              "역시 더미 1 + 값 1");
+        int all_low = BUS.xf_cs_low[0] && BUS.xf_cs_low[1]
+                      && BUS.xf_cs_low[2] && BUS.xf_cs_low[3];
+        CHECK(all_low, "되읽기 내내 CS 가 Low (p.44 §4.2.1)");
+    }
+}
+
+/* 🔴 값이 맞으면 아무것도 하지 않는다. 되읽기가 맞는데도 다시 켜면
+ *    그것은 진단이 아니라 주기적 재부팅이다. */
+static void test_a_matching_readback_does_not_reinitialize(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 500);
+    set_u32("lcd.redraw_ms", 0);
+    run_ms(6000, 1);
+
+    MkLcdStat st;
+    mk_lcd_stat(&LCD, &st);
+    CHECK(BUS.reset_pulses == 1, "되읽기가 맞으면 RESX 를 다시 안 내린다");
+    CHECK(st.verify_ok >= 5u, "대조 성공이 주기만큼 쌓인다");
+    CHECK(st.verify_fail == 0u, "실패는 없다");
+    CHECK(st.reinit == 0u, "재초기화 0");
+    CHECK(st.readback == 1, "되읽기를 믿을 수 있다");
+}
+
+/* 🔴 값이 다르면 초기화부터 다시 한다. MADCTL 이 바뀌면 방향과 색이
+ *    통째로 틀어지고(실기기 2026-08-19 로 확인한 바로 그 증상), COLMOD 가
+ *    바뀌면 화소 폭이 어긋나 화면 전체가 사선으로 밀린다. 전면 다시
+ *    그리기로는 못 고친다 — 레지스터를 되세워야 한다. */
+static void test_a_mismatching_readback_reinitializes_the_panel(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 500);
+    set_u32("lcd.redraw_ms", 0);
+
+    /* 먼저 한 번은 맞아야 한다 — 되읽기 경로를 믿을 수 있다는 근거가
+     * 거기서 나온다(아래 시험 참고). */
+    run_ms(3000, 1);
+    uint32_t epoch0 = mk_lcd_epoch(&LCD);
+
+    BUS.reply_madctl = 0x00u;          /* 패널이 값을 잃었다 */
+    run_ms(3000, 1);
+
+    MkLcdStat st;
+    mk_lcd_stat(&LCD, &st);
+    CHECK(BUS.reset_pulses >= 2, "RESX 를 다시 내린다 — 하드웨어 리셋부터다");
+    CHECK(st.reinit >= 1u, "재초기화 횟수가 오른다");
+    CHECK(st.verify_fail >= 1u, "대조 실패가 세어진다");
+    CHECK(mk_lcd_epoch(&LCD) > epoch0,
+          "epoch 이 올라 화면 쪽이 전부 다시 그린다");
+    CHECK(index_of_command(0x36u) >= 0 && count_command(0x36u) >= 2,
+          "MADCTL 을 다시 써넣는다");
+    CHECK(count_command(0x29u) >= 2, "DISPON 도 다시 보낸다");
+}
+
+/* 🔴 **첫 대조가 되읽기 경로를 판정한다.**
+ *
+ *    초기화 직후의 MADCTL·COLMOD 는 방금 우리가 써 넣은 값이다. 그것이
+ *    안 맞으면 패널이 값을 잃은 것이 아니라 **되읽기를 못 믿는 것**이다
+ *    — 흔한 3.5" 모듈은 SDO 가 안 물려 있거나 저항 하나를 건너 나온다.
+ *
+ *    그때 재초기화로 대응하면 멀쩡한 화면을 몇 초마다 다시 켜게 되고,
+ *    사용자가 보는 증상은 원래 고장보다 나빠진다. 그래서 첫 대조가
+ *    틀리면 **검사만 끈다** — 그리고 그 사실을 $STAT 으로 알린다. */
+static void test_a_panel_that_cannot_be_read_only_disables_the_check(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 500);
+    set_u32("lcd.redraw_ms", 0);
+    BUS.reply_madctl = 0xFFu;          /* MISO 가 안 물린 판 */
+    BUS.reply_colmod = 0xFFu;
+    run_ms(8000, 1);
+
+    MkLcdStat st;
+    mk_lcd_stat(&LCD, &st);
+    CHECK(BUS.reset_pulses == 1, "재초기화하지 않는다");
+    CHECK(st.reinit == 0u, "재초기화 횟수가 0 이다");
+    CHECK(st.readback == 0, "되읽기를 못 믿는다고 표시한다");
+    CHECK(st.verify_fail == 1u,
+          "첫 실패 한 번만 세고 그 뒤로는 되묻지 않는다");
+    CHECK(BUS.xf_n == 4, "되읽기 자체를 멈춘다 — 버스를 이유 없이 안 쓴다");
+}
+
+/* 🔴 되읽기 중에도 한 바퀴에 한 걸음이다. 되읽기는 6바이트뿐이지만,
+ *    완료를 기다리는 코드를 여기 하나 넣으면 그것이 곧 슈퍼루프가 서는
+ *    자리가 된다 — 그리기 쪽에서 그렇게 안 짠 이유와 같다. */
+static void test_the_readback_never_waits_either(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 500);
+    set_u32("lcd.redraw_ms", 0);
+    run_ms(2000, 1);                   /* 첫 그림까지 마친다 */
+    int before = BUS.xf_n;
+
+    /* 이제 완료를 안 알리고 오래 돈다. */
+    for (int64_t t = 0; t < 2000; t++) {
+        BUS.now += 1;
+        mk_lcd_tick(&LCD, &CFG, BUS.now);
+    }
+    CHECK(BUS.xf_n == before + 1,
+          "완료를 안 알리면 되읽기도 한 걸음에서 멈춘다");
+}
+
+/* 🔴 **마지막 그물.** 되읽기가 맞는데 화면이 이상한 경우 — GRAM 쓰기
+ *    포인터가 밀린 경우 — 는 레지스터로 알 방법이 없다. 그래서 값이 안
+ *    바뀌어도 주기적으로 전면을 다시 그린다.
+ *
+ *    주기는 설정 항목이다. 사용자가 증상 빈도를 보고 조절해야 한다. */
+static void test_the_periodic_full_redraw_keeps_its_period(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 0);       /* 되읽기는 끄고 주기만 본다 */
+    set_u32("lcd.redraw_ms", 2000);
+    run_ms(9000, 1);
+
+    int64_t at[16];
+    int n = times_of_command(0x2Cu, at, 16);   /* RAMWR = 전면 한 장 */
+    CHECK(n >= 4, "첫 그림 + 주기 갱신 3회 이상");
+    int spaced = 1;
+    for (int k = 2; k < n; k++) {
+        int64_t gap = at[k] - at[k - 1];
+        if (gap < 2000 || gap > 2100) { spaced = 0; }
+    }
+    CHECK(spaced, "주기 갱신 간격이 설정한 2000 ms 다");
+    CHECK(BUS.reset_pulses == 1, "주기 갱신은 재초기화가 아니다");
+
+    MkLcdStat st;
+    mk_lcd_stat(&LCD, &st);
+    CHECK(st.redraw == (uint32_t)(n - 1), "전면 갱신 횟수가 $STAT 과 맞는다");
+    CHECK(st.reinit == 0u, "재초기화는 0 이다");
+}
+
+/* 🔴 주기 갱신이 **바탕까지** 다시 칠하는지. 칸만 다시 그리면 칸 바깥에
+ *    밀려 찍힌 화소가 그대로 남는다 — 그것이 사용자가 본 "픽셀이 다
+ *    깨진다" 의 모습이다. */
+static void test_the_periodic_redraw_repaints_the_whole_panel(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 0);
+    set_u32("lcd.redraw_ms", 2000);
+    /* 🔴 4000 ms 다. 주기 갱신은 2630 ms 쯤 시작해 480 바퀴를 쓰므로,
+     *    3000 ms 로 끊으면 갱신이 끝나기 전에 세게 된다. */
+    run_ms(4000, 1);
+
+    /* 두 번째 RAMWR 뒤로 480행이 다시 나가는지 센다. */
+    int seen = 0, ram2 = -1;
+    for (int e = 0; e < BUS.n; e++) {
+        if (BUS.dc[e] == 0 && BUS.first[e] == 0x2Cu) {
+            seen++;
+            if (seen == 2) { ram2 = e; break; }
+        }
+    }
+    CHECK(ram2 > 0, "두 번째 RAMWR 이 있다");
+    int rows = 0;
+    for (int e = ram2 + 1; e < BUS.n; e++) {
+        if (BUS.dc[e] == 1 && BUS.len[e] == MK_LCD_ROW_BYTES) { rows++; }
+    }
+    CHECK(rows == (int)MK_LCD_HEIGHT, "바탕을 480행 전부 다시 칠한다");
+}
+
+/* 🔴 전면 갱신도 **한 바퀴에 한 행**이다. 8 MHz 에서 460,800 바이트는
+ *    약 461 ms 인데, 한 번에 밀면 그동안 ADS1256 표본과 텔레메트리가
+ *    통째로 밀린다. 사용자가 못박은 선이 그것이다 (2026-08-19): "센서 값을
+ *    늦게 보내도 돼. 무조건 수집을 정상적으로 타임스탬프 찍어서 가지고
+ *    있어야해." */
+static void test_the_full_redraw_still_moves_one_row_per_tick(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 0);
+    set_u32("lcd.redraw_ms", 2000);
+    run_ms(2500, 1);                   /* 첫 그림 + 첫 주기 갱신 진입 */
+
+    int worst = 0;
+    for (int64_t t = 0; t < 600; t++) {
+        int before = BUS.n;
+        BUS.now += 1;
+        mk_lcd_tick(&LCD, &CFG, BUS.now);
+        mk_lcd_on_tx_done(&LCD);
+        int d = BUS.n - before;
+        if (d > worst) { worst = d; }
+    }
+    CHECK(worst <= 1, "전면 갱신 중에도 한 바퀴에 전송 하나뿐이다");
+}
+
+/* 🔴 SPI 클럭이 설정 항목이다.
+ *
+ *    [실기기 2026-08-19] 사용자가 "무작위로 깨진다" 고 했다 — 24V 스위칭과
+ *    무관하고 케이블을 만질 때도 아니다. 남은 유력 후보는 **핀 헤더 + 점퍼
+ *    선에 16 MHz 가 빠른 것**이다. 낮춰서 증상이 사라지면 그것 자체가
+ *    신호 무결성 문제라는 진단이 된다. 그래서 기본을 8 MHz 로 둔다
+ *    (사용자 결정 2026-08-19: "8mhz로 낮춰서 해보자"). */
+static void test_the_spi_clock_comes_from_the_catalog(void)
+{
+    setup();
+    set_enabled(1);
+    run_ms(500, 1);
+    CHECK(BUS.clock_calls >= 1, "클럭을 한 번은 세운다");
+    CHECK(BUS.clock_khz == 8000u, "기본이 8 MHz 다");
+
+    int calls = BUS.clock_calls;
+    run_ms(500, 1);
+    CHECK(BUS.clock_calls == calls, "안 바뀌면 다시 세우지 않는다");
+
+    set_u32("lcd.spi_khz", 16000u);
+    run_ms(500, 1);
+    CHECK(BUS.clock_khz == 16000u, "설정을 바꾸면 따라간다");
+}
+
+/* 🔴 회복 항목이 카탈로그에 있어야 한다. 없으면 사용자가 증상 빈도를 보고
+ *    조절할 수 없고, 그러면 이 장치는 우리가 정한 숫자 하나로 고정된다. */
+static void test_the_catalog_has_the_recovery_items(void)
+{
+    MkConfig cfg;
+    mk_cfgtable_init(&cfg);
+
+    MkCfgItem *hz = mk_cfg_find(&cfg, "lcd.spi_khz");
+    CHECK(hz != NULL, "카탈로그에 lcd.spi_khz 가 있다");
+    if (hz != NULL) {
+        CHECK(hz->vtype == MK_VT_ENUM, "enum 이다 — 분주비로 낼 수 있는 값만");
+        CHECK(hz->def.u == 8000u, "기본이 8 MHz");
+        CHECK(hz->n_choices == 4u, "2·4·8·16 MHz 넷");
+    }
+
+    MkCfgItem *vf = mk_cfg_find(&cfg, "lcd.verify_ms");
+    CHECK(vf != NULL, "카탈로그에 lcd.verify_ms 가 있다");
+    if (vf != NULL) {
+        CHECK(vf->vtype == MK_VT_U16, "u16 이다");
+        CHECK(vf->min == 0.0f, "0 = 끔이 가능하다");
+    }
+
+    MkCfgItem *rd = mk_cfg_find(&cfg, "lcd.redraw_ms");
+    CHECK(rd != NULL, "카탈로그에 lcd.redraw_ms 가 있다");
+    if (rd != NULL) {
+        CHECK(rd->vtype == MK_VT_U32, "u32 다 — 분 단위까지 잡을 수 있다");
+        CHECK(rd->min == 0.0f, "0 = 끔이 가능하다");
+    }
+}
+
+/* 🔴 되읽기·주기 갱신을 껐으면 정말 아무 일도 없어야 한다. 회복 장치가
+ *    "끌 수 없는 것" 이 되면 그것 자체가 새로운 방해 요인이다. */
+static void test_recovery_can_be_turned_off_completely(void)
+{
+    setup();
+    set_enabled(1);
+    set_u32("lcd.verify_ms", 0);
+    set_u32("lcd.redraw_ms", 0);
+    run_ms(4000, 1);
+    int painted = BUS.n;
+    run_ms(60000, 1);
+    CHECK(BUS.n == painted, "둘 다 끄면 다 그린 뒤 한 바이트도 안 나간다");
+    CHECK(BUS.xf_n == 0, "되읽기도 아예 안 한다");
 }
 
 int main(void)
@@ -496,6 +895,17 @@ int main(void)
     test_it_paints_once_and_then_goes_quiet();
     test_the_catalog_has_the_lcd_enabled_item();
     test_a_short_row_buffer_stops_it_before_it_starts();
+    test_readback_asks_the_panel_the_way_the_datasheet_says();
+    test_a_matching_readback_does_not_reinitialize();
+    test_a_mismatching_readback_reinitializes_the_panel();
+    test_a_panel_that_cannot_be_read_only_disables_the_check();
+    test_the_readback_never_waits_either();
+    test_the_periodic_full_redraw_keeps_its_period();
+    test_the_periodic_redraw_repaints_the_whole_panel();
+    test_the_full_redraw_still_moves_one_row_per_tick();
+    test_the_spi_clock_comes_from_the_catalog();
+    test_the_catalog_has_the_recovery_items();
+    test_recovery_can_be_turned_off_completely();
     printf(failures ? "FAILED %d\n" : "all passed\n", failures);
     return failures ? 1 : 0;
 }

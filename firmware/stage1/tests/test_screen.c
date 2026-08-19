@@ -113,7 +113,7 @@ static void boot_screen(void)
     set_u32("lcd.enabled", 1u);
 
     MkLcdIo io = { fake_cs, fake_dc, fake_reset, fake_backlight,
-                   fake_send, &BUS };
+                   fake_send, NULL, NULL, &BUS };
     mk_lcd_init(&LCD, &io, CMDBUF, sizeof CMDBUF, ROWBUF, sizeof ROWBUF);
     mk_screen_init(&SCR, NULL);
 
@@ -650,7 +650,7 @@ static void test_a_disabled_panel_stays_silent(void)
     mk_cfgtable_init(&CFG);
 
     MkLcdIo io = { fake_cs, fake_dc, fake_reset, fake_backlight,
-                   fake_send, &BUS };
+                   fake_send, NULL, NULL, &BUS };
     mk_lcd_init(&LCD, &io, CMDBUF, sizeof CMDBUF, ROWBUF, sizeof ROWBUF);
     mk_screen_init(&SCR, NULL);
 
@@ -693,7 +693,7 @@ static void test_a_tick_starts_at_most_one_transfer_and_never_waits(void)
     set_u32("lcd.enabled", 1u);
 
     MkLcdIo io = { fake_cs, fake_dc, fake_reset, fake_backlight,
-                   fake_send, &BUS };
+                   fake_send, NULL, NULL, &BUS };
     mk_lcd_init(&LCD, &io, CMDBUF, sizeof CMDBUF, ROWBUF, sizeof ROWBUF);
     mk_screen_init(&SCR, NULL);
 
@@ -718,15 +718,25 @@ static void test_a_tick_starts_at_most_one_transfer_and_never_waits(void)
 /* 🔴 시간 — 실제 SPI 소요시간을 흉내 낸 슈퍼루프에서 표본이 하나도 안
  *    버려지는지.
  *
- *    가짜 전송이 즉시 끝나지 않고 **바이트 수만큼 시간을 먹는다**
- *    (SPI2 16 MHz = 2 MB/s). 그동안에도 슈퍼루프는 계속 돌아야 하고,
- *    DRDY 를 흉내 낸 표본이 100 ms 마다 큐에 들어가며, 텔레메트리를
- *    흉내 낸 배출이 100 ms 마다 비운다.
+ *    가짜 전송이 즉시 끝나지 않고 **바이트 수만큼 시간을 먹는다**.
+ *    그동안에도 슈퍼루프는 계속 돌아야 하고, DRDY 를 흉내 낸 표본이
+ *    100 ms 마다 큐에 들어가며, 텔레메트리를 흉내 낸 배출이 100 ms 마다
+ *    비운다.
  *
  *    화면은 내내 값이 바뀌어 쉬지 않고 다시 그린다 — 가장 나쁜 경우다.
+ *
+ * 🔴 **8 MHz 로 잰다** (사용자 결정 2026-08-19: "8mhz로 낮춰서 해보자").
+ *    전면 한 장이 460,800 바이트라 16 MHz 에서 약 230 ms 였던 것이
+ *    8 MHz 에서는 약 461 ms 다 — 두 배다. 그래도 한 바퀴에 한 행이라
+ *    수집에는 영향이 없어야 하고, 그것을 여기서 확인한다.
+ *
+ * 🔴 그리고 이 시험 안에서 **회복 장치를 켠 채로** 돈다: 주기적 전면
+ *    갱신(2초)과 되읽기 대조(1초)가 10초 동안 여러 번 일어난다. 회복이
+ *    수집을 밀면 이 시험이 잡는다 — 그것이 이번 작업의 합격선이다.
  */
 #define SIM_STEP_US    100u        /* 슈퍼루프 한 바퀴 (넉넉히 잡은 값) */
-#define SIM_SPI_BPS    2000000u    /* 16 MHz / 8 = 초당 2 MB */
+#define SIM_SPI_BPS    1000000u    /* 8 MHz / 8 = 초당 1 MB */
+#define SIM_READ_BPS    500000u    /* 되읽기는 4 MHz (trc MIN 150 ns) */
 
 static uint64_t BUSY_UNTIL_US;
 static uint64_t SIM_NOW_US;
@@ -741,15 +751,35 @@ static int timed_send(void *ctx, const uint8_t *buf, size_t n)
     return fake_send(ctx, buf, n);
 }
 
+/* 되읽기도 시간을 먹는다. 패널은 우리가 넣은 값을 그대로 돌려준다 —
+ * 여기서 보는 것은 "회복이 수집을 미는가" 이지 불일치 처리가 아니다. */
+static int timed_xfer(void *ctx, const uint8_t *tx, uint8_t *rx, size_t n)
+{
+    (void)ctx;
+    if (SIM_NOW_US < BUSY_UNTIL_US) { OVERLAP_VIOLATIONS++; }
+    BUSY_UNTIL_US = SIM_NOW_US + ((uint64_t)n * 1000000u) / SIM_READ_BPS + 1u;
+    static uint8_t last_cmd;
+    if (n == 1u) { last_cmd = tx[0]; rx[0] = 0xFFu; return 1; }
+    rx[0] = 0x5Au;                                   /* 더미 (p.122 Fig.108) */
+    if (n >= 2u) {
+        rx[1] = (last_cmd == 0x0Bu) ? MK_LCD_MADCTL : MK_LCD_COLMOD;
+    }
+    return 1;
+}
+
 static void test_no_sample_is_lost_while_the_screen_redraws(void)
 {
     memset(&BUS, 0, sizeof BUS);
     mk_cfgtable_init(&CFG);
     set_u32("lcd.enabled", 1u);
     set_u32("lcd.period_ms", 250u);
+    /* 🔴 회복을 켠 채로 잰다. 10초 안에 전면 갱신 4회 + 되읽기 9회쯤이
+     *    들어간다 — 그래도 표본이 하나도 안 버려져야 한다. */
+    set_u32("lcd.redraw_ms", 2000u);
+    set_u32("lcd.verify_ms", 1000u);
 
     MkLcdIo io = { fake_cs, fake_dc, fake_reset, fake_backlight,
-                   timed_send, &BUS };
+                   timed_send, timed_xfer, NULL, &BUS };
     mk_lcd_init(&LCD, &io, CMDBUF, sizeof CMDBUF, ROWBUF, sizeof ROWBUF);
     mk_screen_init(&SCR, NULL);
 
@@ -813,6 +843,54 @@ static void test_no_sample_is_lost_while_the_screen_redraws(void)
     CHECK(bad_stamp == 0u, "표본의 순서가 뒤섞이지 않았다");
     CHECK(mk_queue_peak(&q) <= 4u,
           "큐가 깊게 차지 않는다 (배출이 밀리지 않았다)");
+
+    /* 🔴 회복이 실제로 돌았는지도 함께 본다. 안 돌았으면 위 결과는
+     *    "회복해도 안 밀린다" 의 근거가 아니라 그냥 옛 시험이다. */
+    MkLcdStat st;
+    mk_lcd_stat(&LCD, &st);
+    CHECK(st.redraw >= 3u, "10초 동안 전면 갱신이 실제로 여러 번 돌았다");
+    CHECK(st.verify_ok >= 3u, "되읽기 대조도 실제로 여러 번 돌았다");
+    CHECK(st.reinit == 0u, "값이 맞으므로 재초기화는 없었다");
+}
+
+/* 🔴 주기적 전면 갱신이 오면 **모든 칸**이 다시 그려져야 한다.
+ *
+ *    mk_lcd 는 바탕만 다시 칠한다. 칸 글자는 여기(mk_screen)가 들고 있고,
+ *    "이미 그렸다" 고 기억하고 있으면 바탕만 새로 칠해진 빈 화면이 남는다
+ *    — 회복이 화면을 지우고 끝나는 셈이다. 그것을 epoch 하나로 잇는다
+ *    (mk_lcd_epoch 주석). */
+static void test_a_periodic_full_redraw_repaints_every_field(void)
+{
+    MkScreenData d;
+    fill_data(&d);
+
+    boot_screen();
+    mk_screen_apply(&SCR, &d);
+    run_ms(3000);
+    size_t first = BUS.bytes;
+    CHECK(first > 0u, "처음에는 그렸다");
+
+    set_u32("lcd.redraw_ms", 1000u);
+    size_t before = BUS.bytes;
+    uint32_t epoch0 = mk_lcd_epoch(&LCD);
+    run_ms(1500);
+    /* 🔴 한 번만 시킨다. 전면 지우기 480행 + 칸 26개는 1000 ms 보다 오래
+     *    걸리므로, 주기를 켠 채로 두면 다 그리기 전에 다음 갱신이 와서
+     *    "남은 칸이 없다" 를 영영 못 본다 — 시험이 아니라 관측 방법의
+     *    문제다. */
+    set_u32("lcd.redraw_ms", 0u);
+    run_ms(4000);
+
+    CHECK(mk_lcd_epoch(&LCD) > epoch0, "주기 갱신이 epoch 을 올린다");
+    CHECK(BUS.bytes - before > first / 2u,
+          "바탕과 모든 칸을 통째로 다시 그린다");
+
+    int all_clean = 1;
+    for (unsigned i = 0; i < mk_screen_field_count(); i++) {
+        const MkScreenField *f = mk_screen_field(&SCR, i);
+        if (f->dirty || f->shown[0] == '\0') { all_clean = 0; }
+    }
+    CHECK(all_clean, "다 그리고 나면 남은 칸이 없다");
 }
 
 /* ---- 9. 설정 항목 --------------------------------------------------------- */
@@ -853,6 +931,7 @@ int main(void)
     test_a_disabled_panel_stays_silent();
     test_a_tick_starts_at_most_one_transfer_and_never_waits();
     test_no_sample_is_lost_while_the_screen_redraws();
+    test_a_periodic_full_redraw_repaints_every_field();
     test_the_catalog_has_the_refresh_period();
     printf(failures ? "FAILED %d\n" : "all passed\n", failures);
     return failures ? 1 : 0;

@@ -508,8 +508,15 @@ def test_the_lcd_owner_pins_the_touch_chip_select_high():
     R89 10k 풀업이 리셋 직후를 덮어 주지만 풀업은 "아직 아무도 안 몬 상태"
     일 뿐이라 근거로 삼지 않는다.
 
-    1단계는 터치를 안 쓰므로 이 핀에 대한 옳은 코드는 **딱 한 줄**,
-    초기화에서 High 로 쓰는 것뿐이다.
+    터치를 안 쓰므로 이 핀에 대한 옳은 코드는 **두 줄**이다 — 초기화에서
+    High 로 쓰고, 그 핀을 푸시풀 출력으로 여는 것.
+
+    🔴 **여는 줄이 빠지면 쓰는 줄은 아무 데도 안 간다.** 핀은 리셋 기본
+       상태(아날로그/입력)로 남고 High 를 지키는 것은 R89 풀업뿐이 된다.
+       그 상태에서 노이즈가 선을 끌어내리면 XPT2046 이 LCD 로 가는 클럭에
+       반응해 MISO 를 물고 늘어진다 — 사용자가 본 "무작위로 픽셀이
+       깨진다"(2026-08-19)의 유력한 후보가 그것이다. 쓰기만 검사하면
+       그 구멍을 못 잡으므로 여기서 방향까지 함께 본다.
     """
     code = _strip_comments((FW / "bsp" / LCD_OWNER).read_text(encoding="utf-8"))
     lines = [ln for ln in code.splitlines() if "PIN_TOUCH_CS" in ln]
@@ -523,8 +530,21 @@ def test_the_lcd_owner_pins_the_touch_chip_select_high():
     for ln in lines:
         assert "GPIO_PIN_RESET" not in ln and "?" not in ln, (
             f"{LCD_OWNER} 이 터치 CS 를 내릴 수 있다: {ln.strip()} — "
-            f"1단계에서 이 핀은 High 로 고정이다"
+            f"이 핀은 High 로 고정이다"
         )
+
+    # 🔴 능동으로 몬다 — `g.Pin = ... | PIN_TOUCH_CS` 로 출력을 열어야 한다.
+    #    그 대입 직전에 Mode 가 OUTPUT_PP 로 서 있는지까지 본다.
+    assigned = [ln for ln in lines if re.search(r"\.Pin\s*=", ln)]
+    assert assigned, (
+        f"{LCD_OWNER} 이 터치 CS 를 GPIO_Init 의 핀 목록에 넣지 않는다 — "
+        f"WritePin 만으로는 핀이 안 열려 풀업(R89)에만 기대게 된다"
+    )
+    idx = code.index(assigned[0])
+    before = code[:idx]
+    assert "GPIO_MODE_OUTPUT_PP" in before, (
+        f"{LCD_OWNER} 이 터치 CS 를 푸시풀 출력으로 열지 않는다"
+    )
 
 
 def test_nothing_opens_usart1():
@@ -559,7 +579,19 @@ def test_the_lcd_test_still_exists():
                  "test_tick_never_waits_for_the_transfer",
                  "test_sleep_out_is_followed_by_the_datasheet_wait",
                  "test_chip_select_stays_low_through_the_pixel_stream",
-                 "test_the_catalog_has_the_lcd_enabled_item"):
+                 "test_the_catalog_has_the_lcd_enabled_item",
+                 # 🔴 회복 (2026-08-19). 이것들이 사라지면 깨진 화면이
+                 #    저절로 안 돌아오던 자리로 조용히 되돌아간다 —
+                 #    그리고 그 사실은 화면을 몇 시간 지켜봐야만 보인다.
+                 "test_readback_asks_the_panel_the_way_the_datasheet_says",
+                 "test_a_matching_readback_does_not_reinitialize",
+                 "test_a_mismatching_readback_reinitializes_the_panel",
+                 "test_a_panel_that_cannot_be_read_only_disables_the_check",
+                 "test_the_readback_never_waits_either",
+                 "test_the_periodic_full_redraw_keeps_its_period",
+                 "test_the_periodic_redraw_repaints_the_whole_panel",
+                 "test_the_full_redraw_still_moves_one_row_per_tick",
+                 "test_the_spi_clock_comes_from_the_catalog"):
         assert name in t, f"{name} 이 사라졌다"
 
 

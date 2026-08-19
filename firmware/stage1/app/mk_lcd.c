@@ -57,7 +57,7 @@ static const MkLcdCmd INIT_CMDS[] = {
      * 🔴 이것을 SLPOUT 앞에 두는 이유: Availability 표가 "Sleep In: Yes"
      *    라 지금 보낼 수 있고, 잠에서 깬 뒤에 화소 형식이 바뀌는 순간이
      *    없어야 첫 프레임이 깨지지 않는다. */
-    { 0x3Au, 1u, { 0x66u, 0u, 0u, 0u }, 0u },
+    { 0x3Au, 1u, { MK_LCD_COLMOD, 0u, 0u, 0u }, 0u },
 
     /* 36h MADCTL — p.192 §5.2.30. **MX(D6)=1, BGR(D3)=1**, 나머지 0 → 0x48.
      *
@@ -84,7 +84,7 @@ static const MkLcdCmd INIT_CMDS[] = {
      *    mk_screen 의 좌표 계산도 건드리지 않는다 — 뒤집는 곳이 둘이 되면
      *    나중에 한쪽만 고쳐 놓고 왜 도로 틀렸는지 못 찾는다(mk_solctl 의
      *    flip_polarity 와 같은 규칙). */
-    { 0x36u, 1u, { 0x48u, 0u, 0u, 0u }, 0u },
+    { 0x36u, 1u, { MK_LCD_MADCTL, 0u, 0u, 0u }, 0u },
 
     /* 11h SLPOUT — p.166 §5.2.13. DC/DC 컨버터·내부 발진기·패널 주사를
      * 켠다. 뒤에 5 ms 를 쉰다(위 상수 주석). */
@@ -100,6 +100,19 @@ static const MkLcdCmd POST_CMDS[] = {
 
 #define N_INIT   (sizeof INIT_CMDS / sizeof INIT_CMDS[0])
 #define N_POST   (sizeof POST_CMDS / sizeof POST_CMDS[0])
+
+/* ── 되읽기 표 ────────────────────────────────────────────────────────────
+ *
+ * 🔴 우리가 써 넣은 값을 그대로 되묻는 것뿐이다. 그 이상은 안 묻는다 —
+ *    0Ah(RDDPM)·09h(RDDST)도 읽을 수 있지만(p.155 §5.2.6 · p.153 §5.2.5)
+ *    거기서 나오는 booster/sleep 비트는 우리가 고칠 방법이 없다. 고칠 수
+ *    없는 것을 재는 계기는 화면만 어지럽힌다.
+ *
+ * 🔴 명령 뒤에 **더미 1바이트**가 붙는다. p.122 Figure 108 "4-Line SPI
+ *    Mode Read Data" 의 "8 Dummy Clock" 이고, 명령표의 "1st Parameter is
+ *    a dummy data" 와 같은 말이다. 그래서 늘 (1 + 값) 바이트를 받는다. */
+static const uint8_t VERIFY_CMDS[2] = { 0x0Bu, 0x0Cu };
+#define N_VERIFY  2u
 
 /* ---- 도우미 -------------------------------------------------------------- */
 
@@ -131,6 +144,31 @@ static void send(MkLcd *l, const uint8_t *buf, size_t n)
          *    가 아니라 다음 바퀴마다 조용히 아무 일도 안 하는 상태다. */
         l->busy = 0;
     }
+}
+
+/* 되읽기 한 번을 시작한다. `send` 와 같은 완료 규약이다. */
+static void xfer(MkLcd *l, size_t n)
+{
+    l->busy = 1;
+    if (l->io.xfer == NULL || !l->io.xfer(l->io.ctx, l->rd_tx, l->rd_rx, n)) {
+        l->busy = 0;
+    }
+}
+
+/* 하드웨어 리셋부터 다시 한다.
+ *
+ * 🔴 `post_done` 을 반드시 되돌린다. 안 그러면 리셋으로 꺼진 패널에
+ *    DISPON 을 다시 안 보내고, 증상은 "회복했다는데 화면이 까맣다" 가
+ *    된다 — 회복 장치가 고장을 하나 더 만드는 셈이다. */
+static void restart(MkLcd *l)
+{
+    l->phase = MK_LCD_OFF;
+    l->step = 0u;
+    l->sub = 0u;
+    l->row = 0u;
+    l->post_done = 0;
+    l->job_pending = 0;
+    l->clear_filled = 0;
 }
 
 /* 표 한 줄을 한 걸음씩 나아간다. 그 줄이 끝났으면 1. */
@@ -187,6 +225,23 @@ static void clear_row(void *ctx, unsigned y_rel, unsigned w, uint8_t *out)
     l->clear_filled = 1;
 }
 
+/* 전면을 바탕색으로 지우는 의뢰를 세운다.
+ *
+ * 🔴 초기화 직후와 주기적 전면 갱신이 같은 코드를 쓴다. 갈라 두면 한쪽만
+ *    고쳐 놓고 "재초기화 뒤에는 멀쩡한데 주기 갱신 뒤에는 자국이 남는다"
+ *    같은 것을 쫓게 된다. */
+static void start_clear(MkLcd *l)
+{
+    l->job_x = 0u;
+    l->job_y = 0u;
+    l->job_w = MK_LCD_WIDTH;
+    l->job_h = MK_LCD_HEIGHT;
+    l->job_fill = clear_row;
+    l->job_ctx = l;
+    l->clear_filled = 0;
+    l->job_pending = 1;
+}
+
 /* 지금 직사각형의 주소창 명령 셋을 만든다.
  *
  * 2Ah CASET — p.175 §5.2.22 · 2Bh PASET — p.177 §5.2.23 ·
@@ -217,6 +272,131 @@ static void build_window(MkLcd *l)
     l->win[2].cmd = 0x2Cu;
     l->win[2].n_args = 0u;
     l->win[2].delay_ms = 0u;
+}
+
+/* ---- 회복 ---------------------------------------------------------------- */
+
+/* 설정에서 주기를 읽는다. 항목이 없거나 0 이면 "안 한다". */
+static uint32_t period_of(MkConfig *cfg, const char *key)
+{
+    MkCfgItem *it = mk_cfg_find(cfg, key);
+    return it != NULL ? it->cur.u : 0u;
+}
+
+static int verify_due(const MkLcd *l, MkConfig *cfg, int64_t now)
+{
+    /* 되읽기 창구가 없는 빌드(MISO 를 안 열었다)에서는 아예 안 한다. */
+    if (l->io.xfer == NULL) {
+        return 0;
+    }
+    /* 🔴 첫 대조가 틀렸으면 그 뒤로 묻지 않는다. 되읽기를 못 믿는 판에서
+     *    계속 물으면 버스만 쓰고, 그 답으로 무엇을 할 수도 없다. */
+    if (l->verify_primed && !l->read_trusted) {
+        return 0;
+    }
+    uint32_t period = period_of(cfg, "lcd.verify_ms");
+    if (period == 0u) {
+        return 0;
+    }
+    return now - l->verify_mark_ms >= (int64_t)period;
+}
+
+static int redraw_due(const MkLcd *l, MkConfig *cfg, int64_t now)
+{
+    uint32_t period = period_of(cfg, "lcd.redraw_ms");
+    if (period == 0u) {
+        return 0;
+    }
+    return now - l->redraw_mark_ms >= (int64_t)period;
+}
+
+/* 되읽은 값으로 무엇을 할지 정한다.
+ *
+ * 🔴 이 함수가 이번 작업의 요지다. 두 고장을 가른다:
+ *
+ *      다르다  → **명령이 깨졌다.** MADCTL 이 바뀌면 방향·색이 통째로
+ *                틀어지고 CASET/PASET 이 세우는 직사각형도 거울상으로
+ *                찍힌다(2026-08-19 실기기에서 실제로 본 증상). COLMOD 가
+ *                바뀌면 화소 폭이 어긋나 화면 전체가 사선으로 밀린다.
+ *                전면 다시 그리기로는 못 고친다 — 레지스터를 되세워야
+ *                하고, 그러려면 하드웨어 리셋부터가 확정적이다.
+ *
+ *      같다    → 레지스터는 멀쩡하다. 그래도 화면이 이상하다면 GRAM 쓰기
+ *                포인터가 밀린 것이고, 그것은 `lcd.redraw_ms` 의 주기적
+ *                전면 갱신이 덮는다. 여기서는 아무것도 안 한다.
+ */
+static void finish_verify(MkLcd *l)
+{
+    int match = (l->got_madctl == MK_LCD_MADCTL)
+                && (l->got_colmod == MK_LCD_COLMOD);
+
+    if (!l->verify_primed) {
+        /* 🔴 첫 대조는 **방금 우리가 써 넣은 값**을 되읽는 것이다. 여기서
+         *    어긋나면 패널이 값을 잃은 것이 아니라 되읽기 경로를 못 믿는
+         *    것이다 — 그때 재초기화로 대응하면 멀쩡한 화면을 몇 초마다
+         *    다시 켜게 되고, 사용자가 보는 증상이 원래 고장보다 나빠진다.
+         *    검사만 끄고 그 사실을 $STAT 으로 알린다. */
+        l->verify_primed = 1;
+        l->read_trusted = match;
+        if (match) { l->verify_ok++; } else { l->verify_fail++; }
+        l->phase = MK_LCD_READY;
+        return;
+    }
+
+    if (match) {
+        l->verify_ok++;
+        l->phase = MK_LCD_READY;
+        return;
+    }
+
+    l->verify_fail++;
+    l->reinit++;
+    restart(l);        /* epoch 은 OFF 분기가 올린다 */
+}
+
+/* 되읽기 한 걸음. 🔴 한 바퀴에 하나다 — 6바이트짜리라도 여기에 완료를
+ * 기다리는 코드를 넣으면 그것이 곧 슈퍼루프가 서는 자리가 된다. */
+static void step_verify(MkLcd *l, int64_t now)
+{
+    (void)now;
+    switch (l->sub) {
+    case 0u:
+        set_cs(l, 1);
+        if (l->io.dc != NULL) { l->io.dc(l->io.ctx, 0); }   /* 명령 */
+        l->rd_tx[0] = VERIFY_CMDS[l->verify_step];
+        xfer(l, 1u);
+        l->sub = 1u;
+        return;
+
+    case 1u:
+        if (l->io.dc != NULL) { l->io.dc(l->io.ctx, 1); }   /* 데이터 */
+        /* 🔴 2바이트를 받는다: 더미 1 + 값 1. p.122 Figure 108 의
+         *    "8 Dummy Clock", 명령표의 "1st Parameter is a dummy data".
+         *    더미를 안 건너뛰면 되읽은 값이 늘 틀리고, 그러면 이 장치가
+         *    멀쩡한 패널을 주기적으로 다시 켜는 장치가 된다. */
+        l->rd_tx[0] = 0u;
+        l->rd_tx[1] = 0u;
+        xfer(l, 2u);
+        l->sub = 2u;
+        return;
+
+    default:
+        if (l->verify_step == 0u) {
+            l->got_madctl = l->rd_rx[1];
+        } else {
+            l->got_colmod = l->rd_rx[1];
+        }
+        /* 명령 하나가 끝났으면 CS 를 올린다 (p.44 §4.2.1 — CSX 가 High 로
+         * 올라가야 그 명령이 닫힌다). */
+        set_cs(l, 0);
+        l->sub = 0u;
+        l->verify_step++;
+        if (l->verify_step < N_VERIFY) {
+            return;
+        }
+        finish_verify(l);
+        return;
+    }
 }
 
 /* ---- 바깥 문 ------------------------------------------------------------- */
@@ -253,6 +433,21 @@ int mk_lcd_ready(const MkLcd *l)
 uint32_t mk_lcd_epoch(const MkLcd *l)
 {
     return l->epoch;
+}
+
+void mk_lcd_stat(const MkLcd *l, MkLcdStat *out)
+{
+    out->epoch       = l->epoch;
+    out->reinit      = l->reinit;
+    out->redraw      = l->redraw;
+    out->verify_ok   = l->verify_ok;
+    out->verify_fail = l->verify_fail;
+    out->rejected    = l->rejected;
+    /* 🔴 아직 안 물어본 것과 "못 믿는다" 를 가른다. 둘을 같은 값으로 두면
+     *    화면이 "되읽기 안 됨" 이라고 말하는데 실은 아직 한 번도 안 물어본
+     *    상태일 수 있다 — pps_age_ms 의 null 과 같은 결. */
+    out->readback    = l->verify_primed ? (int8_t)(l->read_trusted ? 1 : 0)
+                                        : (int8_t)-1;
 }
 
 int mk_lcd_idle(const MkLcd *l)
@@ -307,13 +502,7 @@ void mk_lcd_tick(MkLcd *l, MkConfig *cfg, int64_t now_ms)
         }
         if (l->io.backlight != NULL) { l->io.backlight(l->io.ctx, 0); }
         set_cs(l, 0);
-        l->phase = MK_LCD_OFF;
-        l->step = 0u;
-        l->sub = 0u;
-        l->row = 0u;
-        l->post_done = 0;
-        l->job_pending = 0;
-        l->clear_filled = 0;
+        restart(l);
         return;
     }
 
@@ -322,6 +511,23 @@ void mk_lcd_tick(MkLcd *l, MkConfig *cfg, int64_t now_ms)
      *    밀린다. */
     if (l->busy) {
         return;
+    }
+
+    /* 🔴 SPI 쓰기 클럭. **버스가 노는 지금** 바꾼다 — 전송 중에 분주비를
+     *    건드리면 그 전송의 나머지가 어떤 클럭으로 나갔는지 아무도 모르고,
+     *    증상은 "가끔 한 행만 깨진다" 라 배선처럼 보인다.
+     *
+     *    항목이 없으면 8 MHz 로 본다. 설정표에서 항목이 사라지는 것은
+     *    실수이고, 실수했을 때는 느린 쪽이 안전하다. */
+    {
+        MkCfgItem *sk = mk_cfg_find(cfg, "lcd.spi_khz");
+        uint32_t khz = sk != NULL ? sk->cur.u : 8000u;
+        if (khz != l->spi_khz) {
+            l->spi_khz = khz;
+            if (l->io.set_clock != NULL) {
+                l->io.set_clock(l->io.ctx, khz);
+            }
+        }
     }
 
     switch (l->phase) {
@@ -368,14 +574,7 @@ void mk_lcd_tick(MkLcd *l, MkConfig *cfg, int64_t now_ms)
             /* 🔴 첫 일은 전면을 바탕색으로 지우는 것이다. GRAM 은 전원
              *    인가 직후 임의값이고, 그 위에 칸만 그리면 나머지 자리에
              *    잡동사니가 남는다. */
-            l->job_x = 0u;
-            l->job_y = 0u;
-            l->job_w = MK_LCD_WIDTH;
-            l->job_h = MK_LCD_HEIGHT;
-            l->job_fill = clear_row;
-            l->job_ctx = l;
-            l->clear_filled = 0;
-            l->job_pending = 1;
+            start_clear(l);
             l->phase = MK_LCD_READY;   /* 아래 READY 분기가 곧바로 집어간다 */
         }
         return;
@@ -425,12 +624,48 @@ void mk_lcd_tick(MkLcd *l, MkConfig *cfg, int64_t now_ms)
              *    사용자 눈에 그대로 보인다. */
             if (l->io.backlight != NULL) { l->io.backlight(l->io.ctx, 1); }
             l->post_done = 1;
+            /* 회복 시계를 여기서 맞춘다 — 화면이 제대로 선 순간이다. */
+            l->verify_mark_ms = now_ms;
+            l->redraw_mark_ms = now_ms;
             l->phase = MK_LCD_READY;
         }
         return;
 
+    case MK_LCD_VERIFY:
+        step_verify(l, now_ms);
+        return;
+
     case MK_LCD_READY:
     default:
+        /* 🔴 순서가 뜻이 있다. 되읽기가 먼저다 — 맡겨 둔 칸이 있을 때
+         *    미루면, 값이 자주 바뀌는 화면에서는 되읽기가 영영 차례를
+         *    못 받는다. 되읽기는 6바이트라 칸 하나를 두어 바퀴 늦출 뿐이다.
+         *
+         * 🔴 전면 갱신도 맡겨 둔 칸을 **기다리지 않는다.** 처음에는
+         *    `!job_pending` 일 때만 시작하게 짰는데, 값이 쉬지 않고 바뀌는
+         *    화면에서는 mk_screen 이 매 바퀴 다음 칸을 맡기므로 그 조건이
+         *    한 번도 성립하지 않았다 — 주기 갱신이 통째로 굶었고, 마침
+         *    test_no_sample_is_lost_while_the_screen_redraws 가 그것을
+         *    잡았다. 맡겨 둔 칸을 덮어도 잃는 것이 없다: 바로 아래에서
+         *    epoch 이 올라 mk_screen 이 그 칸을 다시 맡긴다. */
+        if (verify_due(l, cfg, now_ms)) {
+            l->verify_mark_ms = now_ms;
+            l->verify_step = 0u;
+            l->sub = 0u;
+            l->phase = MK_LCD_VERIFY;
+            return;
+        }
+        if (redraw_due(l, cfg, now_ms)) {
+            /* 🔴 **마지막 그물.** 되읽기가 맞는데도 화면이 이상한 경우 —
+             *    GRAM 쓰기 포인터가 밀린 경우 — 는 레지스터로 알 방법이
+             *    없다. 그래서 값이 안 바뀌어도 주기적으로 전면을 다시
+             *    그린다. 바탕까지 다시 칠해야 칸 바깥에 밀려 찍힌 화소가
+             *    지워진다. */
+            l->redraw_mark_ms = now_ms;
+            l->redraw++;
+            l->epoch++;              /* mk_screen 이 칸을 전부 다시 그린다 */
+            start_clear(l);
+        }
         /* 맡겨 둔 직사각형이 있으면 집어간다. 없으면 **한 바이트도 안
          * 나간다** — 이 조용함이 2단계의 요지다. */
         if (l->job_pending) {

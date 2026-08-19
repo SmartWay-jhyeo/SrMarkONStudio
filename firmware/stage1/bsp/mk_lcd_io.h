@@ -9,7 +9,7 @@
  *
  *      PB12  LCD_CS   (J25.3)   GPIO 출력. R88 10k 풀업
  *      PB13  SCK      (J25.7)   SPI2_SCK  = AF5. 직렬 22Ω(R91)
- *      PB14  MISO     (J25.9)   SPI2_MISO = AF5. 🔴 1단계는 열지 않는다
+ *      PB14  MISO     (J25.9)   SPI2_MISO = AF5. 🔴 3차부터 연다 — 되읽기
  *      PB15  MOSI     (J25.6)   SPI2_MOSI = AF5. 직렬 22Ω(R92)
  *      PB6   백라이트 (J25.8)   GPIO 출력
  *      PD13  RESX     (J25.4)   GPIO 출력. R90 10k 풀업
@@ -37,9 +37,15 @@
  *
  * 🔴 SCK 상한은 20 MHz 다. ILI9488.pdf p.332 §17.4.3 "DBI Type C Option 3
  *    (4-Line SPI System) Timing Characteristics": twc(Serial clock cycle,
- *    Write) MIN 50 ns. 읽기는 trc MIN 150 ns 라 6.6 MHz 까지다 — 나중에
- *    레지스터를 되읽으려면 분주비를 그때 낮춘다.
- *    64 MHz / 4 = 16 MHz 로 잡는다.
+ *    Write) MIN 50 ns. 읽기는 trc MIN 150 ns 라 **6.6 MHz** 까지다.
+ *
+ *    쓰기 클럭은 `lcd.spi_khz` 가 정한다 — **기본 8 MHz**(64/8). 실기기에서
+ *    "노이즈 타면 픽셀이 다 깨진다" 가 무작위로 나왔고(2026-08-19), 남은
+ *    유력 후보가 "핀 헤더 + 점퍼선에 16 MHz 가 빠른 것" 이라 낮춰서
+ *    시작한다. 낮춰서 증상이 사라지면 그것 자체가 신호 무결성 문제라는
+ *    진단이 된다 (사용자 결정: "8mhz로 낮춰서 해보자").
+ *
+ *    되읽기는 io_xfer() 안에서만 64/16 = 4 MHz 로 내려간다.
  *
  * 🔴 SPI 모드 0 (CPOL=0, CPHA=0). ILI9488.pdf p.44 §4.2.1: "The bit is read
  *    by the ILI9488 on the first rising edge of the SCL signal." 즉 상승

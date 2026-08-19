@@ -72,10 +72,85 @@ static int io_send(void *ctx, const uint8_t *buf, size_t n)
 {
     (void)ctx;
     /* 🔴 즉시 돌아온다. 완료는 DMA·EOT 인터럽트가 알려 준다. 여기서
-     *    HAL_SPI_Transmit(블로킹)을 부르면 한 행에 0.5 ms, 한 장에 230 ms
-     *    동안 슈퍼루프가 서고 ADS1256 표본과 텔레메트리가 통째로 밀린다. */
+     *    HAL_SPI_Transmit(블로킹)을 부르면 한 행에 1 ms, 한 장에 461 ms
+     *    (8 MHz 기준) 동안 슈퍼루프가 서고 ADS1256 표본과 텔레메트리가
+     *    통째로 밀린다. */
     return HAL_SPI_Transmit_DMA(&s_spi, (uint8_t *)(uintptr_t)buf,
                                 (uint16_t)n) == HAL_OK;
+}
+
+/* ── SPI 클럭 ─────────────────────────────────────────────────────────────
+ *
+ * 🔴 SPI2 의 커널 클럭은 **per_ck = hsi_ker_ck = 64 MHz** 다. 이 펌웨어는
+ *    PLL 을 안 켜므로 기본 소스(pll1_q_ck)를 쓸 수 없어 아래 spi_init() 이
+ *    직접 골라 준다. 아래 계산이 전부 그 64 MHz 를 전제로 한다.
+ *
+ *        64 / 4  = 16 MHz   쓰기 상한 20 MHz 안 (twc MIN 50 ns,
+ *                           ILI9488.pdf p.332 §17.4.3)
+ *        64 / 8  =  8 MHz   ← 기본. 사용자 결정 2026-08-19
+ *        64 / 16 =  4 MHz   되읽기는 항상 이 값으로 내려간다 (아래)
+ *        64 / 32 =  2 MHz
+ *
+ *    64 / 2 = 32 MHz 는 상한을 넘으므로 안 쓴다.
+ *
+ * 🔴 **되읽기 상한은 6.6 MHz 다** — 같은 표의 trc(Serial clock cycle,
+ *    Read) MIN 150 ns. 쓰기 상한(20 MHz)과 다르므로, 되읽기 동안만
+ *    4 MHz 로 내렸다가 되돌린다. 이것을 안 지키면 되읽은 값이 조용히
+ *    틀리고, 그러면 회복 장치가 멀쩡한 패널을 몇 초마다 다시 켠다.
+ */
+#define LCD_READ_PRESCALER   SPI_BAUDRATEPRESCALER_16   /* 64/16 = 4 MHz */
+
+static uint32_t s_write_presc = SPI_BAUDRATEPRESCALER_8; /* 64/8 = 8 MHz */
+
+/* 방향·분주비를 다시 세운다.
+ *
+ * 🔴 H7 의 HAL_SPI_Init() 은 안에서 주변장치를 껐다가 레지스터를 다시
+ *    쓴다. DMA 연결(__HAL_LINKDMA)은 핸들에 남으므로 다시 안 걸어도 된다.
+ *    전송이 떠 있을 때 부르면 안 된다 — 부르는 쪽이 busy 를 보고 있다. */
+static void spi_apply(uint32_t direction, uint32_t presc)
+{
+    s_spi.Init.Direction = direction;
+    s_spi.Init.BaudRatePrescaler = presc;
+    HAL_SPI_Init(&s_spi);
+}
+
+static void io_set_clock(void *ctx, uint32_t khz)
+{
+    (void)ctx;
+    /* 🔴 모르는 값이면 8 MHz 로 본다. 설정표와 여기가 갈리는 것은 실수이고,
+     *    실수했을 때는 느린 쪽이 안전하다. */
+    uint32_t presc = SPI_BAUDRATEPRESCALER_8;
+    if (khz >= 16000u)     { presc = SPI_BAUDRATEPRESCALER_4;  }
+    else if (khz >= 8000u) { presc = SPI_BAUDRATEPRESCALER_8;  }
+    else if (khz >= 4000u) { presc = SPI_BAUDRATEPRESCALER_16; }
+    else                   { presc = SPI_BAUDRATEPRESCALER_32; }
+
+    s_write_presc = presc;
+    spi_apply(SPI_DIRECTION_2LINES_TXONLY, presc);
+}
+
+/* 되읽기 한 번 (app/mk_lcd.c 의 되읽기 상태기계가 부른다).
+ *
+ * 🔴 여기만 **동기**다. 최대 2바이트이고 4 MHz 라 4 us 다 — DMA 를 걸고
+ *    인터럽트를 기다리는 비용이 전송 자체보다 크고, 그러자고 SPI2 를
+ *    전이중 DMA 로 다시 짜면 그림 그리는 쪽(지금 실기기에서 도는 경로)까지
+ *    함께 흔들린다. 대신 방향과 분주비를 이 함수 안에서만 바꾸고 즉시
+ *    되돌린다.
+ *
+ * 🔴 완료를 이 안에서 알린다. `send` 와 같은 규약을 지키되 동기로 끝나는
+ *    것뿐이라, 상태기계 쪽은 다음 바퀴에 다음 걸음을 낸다. */
+static int io_xfer(void *ctx, const uint8_t *tx, uint8_t *rx, size_t n)
+{
+    (void)ctx;
+    spi_apply(SPI_DIRECTION_2LINES, LCD_READ_PRESCALER);
+    HAL_StatusTypeDef st = HAL_SPI_TransmitReceive(
+        &s_spi, (uint8_t *)(uintptr_t)tx, rx, (uint16_t)n, 5u);
+    spi_apply(SPI_DIRECTION_2LINES_TXONLY, s_write_presc);
+
+    if (s_lcd != NULL) {
+        mk_lcd_on_tx_done(s_lcd);
+    }
+    return st == HAL_OK;
 }
 
 /* ---- 초기화 -------------------------------------------------------------- */
@@ -105,19 +180,32 @@ static void gpio_init(void)
     g.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(LCD_BUS_PORT, &g);
 
+    /* 🔴 터치 CS 는 **능동으로 몰아야 한다.** 위 WritePin 만 있고 이 줄의
+     *    핀 목록에서 빠지면 그 쓰기는 아무 데도 안 간다 — 핀은 리셋 기본
+     *    상태(아날로그/입력)로 남고, High 를 지키는 것은 R89 10k 풀업뿐이
+     *    된다. 풀업은 "아직 아무도 안 몬 상태" 일 뿐이라, 노이즈가 그 선을
+     *    끌어내리면 XPT2046 이 LCD 로 가는 클럭에 반응해 MISO 를 물고
+     *    늘어진다. 그것이 "무작위로 픽셀이 깨진다" 의 유력한 후보다
+     *    (사용자 관측 2026-08-19).
+     *
+     *    host/tests/test_firmware_safety.py 가 이 줄과 위 WritePin 을 함께
+     *    확인한다. */
     g.Pin   = PIN_RESX | PIN_DC | PIN_TOUCH_CS;
     HAL_GPIO_Init(LCD_CTL_PORT, &g);
 
-    /* 🔴 PIN_MISO(PB14)를 열지 않는다. 1단계는 쓰기만 하고, 이 선은 터치
-     *    칩과 공유라 우리가 AF 로 잡아 두면 나중에 터치를 붙일 때 누가
-     *    소유하는지가 흐려진다. 그래서 SPI2 도 TXONLY 로 연다.
-     *
-     * 🔴 PIN_TOUCH_IRQ(PD12)도 열지 않는다 — EXTI12 는 터치가 붙을 때
+    /* 🔴 PIN_TOUCH_IRQ(PD12)는 열지 않는다 — EXTI12 는 터치가 붙을 때
      *    쓴다(CLAUDE.md §4: EXTI15 는 ADS1256 DRDY 가 점유한다). */
-    (void)PIN_MISO;
     (void)PIN_TOUCH_IRQ;
 
-    g.Pin       = PIN_SCK | PIN_MOSI;
+    /* 🔴 PB14(MISO)를 **연다.** 2차까지는 쓰기만 해서 닫아 두었는데,
+     *    화면이 깨진 뒤 저절로 안 돌아오는 문제(2026-08-19)를 가리려면
+     *    패널에게 되물어야 한다 — MADCTL·COLMOD 를 되읽어 우리가 넣은
+     *    값과 대조하는 것이 "명령이 깨졌나 GRAM 이 어긋났나" 를 가르는
+     *    유일한 방법이다 (app/mk_lcd.h).
+     *
+     *    터치 칩과 공유하는 선이지만 터치 CS 는 늘 High 라(위) 이 선을
+     *    모는 것은 LCD 뿐이다. */
+    g.Pin       = PIN_SCK | PIN_MOSI | PIN_MISO;
     g.Mode      = GPIO_MODE_AF_PP;
     g.Pull      = GPIO_NOPULL;
     /* 직렬 22Ω(R91·R92)이 링잉을 잡아 주지만, 16 MHz 에서 엣지가 무뎌지면
@@ -151,17 +239,23 @@ static void spi_init(void)
 
     s_spi.Instance           = SPI2;
     s_spi.Init.Mode          = SPI_MODE_MASTER;
-    /* 🔴 송신 전용. MISO(PB14)를 안 열었으므로 2LINES 로 두면 HAL 이 없는
-     *    선을 기다린다. 터치를 붙일 때 이 값을 2LINES 로 바꾼다. */
+    /* 🔴 평상시(그림 그리기)는 송신 전용이다. MISO 는 열려 있지만, 화소를
+     *    460,800 바이트 미는 동안 받을 것이 없는데 전이중으로 두면 RX
+     *    FIFO 가 채워지고 오버런 처리를 이유 없이 안고 간다.
+     *
+     *    되읽기 때만 io_xfer() 가 2LINES 로 바꿨다가 즉시 되돌린다. */
     s_spi.Init.Direction     = SPI_DIRECTION_2LINES_TXONLY;
     s_spi.Init.DataSize      = SPI_DATASIZE_8BIT;
     /* 🔴 모드 0. ILI9488.pdf p.44 §4.2.1 — 상승 엣지에서 SDA 를 읽는다. */
     s_spi.Init.CLKPolarity   = SPI_POLARITY_LOW;
     s_spi.Init.CLKPhase      = SPI_PHASE_1EDGE;
     s_spi.Init.NSS           = SPI_NSS_SOFT;
-    /* 🔴 64 MHz / 4 = 16 MHz. 상한은 20 MHz 다 (twc MIN 50 ns, p.332
-     *    §17.4.3). /2 = 32 MHz 는 상한을 넘는다. */
-    s_spi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+    /* 🔴 64 MHz / 8 = 8 MHz 로 시작한다. `lcd.spi_khz` 가 첫 tick 에
+     *    io_set_clock() 을 부르므로 여기 값은 그때까지의 잠깐뿐이지만,
+     *    그 잠깐도 낮은 쪽에서 시작하는 편이 낫다 (사용자 결정
+     *    2026-08-19: "8mhz로 낮춰서 해보자"). 계산은 io_set_clock() 위
+     *    주석에 있다. */
+    s_spi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
     s_spi.Init.FirstBit      = SPI_FIRSTBIT_MSB;
     s_spi.Init.TIMode        = SPI_TIMODE_DISABLE;
     s_spi.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -203,7 +297,8 @@ void mk_lcd_io_init(MkLcd *l)
     gpio_init();
     spi_init();
 
-    MkLcdIo io = { io_cs, io_dc, io_reset, io_backlight, io_send, NULL };
+    MkLcdIo io = { io_cs, io_dc, io_reset, io_backlight, io_send,
+                   io_xfer, io_set_clock, NULL };
     mk_lcd_init(l, &io, s_cmd_buf, sizeof s_cmd_buf,
                 s_row_buf, sizeof s_row_buf);
 }
