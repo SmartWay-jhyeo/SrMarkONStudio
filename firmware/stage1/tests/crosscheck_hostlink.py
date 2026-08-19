@@ -119,7 +119,11 @@ class Shape:
 
 SHAPES: dict[str, Shape] = {
     "STAT": Shape(["stat"], "SACK,STAT,OK", keys=("stat",),
-                  nested=(("stat", "gnss"),)),
+                  # 🔴 `lcd` 도 안쪽까지 본다 [신규, 2026-08-19]. 화면 회복
+                  #    계수기는 실기기 증상("노이즈 타면 픽셀이 다 깨진다")
+                  #    을 쫓는 유일한 창구라, 한쪽만 필드를 빠뜨리면 GUI 가
+                  #    시뮬레이터에서만 그 수를 보여 준다.
+                  nested=(("stat", "gnss"), ("stat", "lcd"))),
     "CFG,LIST": Shape(["cfg_item+", "cfg_field+", "cfg_end"], "SACK,CFG,OK"),
 }
 

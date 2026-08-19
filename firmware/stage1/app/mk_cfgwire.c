@@ -180,6 +180,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
+                    const MkLcdStat *lcd,
                     char *out, size_t cap)
 {
     MkJson j;
@@ -271,6 +272,29 @@ int mk_cfgwire_stat(int64_t now_ms,
         mk_json_array_object_end(&j);
     }
     mk_json_array_end(&j);
+
+    /* 🔴 화면 회복 계수기 (규격 §7.4). "몇 번 깨졌고 몇 번 되살렸나" 를
+     *    모르면 이 문제가 해결됐는지 덮였는지 알 수 없다 — PPS 의
+     *    `pps_raw_count` 와 같은 이유로 싣는다.
+     *
+     *    `readback` 만 null 이 될 수 있다. 나머지는 카운터라 0 이 곧
+     *    "아직 없다" 다. */
+    mk_json_object_begin(&j, "lcd");
+    mk_json_u32(&j, "epoch",       lcd != NULL ? lcd->epoch : 0u);
+    mk_json_u32(&j, "reinit",      lcd != NULL ? lcd->reinit : 0u);
+    mk_json_u32(&j, "redraw",      lcd != NULL ? lcd->redraw : 0u);
+    mk_json_u32(&j, "verify_ok",   lcd != NULL ? lcd->verify_ok : 0u);
+    mk_json_u32(&j, "verify_fail", lcd != NULL ? lcd->verify_fail : 0u);
+    mk_json_u32(&j, "rejected",    lcd != NULL ? lcd->rejected : 0u);
+    if (lcd != NULL && lcd->readback >= 0) {
+        mk_json_bool(&j, "readback", lcd->readback != 0);
+    } else {
+        /* 아직 안 물어봤다. "못 믿는다"(false)와 섞으면 안 된다 — 화면이
+         * "되읽기 안 됨" 이라고 말하는데 실은 아직 한 번도 안 물어본
+         * 상태일 수 있다. */
+        mk_json_null(&j, "readback");
+    }
+    mk_json_object_end(&j);
 
     return mk_json_end(&j);
 }

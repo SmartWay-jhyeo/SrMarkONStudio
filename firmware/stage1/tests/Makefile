@@ -23,7 +23,7 @@ test_framing: test_framing.c ../app/mk_framing.c
 test_json: test_json.c ../app/mk_json.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test_hostlink: test_hostlink.c ../app/mk_hostlink.c ../app/mk_framing.c ../app/mk_json.c ../app/mk_config.c ../app/mk_cfgwire.c
+test_hostlink: test_hostlink.c ../app/mk_hostlink.c ../app/mk_framing.c ../app/mk_json.c ../app/mk_config.c ../app/mk_cfgwire.c ../app/mk_lcd.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_config: test_config.c ../app/mk_config.c

@@ -14,6 +14,12 @@
 #include <stdint.h>
 
 #include "mk_config.h"
+/* 🔴 `MkLcdStat` 하나 때문에 들인다. 함수는 안 부르므로 링크가 늘지
+ *    않는다 — 규격 §7.4 의 `lcd` 객체가 실을 값의 **모양**을 화면 쪽이
+ *    이미 정의해 두었고, 여기에 같은 필드를 한 벌 더 적으면 둘이 갈린다
+ *    (`MkRailState` 와 다른 판단이다 — 그쪽은 설정표에서 만들면 안 된다는
+ *    이유로 여기서 새로 정의했다). */
+#include "mk_lcd.h"
 
 /* 이 비트가 어느 레코드의 마스크에 해당하는가 (규격 §7.2 "해당 레코드").
  *
@@ -136,6 +142,22 @@ typedef struct {
  *    보내기는 했는가" / "재시도를 다 썼는가" / "문장을 받은 적은
  *    있는가"를 가른다. mk_gnssctl 이 안 붙어 있으면 호출 쪽이 전부 0을
  *    넘긴다. */
+/* 🔴 [신규, 2026-08-19] `lcd` — 화면 회복 계수기다(규격 §7.4).
+ *
+ *    실기기에서 "노이즈 타면 픽셀이 다 깨지는데?" 가 나왔고, 깨진 뒤
+ *    저절로 안 돌아오는 것이 문제였다. 회복 장치를 넣었으면 **몇 번
+ *    깨졌고 몇 번 되살렸는지**를 밖에서 볼 수 있어야 한다 — 그 수가
+ *    없으면 이 문제가 해결됐는지 덮였는지 아무도 모른다. PPS 에서
+ *    `pps_raw_count` 로 같은 일을 했다.
+ *
+ *      epoch/reinit/redraw/verify_ok/verify_fail/rejected  누적 카운터.
+ *        카운터라 0 이 곧 "아직 없다" 이므로 null 이 필요 없다.
+ *      readback  되읽기를 믿을 수 있나. **-1 이면 null 로 나간다** —
+ *        아직 한 번도 안 물어본 것과 "못 믿는다" 는 다르다(pps_age_ms 의
+ *        null 과 같은 결).
+ *
+ *    NULL 을 넘기면 전부 0 · readback 은 null 이다 — 화면이 안 붙은
+ *    빌드다. */
 int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *ctl_mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
@@ -149,6 +171,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
+                    const MkLcdStat *lcd,
                     char *out, size_t cap);
 
 /* `$CFG,GET` 응답 본문 한 줄. 반환은 길이, 실패면 음수.

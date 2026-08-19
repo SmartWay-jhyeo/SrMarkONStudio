@@ -757,3 +757,42 @@ def test_stat_gnss_pps_raw_fields_present_when_locked():
     assert rec["gnss"]["pps_raw_age_ms"] == rec["gnss"]["pps_age_ms"]
     assert rec["gnss"]["pps_raw_count"] >= 1
     assert rec["gnss"]["pps_unpaired_reason"] is None
+
+
+# ------------------------ $STAT 의 lcd (규격 §7.4) -------------------------
+#
+# 🔴 실기기에서 "노이즈 타면 픽셀이 다 깨지는데?" 가 나왔고, 깨진 뒤 저절로
+#    안 돌아오는 것이 문제였다(2026-08-19). 보드가 스스로 회복하게 만들었으니
+#    **회복이 몇 번 일어났는지**가 밖에서 보여야 한다 — 그 수가 없으면 이
+#    문제가 해결됐는지 덮였는지 아무도 모른다.
+#
+#    시뮬레이터에는 패널이 없다. 그래도 **모양은 내야** 한다 — GUI 가
+#    시뮬레이터를 상대로 만들어지고 실물에서 돌기 때문이다. 값을 지어내지는
+#    않는다(전부 0, readback 은 null).
+
+
+def test_stat_carries_the_lcd_recovery_counters():
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert set(rec["lcd"]) == {
+        "epoch", "reinit", "redraw", "verify_ok", "verify_fail",
+        "rejected", "readback",
+    }
+
+
+def test_the_simulator_does_not_invent_lcd_recovery_numbers():
+    """🔴 패널이 없으므로 전부 0 이고 readback 은 **null** 이다.
+
+    readback 을 False 로 내면 화면이 "되읽기 안 됨" 이라고 단정하게 되고,
+    사용자는 멀쩡한 배선을 뜯어 본다. "아직 안 물어봤다" 와 "못 믿는다" 는
+    다르다 — pps_age_ms 의 null 과 같은 결이다(규격 §7.4).
+    """
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    lcd = rec["lcd"]
+    assert lcd["readback"] is None
+    for key in ("epoch", "reinit", "redraw", "verify_ok", "verify_fail",
+                "rejected"):
+        assert lcd[key] == 0, f"{key} 를 지어냈다"

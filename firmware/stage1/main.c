@@ -399,6 +399,12 @@ int main(void)
         mk_screen_init(&s_screen, &src);
     }
 
+    /* 🔴 화면 회복 계수기를 $STAT 에 싣는다 (규격 §7.4). 실기기에서
+     *    "노이즈 타면 픽셀이 다 깨지는데?" 가 나온 뒤 넣은 것이라,
+     *    **몇 번 깨졌고 몇 번 되살렸는지**를 밖에서 볼 수 없으면 이 문제가
+     *    해결됐는지 덮였는지 알 방법이 없다. */
+    mk_hostlink_attach_lcd(&link, &s_lcd);
+
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;
 

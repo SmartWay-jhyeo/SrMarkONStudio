@@ -344,6 +344,19 @@ class DeviceSim:
                     for ch in range(AIN_CHANNELS)
                     if self.store.get(f"ain{ch}.enabled")
                 ],
+                # 🔴 화면 회복 계수기 (규격 §7.4). 실기기에서 "노이즈 타면
+                #    픽셀이 다 깨지는데?" 가 나온 뒤 넣은 창구다 — 몇 번
+                #    깨졌고 몇 번 되살렸는지를 모르면 그 문제가 해결됐는지
+                #    덮였는지 알 수 없다(PPS 의 pps_raw_count 와 같은 결).
+                #
+                #    [단순화, 시뮬레이터] 여기에는 패널이 없다. 그러니
+                #    **지어내지 않는다** — 전부 0 이고 readback 은 null 이다
+                #    ("아직 안 물어봤다"). 펌웨어가 화면을 안 붙였을 때
+                #    내보내는 값과 정확히 같다(mk_hostlink.c on_stat).
+                #    호스트가 필드를 찾을 수 있어야 하므로 모양은 낸다.
+                lcd={"epoch": 0, "reinit": 0, "redraw": 0,
+                     "verify_ok": 0, "verify_fail": 0, "rejected": 0,
+                     "readback": None},
             ),
             self._sack("STAT", "OK"),
         ]

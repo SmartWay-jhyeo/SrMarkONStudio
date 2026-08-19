@@ -5,6 +5,7 @@
 #include "mk_solctl.h"
 #include "mk_timeax.h"
 #include "mk_gnssctl.h"
+#include "mk_lcd.h"
 #include "mk_json.h"
 
 #include <string.h>
@@ -355,6 +356,11 @@ void mk_hostlink_attach_gnssctl(MkHostlink *h, struct MkGnssCtl *gnssctl)
     h->gnssctl = gnssctl;
 }
 
+void mk_hostlink_attach_lcd(MkHostlink *h, struct MkLcd *lcd)
+{
+    h->lcd = lcd;
+}
+
 static void on_stat(MkHostlink *h, int64_t now_ms)
 {
     if (h->cfg == NULL) {
@@ -469,12 +475,22 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         gnss_sentence_seen  = mk_gnssctl_sentence_seen(h->gnssctl);
     }
 
+    /* 🔴 화면 회복 계수기(규격 §7.4). 안 붙어 있으면 NULL 을 넘겨
+     *    전부 0 · readback = null 로 나간다 — timeax·rails·sol 과 같은 결. */
+    MkLcdStat ls;
+    if (h->lcd != NULL) {
+        mk_lcd_stat(h->lcd, &ls);
+    }
+
     /* 🔴 896 이던 것을 1024 로, 그 뒤 gnss.init_* 세 필드로 더 올렸다.
      *    [신규, 2026-08-19] "pps_raw_age_ms":<i64>,"pps_raw_count":<u32>,
      *    "pps_unpaired_reason":"no_valid_nmea" 가 최악 ~95바이트를 더
      *    먹는다(문자열 이유 중 가장 긴 "no_valid_nmea" 기준). 옛 여유가
-     *    빠듯해 1280 으로 올려 다시 확보한다. */
-    char body[1280];
+     *    빠듯해 1280 으로 올려 다시 확보한다.
+     *
+     *    [신규, 2026-08-19] `lcd` 객체가 최악 ~120바이트를 더 먹는다
+     *    (계수기 여섯이 각각 10자리까지 갈 수 있다). 1408 로 올린다. */
+    char body[1408];
     int n = mk_cfgwire_stat(
         now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
@@ -487,7 +503,9 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         gnss_init_sent, gnss_init_exhausted, gnss_sentence_seen,
         &rs,
         n_din > 0 ? ds : NULL, n_din,
-        n_q > 0 ? qs : NULL, n_q, body, sizeof body);
+        n_q > 0 ? qs : NULL, n_q,
+        h->lcd != NULL ? &ls : NULL,
+        body, sizeof body);
 
     if (!emit_json(h, body, sizeof body, n)) {
         emit_sack_err(h, "STAT", "BUSY");

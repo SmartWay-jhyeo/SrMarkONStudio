@@ -96,6 +96,10 @@ typedef struct {
      * 없으면 전부 거짓이다. */
     struct MkGnssCtl *gnssctl;
 
+    /* 화면 회복 계수기(규격 §7.4). 붙어 있으면 $STAT 의 `lcd` 가 실제
+     * 값을 싣는다. 없으면 전부 0 이고 readback 은 null 이다. */
+    struct MkLcd *lcd;
+
     /* 제어 모드 (규격 §6.4). `mk_hostlink_tick` 이 CONFIG->RUN 전이를
      * 보고 스스로 ACTIVE 로 되돌린다. */
     MkCtlMode   ctl_mode;
@@ -145,6 +149,11 @@ void mk_hostlink_attach_gnss(MkHostlink *h, MkGnssSend send, void *ctx);
  * $STAT 의 gnss.init_sent·init_exhausted·sentence_seen 이 전부 거짓이다. */
 struct MkGnssCtl;
 void mk_hostlink_attach_gnssctl(MkHostlink *h, struct MkGnssCtl *gnssctl);
+
+/* LCD 회복 계수기를 붙인다 (규격 §7.4). 부르지 않으면 $STAT 의 `lcd` 가
+ * 전부 0 이고 `readback` 은 null 이다 — 화면이 안 붙은 빌드다. */
+struct MkLcd;
+void mk_hostlink_attach_lcd(MkHostlink *h, struct MkLcd *lcd);
 
 /* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
  *
