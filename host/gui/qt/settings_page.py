@@ -28,7 +28,15 @@ from host.core.limits import DEFAULT_BAUD, LINK_BAUD_KEY
 from host.gui.link_baud import confirm_text, is_link_baud
 from host.gui.qt.cell import Cell
 from host.gui.qt.cells import RangeFields, RowWidget
+from host.gui.link_usage import (
+    USAGE_GROUPS,
+    compute_usage,
+    link_baud,
+    record_budget,
+    record_line,
+)
 from host.gui.qt.field_mask import FieldMaskCard
+from host.gui.qt.link_usage_card import LinkUsageCard
 from host.gui.qt.matrix_card import MatrixCard
 from host.gui.qt.parts import card_title, hairline
 from host.gui.qt.tare_panel import TarePanel
@@ -37,10 +45,8 @@ from host.gui.settings_form import (
     FIELD_MASK_KEYS,
     Row,
     SettingsForm,
-    TelemetryShape,
     group_label,
     matrix_of,
-    record_shape,
 )
 from host.gui.tare import tare_rows
 from host.gui.theme import Color, Space
@@ -84,6 +90,11 @@ class SettingsPage(QWidget):
         #:    온다(app.py `_render` 머리말).
         self._live_ma: dict[int, float | None] = {}
         self._tare: TarePanel | None = None
+        #: 채널·포트 표 위에 붙은 링크 사용량 요약들.
+        #: 🔴 탭마다 하나씩이다 — 위젯 하나를 여러 부모에 붙일 수 없고,
+        #:    무엇보다 **켜는 자리에서 보여야** 하기 때문이다. 값은 전부
+        #:    같은 계산(`compute_usage`)에서 나온다.
+        self._usage_cards: list[LinkUsageCard] = []
         #: 시험에서 확인 대화상자를 건너뛰기 위한 고리.
         self._confirm = self._ask_confirm
 
@@ -160,6 +171,7 @@ class SettingsPage(QWidget):
         keep = self._pages.currentIndex()
         self._form = form
         self._rows.clear()
+        self._usage_cards.clear()
         _clear(self._tabs)
         self._tab_buttons.clear()
         while self._pages.count():
@@ -190,6 +202,14 @@ class SettingsPage(QWidget):
             #    읽힌다.
             for card in self._form_cards(matrix.leftovers):
                 body.addWidget(card)
+            # 🔴 표 **위**에 놓는다. 사용자가 켜고 끄는 것은 이 표이고,
+            #    스크롤을 내리기 전에 이미 보여야 "켜면 얼마가 되는가" 를
+            #    켜기 전에 안다. I2C 표는 여섯 포트 × 다섯 열이라 아래에
+            #    두면 화면 밖으로 나간다.
+            if group.name in USAGE_GROUPS:
+                usage = LinkUsageCard()
+                self._usage_cards.append(usage)
+                body.addWidget(usage)
             body.addWidget(MatrixCard(
                 "", matrix,
                 lambda r: self._make_cell(r, compact=True),
@@ -249,8 +269,8 @@ class SettingsPage(QWidget):
                 row = masks.get(key)
                 if row is None:
                     continue
-                card = FieldMaskCard(row, self._form.fields, self._baud,
-                                     lambda k=kind: record_shape(self._form, k),
+                card = FieldMaskCard(row, self._form.fields,
+                                     lambda k=kind: self._preview(k),
                                      record_kind=kind)
                 card.changed.connect(self._on_changed)
                 self._rows[row.key] = card
@@ -266,10 +286,25 @@ class SettingsPage(QWidget):
         self._rows[scale_row.key] = w
         return w
 
-    def _shape(self) -> TelemetryShape:
+    def _preview(self, kind: str):
+        """마스크 카드가 그릴 (나갈 줄, 예산).
+
+        🔴 요약 표와 **같은 함수**를 지난다(`host/gui/link_usage.py`). 두
+           화면이 각자 재면 언젠가 한쪽만 고쳐지고, 그때 사용자는 어느 쪽을
+           믿어야 할지 알 수 없다.
+        """
+        form = self._form
+        return (record_line(form, kind),
+                record_budget(form, kind, link_baud(form, self._baud)))
+
+    def _refresh_usage(self) -> None:
+        """켜고 끈 결과를 즉시 반영한다. 🔴 어떤 항목이 바뀌어도 다시 잰다 —
+        채널·포트·주기·필드·링크 속도가 전부 같은 수에 곱해진다."""
         if self._form is None:
-            return TelemetryShape(channels=1, period_ms=100, float_digits=4)
-        return telemetry_shape(self._form)
+            return
+        usage = compute_usage(self._form, self._baud)
+        for card in self._usage_cards:
+            card.show_usage(usage)
 
     def _make_cell(self, row: Row, *, compact: bool = False) -> RowWidget:
         """🔴 표 안이든 폼이든 **같은 위젯**을 쓴다.
@@ -397,6 +432,9 @@ class SettingsPage(QWidget):
             mask_card = self._rows.get(key)
             if isinstance(mask_card, FieldMaskCard):
                 mask_card.refresh()
+        # 🔴 채널·포트 표 옆의 요약도 같은 순간에 갱신한다. 한쪽만 다시
+        #    그리면 두 화면이 서로 다른 순간의 숫자를 말한다.
+        self._refresh_usage()
 
         if errors:
             self._status.setText(f"고칠 것 {len(errors)}개 — 보낼 수 없다")

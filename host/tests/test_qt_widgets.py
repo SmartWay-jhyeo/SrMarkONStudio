@@ -798,3 +798,72 @@ def test_a_successful_change_marks_the_settings_unsaved(app, form):
 
     assert form.row("link.baud").value == "1500000"
     assert page.has_unsaved
+
+
+# ------------------------------------------------------- 링크 사용량 요약
+
+def _usage_cards(page):
+    from host.gui.qt.link_usage_card import LinkUsageCard
+
+    return page.findChildren(LinkUsageCard)
+
+
+def test_the_usage_summary_sits_where_the_channels_are_toggled(app, form):
+    """🔴 켜는 자리에서 보여야 한다.
+
+    예산은 원래 필드 마스크 카드 안에만 있었다. 그런데 사용자가 켜고 끄는
+    것은 **채널·포트 표**다 — 다른 탭에 있으면 그때그때 못 보고, 못 보면
+    여유가 없어진 것을 유실이 난 뒤에야 안다.
+    """
+    page = SettingsPage()
+    page.set_form(form)
+    assert len(_usage_cards(page)) >= 2, "아날로그·I2C 탭 둘 다에 있어야 한다"
+
+
+def test_turning_on_an_i2c_port_moves_the_summary_immediately(app, form):
+    """🔴 이것이 안 되던 것이다 — I2C 를 켜도 화면의 숫자가 안 움직였다."""
+    from host.gui.link_usage import compute_usage
+
+    page = SettingsPage()
+    page.set_form(form)
+    before = compute_usage(form, 921600).bytes_per_s
+
+    page.set_value("i2c10.kind", "2")           # 온습도 — 양 둘
+    page.set_value("i2c10.enabled", "true")
+
+    after = compute_usage(form, 921600)
+    assert after.bytes_per_s > before
+    # 카드가 실제로 그 수를 그리고 있다.
+    text = " ".join(c._message.text() for c in _usage_cards(page))
+    assert f"{after.ratio * 100:.0f}%" in text
+
+
+def test_the_two_places_show_the_same_number(app, form):
+    """🔴 요약과 필드 마스크 카드가 다른 숫자를 말하면 안 된다."""
+    from host.gui.field_budget import format_bytes_per_s
+    from host.gui.link_usage import compute_usage, record_budget
+
+    page = SettingsPage()
+    page.set_form(form)
+    card = page._rows["tx.fields_ain"]
+    budget = record_budget(form, "ain", 921600)
+
+    assert f"{budget.line_bytes} B" in card._budget.text()
+    assert format_bytes_per_s(budget.bytes_per_s) in card._budget.text()
+    ain_row = next(r for r in compute_usage(form, 921600).rows
+                   if r.kind == "ain")
+    assert format_bytes_per_s(ain_row.bytes_per_s) in card._budget.text()
+
+
+def test_the_mask_card_follows_the_link_speed(app, form):
+    """🔴 baud 가 고정이 아니다 — `link.baud` 를 올리면 카드의 % 도 준다."""
+    page = SettingsPage()
+    page.set_form(form)
+    card = page._rows["tx.fields_ain"]
+
+    page.set_value("link.baud", "115200")
+    slow = card._budget.text()
+    page.set_value("link.baud", "2000000")
+    fast = card._budget.text()
+
+    assert slow != fast

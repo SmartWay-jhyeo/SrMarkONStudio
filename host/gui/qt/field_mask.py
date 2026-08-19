@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from host.gui.field_budget import budget_message, compute_budget, sample_record
+from host.gui.field_budget import budget_message
 from host.gui.qt.parts import card_title, hairline
 from host.gui.settings_form import LOCKED_FIELD_LABELS, LOCKED_FIELDS, Row
 from host.gui.theme import Color, Font, Space
@@ -51,15 +51,24 @@ class FieldMaskCard(QFrame):
 
     changed = pyqtSignal(str, str)     # key, 마스크 문자열
 
-    def __init__(self, row: Row, fields: dict, baud: int,
-                 shape_of, record_kind: str = "ain",
+    def __init__(self, row: Row, fields: dict, preview_of,
+                 record_kind: str = "ain",
                  parent: QWidget | None = None) -> None:
+        """`preview_of` 는 `(나갈 줄, 예산)` 을 돌려주는 함수다.
+
+        🔴 [개정, 2026-08-20] 예전에는 이 카드가 baud 와 모양을 받아 **직접**
+           쟀다. 그러다 채널 표 옆에도 같은 요약이 생겼는데, 두 곳이 각자
+           재면 언젠가 한쪽만 고쳐지고 사용자는 어느 쪽을 믿을지 알 수 없다.
+           계산은 `host/gui/link_usage.py` 한 곳에서만 한다.
+
+           덤으로 baud 가 고정이 아니게 됐다 — `link.baud` 를 바꾸면 이
+           카드의 % 도 따라 움직인다(규격 §4.2).
+        """
         super().__init__(parent)
         self.setObjectName("card")
         self._key = row.key
         self._note_text = row.reason if not row.editable else row.note
-        self._baud = baud
-        self._shape_of = shape_of
+        self._preview_of = preview_of
         self._record_kind = record_kind
         self._boxes: dict[int, QCheckBox] = {}
 
@@ -145,14 +154,12 @@ class FieldMaskCard(QFrame):
         self.refresh()
 
     def refresh(self) -> None:
-        """미리보기와 대역폭을 다시 잰다. 어림하지 않고 실제 줄을 만든다."""
-        shape = self._shape_of()
-        names = [self._name_of(bit) for bit, box in sorted(self._boxes.items())
-                 if box.isChecked()]
-        record = sample_record(names, float_digits=shape.float_digits,
-                               record_type=self._record_kind)
-        budget = compute_budget(record, channels_enabled=shape.channels,
-                                period_ms=shape.period_ms, baud=self._baud)
+        """미리보기와 대역폭을 다시 잰다. 어림하지 않고 실제 줄을 만든다.
+
+        🔴 재는 것은 이 카드가 아니라 `link_usage` 다 — 채널 표 옆의 요약과
+           **같은 함수**를 지난다. 그래서 두 곳의 숫자가 갈릴 수 없다.
+        """
+        record, budget = self._preview_of()
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
         # 🔴 JSON 한 줄에는 공백이 없어서 `setWordWrap` 이 접을 자리를 못 찾고
         #    카드 밖으로 삐져나간다(가로 스크롤이 생겼다). 쉼표 뒤에 폭 없는
@@ -168,11 +175,6 @@ class FieldMaskCard(QFrame):
             f"한 줄 {budget.line_bytes} B  ·  {message}")
         self._budget.setStyleSheet(
             f"font-size: {Font.SIZE_SM}pt; color: {colour};")
-
-    def _name_of(self, bit: int) -> str:
-        box = self._boxes[bit]
-        tip = box.toolTip()
-        return tip.split("  ·  ")[0] if tip else str(bit)
 
     # --------------------------------------------------------- 폼과의 계약
     #
