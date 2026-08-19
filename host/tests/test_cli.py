@@ -126,3 +126,50 @@ def test_cmd_nearest_reports_stale_when_too_old(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "stale" in out.lower() or "묵" in out
     assert rc != 0
+
+
+# ---- 링크 속도 (규격 §4.2) ---------------------------------------------------
+
+
+def test_baud_is_its_own_subcommand_not_a_set():
+    """🔴 `set link.baud` 로는 안 된다.
+
+    값을 넣는 것으로 끝나지 않고 포트를 새 속도로 다시 열어 확인까지
+    보내야 하며, 실패하면 옛 속도로 돌아와야 한다. 전용 하위 명령으로
+    갈라 두면 `set` 이 실수로 링크를 끊는 일이 없다.
+    """
+    args = build_parser().parse_args(["baud", "1500000"])
+    assert args.command == "baud" and args.value == 1500000
+
+
+def test_the_parser_refuses_a_speed_the_board_cannot_make():
+    """규격 §4.2.6 — 목록에 없는 값은 보내기 전에 막는다."""
+    import pytest
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["baud", "250000"])
+
+
+def test_cmd_baud_changes_the_speed_and_says_it_is_not_saved(capsys):
+    """🔴 확정과 저장은 다른 일이다 (규격 §4.2.2 규칙 3)."""
+    from tools.cli.markon_cli import cmd_baud
+
+    svc = _svc()
+    assert cmd_baud(svc, 1500000) == 0
+    out = capsys.readouterr().out
+    assert "1500000" in out
+    assert "Flash" in out and "저장" in out
+    assert svc.transport.baud == 1500000
+
+
+def test_cmd_baud_reports_the_failure_and_whether_the_board_came_back(capsys):
+    from tools.cli.markon_cli import cmd_baud
+
+    svc = _svc()
+    # RUN 모드에서 보내면 보드가 ERR,MODE 로 거부한다 — 아무것도 안 바뀐다.
+    svc.heartbeat = lambda: None          # 하트비트를 죽여 RUN 에 머물게 한다
+    assert cmd_baud(svc, 1500000) == 1
+    err = capsys.readouterr().err
+    assert "MODE" in err
+    assert "살아 있다" in err
+    assert svc.transport.baud == 921600

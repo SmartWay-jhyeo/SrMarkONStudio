@@ -14,7 +14,7 @@ import sys
 import time
 
 from host.core.errors import ProtocolError
-from host.core.limits import DEFAULT_BAUD
+from host.core.limits import DEFAULT_BAUD, LINK_BAUD_CHOICES
 from host.service.board_service import BoardService, LoopbackTransport, SerialTransport
 from host.storage.query import DEFAULT_MAX_AGE_MS, find_nearest, query_range
 from tools.simulator.config_store import default_store
@@ -47,6 +47,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_mon = sub.add_parser("monitor", help="텔레메트리 수신")
     p_mon.add_argument("--seconds", type=float, default=5.0)
+
+    # 🔴 `set link.baud` 로는 안 된다 (규격 §4.2). 값을 넣는 것으로 끝나지
+    #    않고 포트를 새 속도로 다시 열어 확인까지 보내야 하며, 실패하면
+    #    옛 속도로 돌아와야 한다. 전용 하위 명령으로 갈라 두면 `set` 이
+    #    실수로 링크를 끊는 일이 없다.
+    p_baud = sub.add_parser(
+        "baud", help="호스트 링크 속도 변경 (규격 §4.2 의 확인 절차를 밟는다)")
+    p_baud.add_argument("value", type=int, choices=list(LINK_BAUD_CHOICES))
 
     p_query = sub.add_parser(
         "query", help="저장된 레코드를 시각 범위(epoch_ms, 양끝 포함)로 조회"
@@ -149,6 +157,37 @@ def cmd_set(svc: BoardService, key: str, value: str) -> int:
     return 0
 
 
+def cmd_baud(svc: BoardService, value: int) -> int:
+    """호스트 링크 속도를 바꾼다 (규격 §4.2).
+
+    🔴 **실기기에서 새 속도를 처음 시험하는 자리가 여기다.** GUI 보다 이쪽이
+       낫다 — 창도 워커 스레드도 없어서, 안 됐을 때 무엇이 안 됐는지가
+       한 줄로 나온다. 실패해도 보드는 10초 뒤 스스로 옛 속도로 돌아온다.
+    """
+    # 설정 변경은 CONFIG 모드에서만 받는다 (규격 §6).
+    svc.heartbeat()
+    result = svc.change_baud(value)
+    if result.ok:
+        print(f"링크 속도 {result.baud} bps 로 확정됐다.")
+        # 🔴 확정과 저장은 다른 일이다. 확정은 "지금 이 대화가 이 속도로
+        #    된다" 이고, 저장은 "다음 부팅에도 그렇다" 다. 여기서 저장까지
+        #    해 주지 않는 이유: 새 속도를 **얼마간 써 보고** 저장하는 것이
+        #    이 항목의 용법이다(규격 §4.2.5 — 아무도 시험한 적이 없다).
+        print("아직 Flash 에는 없다 — 다음 부팅에도 남기려면 GUI 설정 화면에서 "
+              "저장한다. 그 전에 이 속도로 한동안 돌려 보는 편이 낫다.")
+        return 0
+
+    detail = result.reason or result.error or "이유를 모른다"
+    print(f"실패({result.stage}): {detail}", file=sys.stderr)
+    if result.recovered:
+        print(f"옛 속도 {result.baud} bps 로 돌아왔다 — 보드는 살아 있다.",
+              file=sys.stderr)
+    else:
+        print(f"🔴 옛 속도({result.baud} bps)로도 응답이 없다. "
+              f"보드 전원을 껐다 켜야 할 수 있다(CLAUDE.md §4).", file=sys.stderr)
+    return 1
+
+
 def cmd_monitor(svc: BoardService, seconds: float) -> int:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -230,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_get(svc, args.key)
         if args.command == "set":
             return cmd_set(svc, args.key, args.value)
+        if args.command == "baud":
+            return cmd_baud(svc, args.value)
         if args.command == "monitor":
             return cmd_monitor(svc, args.seconds)
     except ProtocolError as exc:
