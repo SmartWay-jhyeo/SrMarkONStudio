@@ -439,12 +439,13 @@ def test_sol_debounce_ms_replaces_the_removed_outputs():
     assert item.out is False           # 출력이 아니다 — TEST 이탈에 안 걸린다
 
 
-def test_catalog_item_count_is_ninety_six():
+def test_catalog_item_count_is_ninety_seven():
     """94 + 2 (`tx.fields` 하나가 `tx.fields_ain`·`tx.fields_i2c`·
-    `tx.fields_din` 셋으로 나뉘며 순증가, 2026-08-19 개정 §7.2·§7.5·§7.6) = 96.
+    `tx.fields_din` 셋으로 나뉘며 순증가, 2026-08-19 개정 §7.2·§7.5·§7.6)
+    + 1 (`lcd.enabled`, LCD 1차 작업 2026-08-19) = 97.
 
     이 수가 흔들리면 십중팔구 항목을 늘리거나 줄인 것이다 — 실수인지
     의도인지 이 시험이 먼저 묻는다.
     """
     store = default_store()
-    assert len(store.items) == 96
+    assert len(store.items) == 97

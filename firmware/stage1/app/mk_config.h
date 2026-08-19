@@ -19,8 +19,14 @@
  * 🔴 96 으로 올린 이유: 디지털 입력 3 · LED 14 · I2C 24 가 늘어 86 이 됐다.
  *    mk_cfgtable.c 의 _Static_assert 가 이 값과 Flash staging 버퍼를 함께
  *    본다 — 항목만 늘리고 버퍼를 안 키우면 $CFG,SAVE 가 ERR,BUSY 로
- *    떨어지는데, 실기기에서 그것을 겪고 나서야 알았다. */
-#define MK_CFG_MAX_ITEMS   96
+ *    떨어지는데, 실기기에서 그것을 겪고 나서야 알았다.
+ *
+ * 🔴 112 로 다시 올렸다(2026-08-19). GNSS 3 개로 정확히 96 이 차 있어서
+ *    `lcd.enabled` 하나를 더하는 순간 _Static_assert 가 터졌다 — 그것이
+ *    제 일을 한 것이다. 여유를 두고 올린다: 112 × 24 + 32 = 2,720 이라
+ *    MK_CFG_BLOB_MAX(4096) 안이고, main.c 의 s_blob 도 2,688 바이트로
+ *    남는다. */
+#define MK_CFG_MAX_ITEMS   112
 #define MK_CFG_KEY_MAX     MK_ARG_MAX
 #define MK_CFG_STR_MAX     MK_ARG_MAX
 

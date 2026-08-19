@@ -33,12 +33,14 @@ static const char *const I2C_KIND_LABELS[] = {
 };
 
 /* dev 1 + tx 5(마스크 3 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
- * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코) */
+ * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
+ * + lcd 1(사용) */
 #define ITEM_COUNT   (1 + 5 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 5 \
-                      + 3)
+                      + 3 \
+                      + 1)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
 #define GEN_COUNT    (MK_AIN_COUNT * 5 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 5)
@@ -444,6 +446,29 @@ static size_t add_gnss(size_t i)
     return i;
 }
 
+/* LCD 화면 (J25, 데이터시트 §5.9). */
+static size_t add_lcd(size_t i)
+{
+    /* 🔴 기본이 **꺼짐**이다. 화면 한 장이 320 x 480 x 3 = 460,800 바이트라
+     *    SPI2 16 MHz 에서 약 230 ms 를 쓴다. 패널이 안 물린 보드에서 그것을
+     *    매번 밀면 ADS1256 표본과 텔레메트리가 그만큼 뒤로 밀린다 —
+     *    gnss.echo 를 기본으로 끈 것과 같은 이유다.
+     *
+     * 🔴 값·라벨·note 가 시뮬레이터(tools/simulator/config_store.py 의
+     *    lcd.* )와 한 글자도 다르면 안 된다 — crosscheck_cfgtable.py 가
+     *    대조한다.
+     *
+     * 🔴 out 이 아니다. TEST 모드를 빠져나올 때 되돌릴 "출력" 이 아니라
+     *    화면을 쓸 것인가라는 설정이다 — led.grb 와 같은 결. */
+    s_items[i] = (MkCfgItem){
+        .key = "lcd.enabled", .group = "lcd", .vtype = MK_VT_BOOL,
+        .label = "화면 사용",
+        .note = "J25 에 LCD 가 꽂혀 있을 때만 켠다 — 한 장 그리는 데 "
+                "230 ms 를 쓴다" };
+    i++;
+    return i;
+}
+
 /* WS2812 체인 J21~J24. */
 static size_t add_led(size_t i)
 {
@@ -568,6 +593,7 @@ void mk_cfgtable_init(MkConfig *cfg)
     i = add_ain(i);
     i = add_sol(i);
     i = add_gnss(i);
+    i = add_lcd(i);
     i = add_led(i);
     i = add_i2c(i);
 

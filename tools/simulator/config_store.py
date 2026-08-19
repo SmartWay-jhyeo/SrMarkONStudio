@@ -629,6 +629,22 @@ def default_store(path: Path | None = None) -> ConfigStore:
             note="받은 줄을 그대로 텔레메트리로 올린다 — 진단용, 대역을 먹는다",
         ),
 
+        # ── LCD 화면 (J25, 데이터시트 §5.9) ────────────────────────────
+        #
+        # 🔴 기본이 꺼짐이다. 화면 한 장이 320 x 480 x 3 = 460,800 바이트라
+        #    SPI2 16 MHz 에서 약 230 ms 를 쓴다 — 패널이 안 물린 보드에서
+        #    그것을 밀면 수집이 그만큼 뒤로 밀린다.
+        #
+        # 🔴 값·라벨·note 가 펌웨어(firmware/stage1/app/mk_cfgtable.c 의
+        #    add_lcd())와 한 글자도 다르면 안 된다 — crosscheck_cfgtable.py
+        #    가 대조한다.
+        SimConfigItem(
+            "lcd.enabled", "lcd", "bool", False, False,
+            label="화면 사용",
+            note="J25 에 LCD 가 꽂혀 있을 때만 켠다 — 한 장 그리는 데 "
+                 "230 ms 를 쓴다",
+        ),
+
         # ── WS2812 LED 체인 (데이터시트 §5.8) ──────────────────────
         SimConfigItem(
             "led.count", "led", "u8", 0, 0, minimum=0, maximum=4,
