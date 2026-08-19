@@ -333,6 +333,12 @@ void mk_ads_on_spi_done(MkAds *a, int64_t now_ms)
              *    지금은 SPI 전송이 끝난 시각이라 그만큼 늦다. 설계 원칙 2
              *    가 지키려는 것이 바로 이 차이다. */
             mk_queue_push(&a->ch[a->cur].q, a->started_ms, code);
+            /* 🔴 마지막 표본도 같은 시각·같은 값으로 덮어쓴다(사용자 설계
+             *    2026-08-19 — 수집과 송신 분리). 큐는 $STAT 진단용으로
+             *    그대로 두고, 송신은 이 자리만 본다. */
+            a->ch[a->cur].last.t_ms = a->started_ms;
+            a->ch[a->cur].last.raw = code;
+            a->ch[a->cur].has_last = 1u;
         }
         finish(a, now_ms);
         break;
@@ -384,4 +390,13 @@ int mk_ads_channel_enabled(const MkAds *a, int ch)
 uint32_t mk_ads_timeouts(const MkAds *a, int ch)
 {
     return (ch >= 0 && ch < MK_ADS_CHANNELS) ? a->ch[ch].timeouts : 0u;
+}
+
+int mk_ads_last(const MkAds *a, int ch, MkSample *out)
+{
+    if (ch < 0 || ch >= MK_ADS_CHANNELS || !a->ch[ch].has_last) {
+        return 0;
+    }
+    *out = a->ch[ch].last;
+    return 1;
 }

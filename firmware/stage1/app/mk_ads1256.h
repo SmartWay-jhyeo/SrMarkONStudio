@@ -110,6 +110,17 @@ typedef struct {
     /* 🔴 채널별로 센다. 하나가 계속 시간을 넘겨도 다른 채널은 계속 돈다
      *    — 설계 원칙의 채널 장애 격리(CLAUDE.md §3). */
     uint32_t timeouts;
+
+    /* 🔴 마지막 표본 — 수집과 송신을 떼어 놓는 자리다(사용자 설계,
+     *    2026-08-19). "변수 a 에 계속 넣고, 송신은 그 a 를 읽는다."
+     *
+     *    큐(q)와 별개다. 큐는 $STAT 의 깊이·drops 진단용으로 그대로
+     *    남는다 — 여기서 지우지 않는다. mk_telem 은 이제 큐를 비우지
+     *    않고 이 자리만 읽는다. mk_ads_on_spi_done() 의 READING 완료
+     *    지점(큐에 넣는 바로 그 자리)이 여기도 함께 덮어쓴다 — 그래야
+     *    두 자리가 어긋나지 않는다. */
+    MkSample last;
+    uint8_t  has_last;      /* 한 번이라도 표본을 받았는가 */
 } MkAdsChannel;
 
 /* 🔴 이름 있는 구조체다. mk_hostlink 가 `struct MkAds *` 로 전방 선언해서
@@ -182,5 +193,9 @@ int        mk_ads_current_channel(const MkAds *a);
 MkQueue   *mk_ads_queue(MkAds *a, int ch);
 int        mk_ads_channel_enabled(const MkAds *a, int ch);
 uint32_t   mk_ads_timeouts(const MkAds *a, int ch);
+
+/* 채널의 마지막 표본. 한 번이라도 받았으면 1(out 을 채운다), 아니면 0 —
+ * mk_telem 이 "아직 값이 없는 채널은 보내지 않는다"를 판단하는 근거다. */
+int mk_ads_last(const MkAds *a, int ch, MkSample *out);
 
 #endif /* MK_ADS1256_H */

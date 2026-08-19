@@ -379,6 +379,72 @@ static void test_negative_code_is_sign_extended(void)
     CHECK(s.raw == -1, "24비트 2의 보수가 부호확장된다");
 }
 
+/* ---- 마지막 표본 (수집·송신 분리, 사용자 설계 2026-08-19) --------------- */
+
+static void test_no_last_sample_before_the_first_acquisition(void)
+{
+    /* 🔴 설계 원칙 3·4 — 없는 값을 지어내지 않는다. mk_telem 이 이것으로
+     *    "아직 한 번도 못 받은 채널은 안 보낸다"를 판단한다. */
+    setup(0);
+    MkSample s;
+    CHECK(mk_ads_last(&A, 0, &s) == 0, "첫 획득 전에는 마지막 표본이 없다");
+}
+
+static void test_last_sample_updates_alongside_the_queue(void)
+{
+    setup(0);
+    mk_ads_tick(&A, 100);
+    drive_setup(100);
+    mk_ads_on_drdy(&A, 117);
+    deliver(4026531, 130);
+
+    MkSample s;
+    CHECK(mk_ads_last(&A, 0, &s) == 1, "이제 마지막 표본이 있다");
+    CHECK(s.raw == 4026531, "값이 같다");
+    CHECK(s.t_ms == 117, "시각도 DRDY 시각 그대로다 — 송신 시각이 아니다");
+}
+
+static void test_last_sample_survives_the_queue_being_drained(void)
+{
+    /* 🔴 이것이 "수집은 수집대로, 송신은 송신대로" 의 핵심이다 — 큐를
+     *    비워도(mk_telem 이 예전에 하던 일, 또는 $STAT 진단) 마지막 표본
+     *    자리는 남는다. 큐와 독립된 저장소라는 뜻이다. */
+    setup(0);
+    mk_ads_tick(&A, 100);
+    drive_setup(100);
+    mk_ads_on_drdy(&A, 117);
+    deliver(4026531, 130);
+
+    MkSample popped;
+    CHECK(mk_queue_pop(mk_ads_queue(&A, 0), &popped) == 1, "큐에서 꺼낸다");
+    CHECK(mk_queue_count(mk_ads_queue(&A, 0)) == 0, "큐는 이제 비었다");
+
+    MkSample s;
+    CHECK(mk_ads_last(&A, 0, &s) == 1, "그래도 마지막 표본은 남아 있다");
+    CHECK(s.raw == 4026531, "값도 그대로");
+}
+
+static void test_last_sample_is_overwritten_by_the_next_acquisition(void)
+{
+    /* 수집이 송신보다 빠르면 중간 표본은 버려지고 최신 값만 남는다 —
+     * "변수 a 에 계속 넣는다"는 사용자 설계 그대로. */
+    setup(0);
+    mk_ads_tick(&A, 100);
+    drive_setup(100);
+    mk_ads_on_drdy(&A, 117);
+    deliver(111, 118);
+
+    mk_ads_tick(&A, 200);
+    drive_setup(200);
+    mk_ads_on_drdy(&A, 217);
+    deliver(222, 218);
+
+    MkSample s;
+    CHECK(mk_ads_last(&A, 0, &s) == 1, "표본이 있다");
+    CHECK(s.raw == 222, "최신 값만 남는다 — 111 은 조용히 사라진다");
+    CHECK(s.t_ms == 217, "시각도 최신 획득 시각으로 갱신된다");
+}
+
 static void test_round_robin_does_not_starve_later_channels(void)
 {
     /* 주기가 크게 다른 두 채널을 섞어도 느린 쪽이 굶지 않는지 본다.
@@ -601,6 +667,10 @@ int main(void)
     test_sample_lands_in_the_queue();
     test_timestamp_is_the_drdy_moment();
     test_negative_code_is_sign_extended();
+    test_no_last_sample_before_the_first_acquisition();
+    test_last_sample_updates_alongside_the_queue();
+    test_last_sample_survives_the_queue_being_drained();
+    test_last_sample_is_overwritten_by_the_next_acquisition();
     test_round_robin_does_not_starve_later_channels();
     test_reconfiguring_with_the_same_values_does_not_starve();
     test_changing_the_period_does_reschedule();
