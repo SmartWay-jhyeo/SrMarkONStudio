@@ -69,37 +69,66 @@ static uint32_t port_u(MkConfig *cfg, unsigned port, const char *suffix,
     return it != NULL ? it->cur.u : fallback;
 }
 
-static void push_out(MkI2c *i, unsigned connector_id, const char *quantity,
-                     float value, int have_value, uint16_t status, int64_t t_ms)
+/* port 의 last[]/last_valid[] 를 전부 비운다. 종류·주소가 바뀌거나 포트가
+ * 꺼질 때 부른다 — 옛 종류가 내던 값을 새 종류인 척 계속 내보내지 않으려는
+ * 것이다(mk_i2c.h 의 last 주석). */
+static void clear_last(MkI2c *i, unsigned port)
 {
+    for (unsigned k = 0; k < MK_I2C_VALUES_MAX; k++) {
+        i->last_valid[port][k] = 0u;
+    }
+}
+
+/* port·slot 은 mk_i2c_last() 가 그대로 돌려줄 자리다 — slot 은
+ * mk_i2c_kind_quantities() 의 순서와 같다. */
+static void push_out(MkI2c *i, unsigned port, unsigned slot,
+                     const char *quantity, float value, int have_value,
+                     uint16_t status, int64_t t_ms)
+{
+    unsigned connector_id = mk_i2c_connector_of(port);
+
     if (i->n_out >= MK_I2C_OUT_MAX) {
         /* 🔴 정상 경로로는 오지 않는다 — FAULT 는 버스를 안 건드려 한
          *    바퀴에 여럿이 겹칠 수 있다(mk_i2c.h 의 mk_i2c_tick 계약).
          *    조용히 버리지 않고 센다 — mk_queue.c 의 drops 와 같은 이유:
          *    세지 않으면 유실이 없었던 것으로 보인다. */
         i->dropped++;
-        return;
+    } else {
+        MkI2cOut *o = &i->out[i->n_out++];
+        o->connector_id = connector_id;
+        o->quantity = quantity;
+        o->value = value;
+        o->have_value = have_value;
+        o->status = status;
+        o->t_ms = t_ms;
     }
-    MkI2cOut *o = &i->out[i->n_out++];
-    o->connector_id = connector_id;
-    o->quantity = quantity;
-    o->value = value;
-    o->have_value = have_value;
-    o->status = status;
-    o->t_ms = t_ms;
+
+    /* 🔴 마지막 값은 out[] 이 가득 차 위에서 버렸어도 반드시 갱신한다 —
+     *    송신은 여기만 보므로, out[] 사정과 무관하게 항상 최신이어야
+     *    한다(사용자 설계 2026-08-19). */
+    if (slot < (unsigned)MK_I2C_VALUES_MAX) {
+        MkI2cOut *last = &i->last[port][slot];
+        last->connector_id = connector_id;
+        last->quantity = quantity;
+        last->value = value;
+        last->have_value = have_value;
+        last->status = status;
+        last->t_ms = t_ms;
+        i->last_valid[port][slot] = 1u;
+    }
 }
 
 /* 🔴 [C1] 실패(1·2)·미지원(3) 을 알릴 때 이 함수를 쓴다. 종류가 내는
  *    양마다 한 줄씩(값은 null) 내보낸다 — quantity 가 없는 레코드는
  *    host/gui/screen.py 가 통째로 버리므로, 여기서 비워 보내면 화면에
  *    아무 흔적도 안 남는다(검토 지적 C1). 온습도면 두 줄이 나간다. */
-static void push_status(MkI2c *i, unsigned connector_id, uint8_t kind,
+static void push_status(MkI2c *i, unsigned port, uint8_t kind,
                         uint16_t status, int64_t t_ms)
 {
     const char *q[MK_I2C_VALUES_MAX];
     int n = mk_i2c_kind_quantities(kind, q);
     for (int k = 0; k < n; k++) {
-        push_out(i, connector_id, q[k], 0.0f, 0, status, t_ms);
+        push_out(i, port, (unsigned)k, q[k], 0.0f, 0, status, t_ms);
     }
 }
 
@@ -136,6 +165,16 @@ void mk_i2c_init(MkI2c *i, const MkI2cIo *io)
     if (io != NULL) { i->io = *io; }
 }
 
+int mk_i2c_last(const MkI2c *i, unsigned port, unsigned slot, MkI2cOut *out)
+{
+    if (port >= (unsigned)MK_I2C_COUNT || slot >= (unsigned)MK_I2C_VALUES_MAX
+        || !i->last_valid[port][slot]) {
+        return 0;
+    }
+    *out = i->last[port][slot];
+    return 1;
+}
+
 int mk_i2c_take(MkI2c *i, MkI2cOut *out)
 {
     if (i->out_head >= i->n_out) {
@@ -152,22 +191,30 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
 {
     MkI2cPort *st = &i->port[p];
     uint8_t bus = mk_i2c_bus_of(p);
-    unsigned jack = mk_i2c_connector_of(p);
 
     int enabled = port_u(cfg, p, ".enabled", 0u) != 0u;
     uint8_t kind = (uint8_t)port_u(cfg, p, ".kind", 0u);
     uint8_t addr = (uint8_t)port_u(cfg, p, ".addr", 0u);
 
     /* 🔴 꺼졌거나 종류가 "없음" 이면 아무것도 안 한다 — 버스도, 레코드도.
-     *    미연결은 정상 상태다 (설계 원칙 3, 규격 §7.5). */
+     *    미연결은 정상 상태다 (설계 원칙 3, 규격 §7.5).
+     *
+     *    마지막 값도 비운다 — 꺼진 뒤에도 옛 값을 계속 내보내면 죽은
+     *    센서가 살아 있는 것처럼 보인다(사용자 설계 2026-08-19 의 취지와
+     *    반대). state != OFF 로 막아 매 바퀴 다시 비우지 않는다. */
     if (!enabled || kind == (uint8_t)MK_I2C_KIND_NONE) {
+        if (st->state != MK_I2C_OFF) {
+            clear_last(i, p);
+        }
         st->state = MK_I2C_OFF;
         return 0;
     }
 
-    /* 설정이 바뀌면 그 포트만 처음으로 되돌린다. */
+    /* 설정이 바뀌면 그 포트만 처음으로 되돌린다. 마지막 값도 함께 비운다
+     * — 옛 종류가 내던 양(quantity)을 새 종류인 척 계속 내보내면 안 된다. */
     if (st->state != MK_I2C_OFF && (st->kind != kind || st->addr != addr)) {
         st->state = MK_I2C_OFF;
+        clear_last(i, p);
     }
     /* 🔴 FAULT 로 빠지는 길에도 반드시 기록한다. 여기서 빠뜨리면 위 되돌림
      *    검사가 st->kind(옛값) != kind(방금 읽은 값) 를 매 바퀴 참으로
@@ -195,7 +242,7 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
         if (st->state != MK_I2C_FAULT || now - st->last_read_ms >= (int64_t)retry) {
             st->state = MK_I2C_FAULT;
             st->last_read_ms = now;
-            push_status(i, jack, kind, 3u, now);
+            push_status(i, p, kind, 3u, now);
         }
         return 0;
     }
@@ -224,7 +271,7 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
              *    한다. */
             st->state = MK_I2C_FAULT;
             st->last_read_ms = now;
-            push_status(i, jack, kind, rc == -1 ? 1u : 2u, now);
+            push_status(i, p, kind, rc == -1 ? 1u : 2u, now);
             return 1;             /* 실제로 버스를 두드렸다(NACK 포함) */
         }
         st->state = MK_I2C_WARMUP;
@@ -252,7 +299,7 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
         int n = 0;
         int rc = drv->read(&i->io, bus, use_addr, v, &n);
         if (rc != 0) {
-            push_status(i, jack, kind, rc == -1 ? 1u : 2u, now);
+            push_status(i, p, kind, rc == -1 ? 1u : 2u, now);
             /* 🔴 [I2] READY 에 머물며 read 만 다시 시도하지 않는다. BH1750
              *    은 전원이 끊기면 Power Down 으로 돌아가는데(데이터시트
              *    p.4) 아무도 0x01/0x10 을 다시 안 보내면, 재삽입 뒤 주소는
@@ -266,7 +313,7 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
         }
         for (int k = 0; k < n && k < MK_I2C_VALUES_MAX; k++) {
             /* 🔴 타임스탬프는 읽기가 끝난 지금이다 (설계 원칙 2). */
-            push_out(i, jack, v[k].quantity, v[k].value, 1, 0u, now);
+            push_out(i, p, (unsigned)k, v[k].quantity, v[k].value, 1, 0u, now);
         }
         return 1;
     }
@@ -287,7 +334,7 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
         st->step_ms = now;
         st->last_read_ms = now;
         if (rc != 0) {
-            push_status(i, jack, kind, rc == -1 ? 1u : 2u, now);
+            push_status(i, p, kind, rc == -1 ? 1u : 2u, now);
             return 1;
         }
         st->state = MK_I2C_WARMUP;

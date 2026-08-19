@@ -167,6 +167,19 @@ typedef struct MkI2c {
      *    올라간다고 해서 손을 쓰는 코드는 아직 없다(YAGNI) — $STAT 노출은
      *    이 Task 범위 밖이다. 세지 않으면 유실이 없었던 것으로 보인다. */
     uint32_t  dropped;
+
+    /* 🔴 포트·양(quantity)별 마지막 값 — 수집과 송신을 떼어 놓는 자리다
+     *    (사용자 설계, 2026-08-19). push_out() 이 값을 만들 때마다(성공도
+     *    실패·미지원도) 여기를 덮어쓴다. out[]/mk_i2c_take() 는 그대로
+     *    둔다 — 지우지 않는다(위 주석). mk_telem 은 이제 out[] 을 비우지
+     *    않고 이 자리만 tx.period_ms 마다 읽는다.
+     *
+     *    슬롯 번호는 mk_i2c_kind_quantities() 가 매기는 순서와 같다(온습도
+     *    라면 0=temp, 1=humidity). 포트의 kind·addr 이 바뀌거나 꺼지면
+     *    이 슬롯을 비운다 — 옛 종류가 내던 값을 새 종류인 척 계속 내보내지
+     *    않기 위해서다. */
+    MkI2cOut  last[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
+    uint8_t   last_valid[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
 } MkI2c;
 
 void mk_i2c_init(MkI2c *i, const MkI2cIo *io);
@@ -190,5 +203,11 @@ void mk_i2c_tick(MkI2c *i, MkConfig *cfg, int64_t now_ms);
  *    이전 바퀴가 남겨 둔 자리 때문에 이번 바퀴의 레코드가 밀려 버려질 수
  *    있다 — dropped 로 셀 수 있다. */
 int mk_i2c_take(MkI2c *i, MkI2cOut *out);
+
+/* 포트·슬롯의 마지막 값을 읽는다. 1 이면 out 을 채웠다(한 번이라도 값을
+ * 받았다 — 성공이든 실패·미지원이든), 0 이면 아직 없다. mk_telem 이
+ * tx.period_ms 마다 이것으로 레코드를 만든다(수집·송신 분리, 사용자
+ * 설계 2026-08-19). slot 은 mk_i2c_kind_quantities() 의 순서와 같다. */
+int mk_i2c_last(const MkI2c *i, unsigned port, unsigned slot, MkI2cOut *out);
 
 #endif /* MK_I2C_H */

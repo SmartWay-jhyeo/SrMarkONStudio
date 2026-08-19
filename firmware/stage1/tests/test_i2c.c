@@ -967,6 +967,125 @@ static void test_read_failure_forces_a_fresh_start(void)
           "읽기가 실패하면 OFF 로 되돌아가 start 를 다시 부른다 (I2)");
 }
 
+/* ---- 마지막 값 (수집·송신 분리, 사용자 설계 2026-08-19) ------------------
+ *
+ * mk_telem 은 이제 out[]/mk_i2c_take() 를 매 tick 비우지 않는다 —
+ * tx.period_ms 마다 mk_i2c_last(port, slot) 만 읽는다. out[] 자체는
+ * 그대로 있다(위 시험들이 이미 본다) — 이 절은 옆에 새로 생긴 last[][]
+ * 저장소만 본다. */
+
+static void test_last_value_is_absent_before_any_read(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 200u);
+    /* 아직 한 번도 tick 을 안 돌렸다 — port 0(=J10), slot 0. */
+    MkI2cOut out;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &out) == 0,
+          "첫 읽기 전에는 마지막 값이 없다");
+}
+
+static void test_last_value_updates_on_a_successful_read(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 200u);
+    MkI2cOut drained;
+    for (int64_t t = 0; t <= 400; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &drained) == 1) { /* out[] 은 그대로 둔다 */ }
+    }
+
+    MkI2cOut last;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &last) == 1, "성공하면 마지막 값이 생긴다");
+    CHECK(last.connector_id == 10u, "커넥터 번호");
+    CHECK(last.quantity != NULL && strcmp(last.quantity, "lux") == 0, "양");
+    CHECK(last.have_value == 1, "값이 있다");
+    CHECK(last.status == 0u, "정상");
+}
+
+static void test_last_value_records_a_failure_too(void)
+{
+    /* 🔴 실패·미지원도 마지막 값이다 — null·status 를 그대로 반복해서
+     *    내보내는 것이 규격 §7.5 의 취지다("살아 있는 척하지 않는다"의
+     *    반대쪽: "죽었으면 죽었다고 계속 말한다"). */
+    setup();
+    BUS.ret = -1;                      /* 처음부터 응답 없음 */
+    enable_lux_port(10u, 0x23u, 200u);
+    MkI2cOut drained;
+    for (int64_t t = 0; t <= 50; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &drained) == 1) { }
+    }
+
+    MkI2cOut last;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &last) == 1, "실패도 마지막 값을 남긴다");
+    CHECK(last.have_value == 0, "값 자리는 비어 있다(null)");
+    CHECK(last.status == 1u, "응답 없음");
+}
+
+static void test_last_value_survives_take_draining_out(void)
+{
+    /* 🔴 큐(mk_queue)와 같은 이유 — out[] 을 비워도(mk_i2c_take) last[][]
+     *    는 별도 저장소라 남는다. */
+    setup();
+    enable_lux_port(10u, 0x23u, 200u);
+    MkI2cOut drained;
+    for (int64_t t = 0; t <= 400; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &drained) == 1) { }
+    }
+    /* out[] 을 다시 한번 완전히 비운다 — 확실히 빈 상태에서 확인한다. */
+    while (mk_i2c_take(&I2C, &drained) == 1) { }
+
+    MkI2cOut last;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &last) == 1,
+          "out[] 을 비워도 마지막 값은 그대로 있다");
+}
+
+static void test_last_value_is_cleared_when_the_kind_changes(void)
+{
+    /* 🔴 옛 종류가 내던 양(quantity)을 새 종류인 척 계속 내보내면 안 된다.
+     *    LUX(양 하나, slot 0)로 값을 만든 뒤 HUMID(양 둘)로 바꾸면, 새
+     *    값이 오기 전까지는 아무 슬롯도 안 나가야 한다. */
+    setup();
+    enable_lux_port(10u, 0x23u, 200u);
+    MkI2cOut drained;
+    for (int64_t t = 0; t <= 400; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &drained) == 1) { }
+    }
+    MkI2cOut before;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &before) == 1, "선행 확인 — 값이 있다");
+
+    MkCfgItem *k = mk_cfg_find(&CFG, "i2c10.kind");
+    k->cur.u = (uint32_t)MK_I2C_KIND_HUMID;   /* AM2320 — 드라이버가 있다 */
+    mk_i2c_tick(&I2C, &CFG, 410);              /* 설정이 바뀐 것을 알아챈다 */
+
+    MkI2cOut after;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &after) == 0,
+          "종류가 바뀌면 옛 값을 비운다 — 새 값이 올 때까지 안 나간다");
+}
+
+static void test_last_value_is_cleared_when_disabled(void)
+{
+    setup();
+    enable_lux_port(10u, 0x23u, 200u);
+    MkI2cOut drained;
+    for (int64_t t = 0; t <= 400; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &drained) == 1) { }
+    }
+    MkI2cOut before;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &before) == 1, "선행 확인 — 값이 있다");
+
+    MkCfgItem *en = mk_cfg_find(&CFG, "i2c10.enabled");
+    en->cur.u = 0u;
+    mk_i2c_tick(&I2C, &CFG, 410);
+
+    MkI2cOut after;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &after) == 0,
+          "끄면 마지막 값도 비운다 — 죽은 센서가 계속 살아 있는 척하면 안 된다");
+}
+
 /* ---- 대조용 덤프 ---------------------------------------------------------- */
 
 /* 🔴 종류 → 양 표를 찍는다. crosscheck_i2c_quantities.py 가 시뮬레이터의
@@ -1049,6 +1168,19 @@ int main(int argc, char **argv)
     printf("-- [I3] status 매핑 --\n"); test_io_error_codes_map_to_status_one_and_two();
     printf("-- [I2] 읽기 실패 재시작 --\n");
     test_read_failure_forces_a_fresh_start();
+
+    printf("-- 마지막 값 — 첫 읽기 전 --\n");
+    test_last_value_is_absent_before_any_read();
+    printf("-- 마지막 값 — 성공 --\n");
+    test_last_value_updates_on_a_successful_read();
+    printf("-- 마지막 값 — 실패도 남는다 --\n");
+    test_last_value_records_a_failure_too();
+    printf("-- 마지막 값 — out[] 비워도 남는다 --\n");
+    test_last_value_survives_take_draining_out();
+    printf("-- 마지막 값 — 종류 바뀌면 비운다 --\n");
+    test_last_value_is_cleared_when_the_kind_changes();
+    printf("-- 마지막 값 — 끄면 비운다 --\n");
+    test_last_value_is_cleared_when_disabled();
 
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
     return failures ? 1 : 0;
