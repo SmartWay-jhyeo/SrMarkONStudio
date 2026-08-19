@@ -82,6 +82,10 @@ class FieldBit:
     name: str
     default: bool
     label: str = ""
+    records: tuple[str, ...] = ()
+    """이 비트가 어느 레코드(`ain`·`i2c`·`din`)의 마스크에 해당하는가
+    (규격 §7.3 개정, 2026-08-19). 화면은 이것으로 마스크 카드를 셋으로
+    나눠 그린다 — 해당 없는 레코드의 카드에는 이 비트를 보여 주지 않는다."""
 
 
 @dataclass
@@ -205,11 +209,15 @@ def parse_catalog(lines: Iterable[str]) -> ConfigSchema:
             )
 
         elif rtype == "cfg_field":
+            records = rec.get("records", ())
             schema.fields[rec["bit"]] = FieldBit(
                 bit=rec["bit"],
                 name=rec["name"],
                 default=bool(rec.get("default", False)),
                 label=rec.get("label", ""),
+                # 🔴 보드가 안 보내는(구 펌웨어) 경우 빈 튜플 — 그 비트는
+                #    어느 카드에도 그릴 수 없다는 뜻이지, 에러가 아니다.
+                records=tuple(records) if isinstance(records, list) else (),
             )
 
         elif rtype == "cfg_end":
