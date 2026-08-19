@@ -300,13 +300,23 @@ H723은 USB 연결을 감지할 수 없다(VBUS가 MCU에 배선되지 않음). 
 ### 7.1 공통 필드
 
 `seq`, `t`, `type`, `schema_ver`는 항상 포함된다. 필드 마스크로 끌 수 없다.
+`time_source`도 마찬가지다 — 마스크 비트가 아예 없다(§7.2의 필드 표 참고).
 
 | 필드 | 타입 | 의미 |
 |---|---|---|
 | `schema_ver` | int | 항상 3 |
 | `seq` | uint32 | 레코드마다 1씩 증가. 호스트가 누락을 검출한다 |
-| `t` | int64 | epoch_ms |
+| `t` | int64 | **의미가 `time_source`(§7.1.2)에 따라 달라진다.** `device_clock`이면 부팅 후 경과 ms, `gnss_pps`·`gnss_nmea`면 UTC epoch_ms다 |
 | `type` | str | 레코드 종류 |
+
+🔴 **호스트는 `t`를 `time_source`와 함께 읽어야 한다.** 등급을 보지 않고
+`t`를 그대로 UTC로 저장하면 device_clock 구간(GNSS 미장착·미수신)의 값이
+"부팅 후 몇 초"를 실제 날짜인 것처럼 기록하는 사고가 난다 — 이 필드가 마스크
+밖에 있는 이유가 그것이다. `t`는 항상 **획득 시각**이다(송신 시각이 아니다,
+§7.1). 등급이 오르내려도(예: GNSS가 한동안 안 잡히다 다시 잡힘) `t`는
+**뒤로 가지 않는다** — 보드가 마지막으로 낸 값보다 작아지는 계산이 나오면
+최소 폭(+1ms)만 밀어 올려 낸다. 단, 등급이 처음 올라가는 순간의 큰 앞
+점프(부팅 ms → UTC)는 정상이며 그대로 낸다 — 동기가 잡혔다는 뜻이다.
 
 🔴 **`ain`은 큐를 우선 비운다 — 수집이 송신보다 빠를 때 표본을 버리지
 않는다** (사용자 설계 2026-08-19, 정정 2026-08-19). 보드는 채널마다 표본
@@ -371,19 +381,23 @@ H723은 USB 연결을 감지할 수 없다(VBUS가 MCU에 배선되지 않음). 
 ```
 
 마스크는 설정 항목 **`tx.fields`** (u32 비트필드)로 바꾼다.
+`time_source`는 이 표에 없다 — §7.1에서 말한 대로 마스크 밖이라 항상
+실린다(비트가 아예 배정돼 있지 않다).
 
 | 필드 | 비트 | 타입 | 기본 | 의미 |
 |---|---|---|---|---|
 | `device_id` | 0 | str≤15 | off | 보드 식별자 |
-| `time_source` | 1 | str | on | `gnss_pps`/`gnss_nmea`/`device_clock` — §7.1.2 |
 | `time_quality` | 2 | u8 | off | 등급 숫자(0~2), §7.1.2 참고. 0=미동기 |
 | `raw` | 3 | **int32** | on | ADS1256 원시 카운트 (24bit 부호확장) |
 | `ma` | 4 | float | on | 전류 환산 (mA) |
 | `value` | 5 | float | on | 물리량 환산 |
 | `unit` | 6 | str≤7 | off | 단위 문자열 |
 | `status` | 7 | u16 | on | 0=정상 |
-| `capture_counter` | 8 | **uint64** | off | 획득 순간 타이머 값 |
+| `capture_counter` | 8 | **uint64** | off | 획득 순간 타이머 값 — `t`와 달리 변환하지 않은 원시 획득 카운터다 |
 | `connector_id` | 9 | u16 | on | 3~9 (J3~J9) |
+
+🔴 비트 1은 비워 둔다. `time_source`가 예전에 그 자리를 썼지만 마스크 밖으로
+옮겼다(2026-08-19) — 다른 필드가 새로 그 번호를 쓰지 않는다.
 
 `float` 필드는 `tx.float_digits` 자릿수로 반올림된 십진수로 실린다.
 `capture_counter`는 타이머 오버플로 확장을 담아야 하므로 **uint64**다 —
@@ -532,9 +546,11 @@ zero  = 4 - v4 / scale          (scale ≠ 0)
 정할 방법이 없다. 게다가 `°C`는 비 ASCII라 펌웨어의 고정폭 문자열 버퍼
 (바이트로 세는 str≤7)와 어긋난다. 호스트가 §7.5.1 표에서 채운다.
 
-마스크는 §7.2와 **같은 `tx.fields`를 쓴다.** `device_id`·`time_source`·
-`time_quality`·`status`·`connector_id` 비트가 그대로 걸린다.
+마스크는 §7.2와 **같은 `tx.fields`를 쓴다.** `device_id`·`time_quality`·
+`status`·`connector_id` 비트가 그대로 걸린다.
 `quantity`와 `value`는 끌 수 없다 — 둘이 빠지면 레코드가 아무 말도 안 한다.
+`time_source`도 끌 수 없다(§7.1·§7.2) — `t`가 UTC인지 부팅 ms인지는 이
+필드만이 말해 준다.
 
 #### 7.5.1 `quantity` 어휘
 
@@ -599,8 +615,9 @@ J18~J20 은 **출력이 아니라 입력**이다. 넷리스트 확인 결과 `J1
 된다(설계 원칙 1과 같은 결).
 
 마스크는 `ain`·`i2c`와 **같은 `tx.fields`**를 쓴다(§7.2). `device_id`·
-`time_source`·`time_quality` 비트가 그대로 걸린다. `connector_id`·`state`는
-끌 수 없다 — 둘이 빠지면 레코드가 아무 말도 안 한다.
+`time_quality` 비트가 그대로 걸린다. `connector_id`·`state`는
+끌 수 없다 — 둘이 빠지면 레코드가 아무 말도 안 한다. `time_source`도
+끌 수 없다(§7.1) — ain·i2c와 같은 이유다.
 
 🔴 **지금 분해능은 1 ms다**(보드 시계, `HAL_GetTick()` 급). 타이머 Input
 Capture로 마이크로초 단위까지 올리는 것은 GNSS/PPS 단계에서 들어온다 —
