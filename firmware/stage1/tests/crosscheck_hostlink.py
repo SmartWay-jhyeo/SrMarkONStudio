@@ -98,19 +98,28 @@ STEPS: list[tuple[str, str | None]] = [
 class Shape:
     """한 명령의 응답 모양.
 
-    types  레코드 type 의 나열. `+` 접미사는 1회 이상 반복.
-    sack   $SACK payload — 양쪽이 정확히 같아야 한다.
-    keys   키 집합을 양쪽 사이에서 대조할 레코드 type 들.
+    types   레코드 type 의 나열. `+` 접미사는 1회 이상 반복.
+    sack    $SACK payload — 양쪽이 정확히 같아야 한다.
+    keys    키 집합을 양쪽 사이에서 대조할 레코드 type 들.
+    nested  (type, field) 쌍 — 그 레코드의 `field` 가 중첩 객체일 때,
+            그 안의 키 집합까지 대조한다. 🔴 [신규, 2026-08-19] `gnss` 가
+            `pps_raw_age_ms`·`pps_raw_count`·`pps_unpaired_reason` 을
+            더 실으면서 추가했다 — 최상위 `keys` 는 "stat 에 gnss 라는
+            키가 있다"만 보고 그 안쪽까지는 안 보므로, 한쪽이 gnss 안의
+            필드만 빠뜨려도 이 대조를 안 붙이면 못 잡는다.
     """
 
-    def __init__(self, types: list[str], sack: str, keys: tuple[str, ...] = ()):
+    def __init__(self, types: list[str], sack: str, keys: tuple[str, ...] = (),
+                 nested: tuple[tuple[str, str], ...] = ()):
         self.types = types
         self.sack = sack
         self.keys = keys
+        self.nested = nested
 
 
 SHAPES: dict[str, Shape] = {
-    "STAT": Shape(["stat"], "SACK,STAT,OK", keys=("stat",)),
+    "STAT": Shape(["stat"], "SACK,STAT,OK", keys=("stat",),
+                  nested=(("stat", "gnss"),)),
     "CFG,LIST": Shape(["cfg_item+", "cfg_field+", "cfg_end"], "SACK,CFG,OK"),
 }
 
@@ -313,6 +322,22 @@ def main() -> int:
                     f"  {cmd}: {want_type} 레코드의 필드가 다르다\n"
                     f"    C 에만: {sorted(c_keys - py_keys) or '없음'}\n"
                     f"    py 에만: {sorted(py_keys - c_keys) or '없음'}")
+                bad = True
+
+        # 🔴 [신규, 2026-08-19] 중첩 객체(예: stat.gnss) 안쪽 키도 맞춘다.
+        #    위 `shape.keys` 대조는 "gnss 라는 키가 있다"까지만 보고 그
+        #    안쪽은 안 본다 — pps_raw_age_ms 같은 필드가 한쪽에서만
+        #    빠지면 저 대조로는 못 잡는다.
+        for want_type, field in shape.nested:
+            c_nested = {k for r in c_body if r.get("type") == want_type
+                       and isinstance(r.get(field), dict) for k in r[field]}
+            py_nested = {k for r in py_body if r.get("type") == want_type
+                        and isinstance(r.get(field), dict) for k in r[field]}
+            if c_nested != py_nested:
+                mismatches.append(
+                    f"  {cmd}: {want_type}.{field} 의 필드가 다르다\n"
+                    f"    C 에만: {sorted(c_nested - py_nested) or '없음'}\n"
+                    f"    py 에만: {sorted(py_nested - c_nested) or '없음'}")
                 bad = True
 
         if not bad:

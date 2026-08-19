@@ -171,7 +171,10 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
-                    int64_t gnss_pps_age_ms, int32_t gnss_sats,
+                    int64_t gnss_pps_age_ms,
+                    int64_t gnss_pps_raw_age_ms, uint32_t gnss_pps_raw_count,
+                    const char *gnss_pps_unpaired_reason,
+                    int32_t gnss_sats,
                     int gnss_init_sent, int gnss_init_exhausted,
                     int gnss_sentence_seen,
                     const MkRailState *rails,
@@ -199,6 +202,23 @@ int mk_cfgwire_stat(int64_t now_ms,
         mk_json_i64(&j, "pps_age_ms", gnss_pps_age_ms);
     } else {
         mk_json_null(&j, "pps_age_ms");
+    }
+    /* 🔴 원시 캡처 나이·횟수·짝짓기 실패 이유 — pps_age_ms 와 다른 것을
+     *    잰다(헤더 주석·규격 §7.4). "펄스가 오는가"(원시)와 "그 펄스를
+     *    시간축이 받아들였는가"(위 pps_age_ms)를 가르는 것이 이 필드들의
+     *    전부다. */
+    if (gnss_pps_raw_age_ms >= 0) {
+        mk_json_i64(&j, "pps_raw_age_ms", gnss_pps_raw_age_ms);
+    } else {
+        mk_json_null(&j, "pps_raw_age_ms");
+    }
+    /* 카운터라 0 이 곧 "본 적 없음" — null 이 필요 없다(gnss_sats 와 다른 결,
+     * 아래 참고). */
+    mk_json_u32(&j, "pps_raw_count", gnss_pps_raw_count);
+    if (gnss_pps_unpaired_reason != NULL) {
+        mk_json_str(&j, "pps_unpaired_reason", gnss_pps_unpaired_reason);
+    } else {
+        mk_json_null(&j, "pps_unpaired_reason");
     }
     if (gnss_sats >= 0) {
         mk_json_i32(&j, "sats", gnss_sats);

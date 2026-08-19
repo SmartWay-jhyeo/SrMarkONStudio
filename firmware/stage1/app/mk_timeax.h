@@ -58,6 +58,18 @@ typedef enum {
     MK_TIMEAX_GNSS_PPS     = 2,
 } MkTimeAxGrade;
 
+/* 🔴 짝짓기가 실패한(또는 아직 안 된) 이유 — 실기기 관측(2026-08-19, UM981)
+ *    으로 필요해졌다. 실내에서 fix 가 없어 RMC 가 계속 `V`(무효)였는데,
+ *    PPS 는 TIM8 CCR3·PC8 핀으로 정확히 1초 간격으로 들어오고 있었다.
+ *    짝지어진 값(`has_pps`)만 보면 "PPS 가 안 온다"로 보였다 — 이 열거형이
+ *    그 원인을 가른다. **판단할 수 있는 범위에서만 만든다** — 배선 불량·
+ *    모듈 고장처럼 보드가 실제로 알 수 없는 이유는 넣지 않는다(CLAUDE.md §5). */
+typedef enum {
+    MK_TIMEAX_PPS_UNPAIRED_NONE          = 0, /* 방금 짝지어졌거나 아직 판단할 사건이 없다 */
+    MK_TIMEAX_PPS_UNPAIRED_NO_VALID_NMEA = 1, /* RMC 는 왔으나 fix 무효(V) — 실기기 상황 그대로 */
+    MK_TIMEAX_PPS_UNPAIRED_NO_PPS        = 2, /* 유효 RMC 는 왔으나 창 안에 짝지을 원시 PPS 캡처가 없다 */
+} MkTimeAxPpsUnpairedReason;
+
 /* PPS 가 없어진 뒤 gnss_pps 를 유지하는 한도. 공칭 1 Hz 이므로 1.5초는
  * "한 번 놓쳤다" 를 곧바로 의심하되, 잡음으로 반 박자 늦은 것까지 오탐하지
  * 않을 여유다. */
@@ -83,6 +95,21 @@ typedef struct MkTimeAx {
     /* 아직 RMC 와 못 맺어진 PPS 캡처. */
     int      pps_pending;
     uint64_t pps_pending_dev_us;
+
+    /* 🔴 원시 PPS 캡처 — 짝짓기(`has_pps`/`last_pps_dev_us`)와 무관하게
+     *    "펄스가 실제로 들어왔는가" 그 자체를 센다. 실기기 관측(2026-08-19,
+     *    UM981, 실내·fix 없음)에서 `has_pps`는 RMC 가 전부 무효라 끝까지
+     *    안 섰지만, PPS 는 1초 간격으로 계속 들어오고 있었다(TIM8 CCR3·PC8
+     *    핀 토글을 GDB 로 직접 확인). `pps_age_ms`(짝지어 채택된 값) 만
+     *    보면 "PPS 가 안 온다"로 읽혀 배선을 의심하게 된다 — 이 세 필드가
+     *    그 오판을 막는다. */
+    int      has_pps_raw;
+    uint64_t last_pps_raw_dev_us;
+    uint32_t pps_raw_count;
+
+    /* 마지막 짝짓기 시도의 실패 이유(진단용). 방금 성공했거나 아직 아무
+     * 사건도 없으면 NONE. */
+    MkTimeAxPpsUnpairedReason pps_unpaired_reason;
 
     /* 신선도 판정용 — 마지막으로 "확실히 봤다"고 칠 수 있는 순간. 없으면
      * 0 이고 has_* 플래그로 구분한다(dev_us==0 이 "0마이크로초에 있었다"
@@ -201,6 +228,27 @@ int64_t mk_timeax_pps_age_us(const MkTimeAx *tx, uint64_t dev_us);
 /* 위와 같지만 `dev_us` 를 마지막 `mk_timeax_tick()` 호출값으로 대신한다 —
  * $STAT 처럼 호출자가 "지금" 을 따로 안 들고 있을 때 쓴다. */
 int64_t mk_timeax_pps_age_us_now(const MkTimeAx *tx);
+
+/* 마지막 "원시" PPS 캡처 이후 경과(µs) — 짝짓기 성공 여부와 무관하다.
+ * 한 번도 없었으면 -1. `mk_timeax_pps_age_us()` 와 다른 것을 잰다: 저것은
+ * "채택된" PPS 의 나이라 짝이 안 지어지면 영영 -1(null)일 수 있지만,
+ * 이것은 펄스가 실제로 오는지만 본다(규격 §7.4 — 실기기 관측 근거). */
+int64_t mk_timeax_pps_raw_age_us(const MkTimeAx *tx, uint64_t dev_us);
+
+/* 위와 같지만 마지막 `mk_timeax_tick()` 호출값을 쓴다($STAT 용). */
+int64_t mk_timeax_pps_raw_age_us_now(const MkTimeAx *tx);
+
+/* 지금까지 캡처한 원시 PPS 펄스 수(부팅 이후 누적). 카운터라 "본 적
+ * 없음"과 "0 번"이 같은 뜻이므로 null 이 필요 없다 — 0 부터 시작한다. */
+uint32_t mk_timeax_pps_raw_count(const MkTimeAx *tx);
+
+/* 마지막 짝짓기 시도가 왜 안 됐는지(또는 됐는지). */
+MkTimeAxPpsUnpairedReason mk_timeax_pps_unpaired_reason(const MkTimeAx *tx);
+
+/* NDJSON `pps_unpaired_reason` 문자열. NONE 은 NULL 을 돌려준다 — 호출자가
+ * 그것을 보고 JSON null 을 낸다(짝지어졌거나 아직 판단할 사건이 없을 때
+ * "이유"를 지어내지 않는다). */
+const char *mk_timeax_pps_unpaired_reason_name(MkTimeAxPpsUnpairedReason reason);
 
 /* ---- 16비트 캡처 확장 ------------------------------------------------------
  *

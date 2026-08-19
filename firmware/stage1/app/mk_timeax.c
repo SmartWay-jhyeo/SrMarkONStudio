@@ -1,5 +1,6 @@
 #include "mk_timeax.h"
 
+#include <stddef.h>
 #include <string.h>
 
 void mk_timeax_init(MkTimeAx *tx)
@@ -22,13 +23,25 @@ void mk_timeax_on_pps(MkTimeAx *tx, uint64_t dev_us)
 {
     tx->pps_pending = 1;
     tx->pps_pending_dev_us = dev_us;
+
+    /* 🔴 원시 캡처는 짝짓기와 무관하게 여기서 바로 센다 — 실기기 관측
+     *    (헤더 주석)대로 펄스 자체는 RMC 의 유효성과 상관없이 온다. */
+    tx->has_pps_raw = 1;
+    tx->last_pps_raw_dev_us = dev_us;
+    tx->pps_raw_count++;
 }
 
 void mk_timeax_on_rmc(MkTimeAx *tx, const MkGnssRmc *rmc, uint64_t dev_us)
 {
     if (!rmc->valid) {
         /* 🔴 무효 fix 는 신선도를 갱신하지 않는다(헤더 주석 — 설계 원칙
-         *    3·4). 응답이 왔다고 믿을 만하다는 뜻은 아니다. */
+         *    3·4). 응답이 왔다고 믿을 만하다는 뜻은 아니다.
+         *
+         *    그래도 짝짓기가 왜 안 됐는지는 이 사실 하나로 결정된다 —
+         *    실기기가 겪은 바로 그 상황(헤더 주석: 실내·fix 없음·RMC 가
+         *    계속 V)이다. PPS 가 대기 중이었는지와 무관하게 참이므로
+         *    항상 이 이유를 남긴다. */
+        tx->pps_unpaired_reason = MK_TIMEAX_PPS_UNPAIRED_NO_VALID_NMEA;
         return;
     }
 
@@ -48,8 +61,13 @@ void mk_timeax_on_rmc(MkTimeAx *tx, const MkGnssRmc *rmc, uint64_t dev_us)
         tx->last_pps_dev_us = tx->pps_pending_dev_us;
 
         tx->grade = MK_TIMEAX_GNSS_PPS;
+        tx->pps_unpaired_reason = MK_TIMEAX_PPS_UNPAIRED_NONE; /* 성공 — 더 설명할 것이 없다 */
         return;
     }
+
+    /* 🔴 유효한 RMC 는 왔지만 짝지을 원시 PPS 가 없다(아직 안 왔거나
+     *    창을 넘겼다) — 원인이 NMEA 가 아니라 PPS 쪽이라는 뜻이다. */
+    tx->pps_unpaired_reason = MK_TIMEAX_PPS_UNPAIRED_NO_PPS;
 
     /* PPS 짝이 없다(아직 없거나 창을 넘겼다) — NMEA 단독으로도 gnss_pps
      * 보다는 낮은 등급으로 올릴 수 있다. 이미 gnss_pps 라면 여기서
@@ -163,6 +181,38 @@ int64_t mk_timeax_pps_age_us(const MkTimeAx *tx, uint64_t dev_us)
 int64_t mk_timeax_pps_age_us_now(const MkTimeAx *tx)
 {
     return mk_timeax_pps_age_us(tx, tx->last_seen_dev_us);
+}
+
+int64_t mk_timeax_pps_raw_age_us(const MkTimeAx *tx, uint64_t dev_us)
+{
+    if (!tx->has_pps_raw) {
+        return -1;
+    }
+    return (int64_t)(dev_us - tx->last_pps_raw_dev_us);
+}
+
+int64_t mk_timeax_pps_raw_age_us_now(const MkTimeAx *tx)
+{
+    return mk_timeax_pps_raw_age_us(tx, tx->last_seen_dev_us);
+}
+
+uint32_t mk_timeax_pps_raw_count(const MkTimeAx *tx)
+{
+    return tx->pps_raw_count;
+}
+
+MkTimeAxPpsUnpairedReason mk_timeax_pps_unpaired_reason(const MkTimeAx *tx)
+{
+    return tx->pps_unpaired_reason;
+}
+
+const char *mk_timeax_pps_unpaired_reason_name(MkTimeAxPpsUnpairedReason reason)
+{
+    switch (reason) {
+    case MK_TIMEAX_PPS_UNPAIRED_NO_VALID_NMEA: return "no_valid_nmea";
+    case MK_TIMEAX_PPS_UNPAIRED_NO_PPS:        return "no_pps";
+    default:                                   return NULL; /* NONE — 지어낼 이유가 없다 */
+    }
 }
 
 uint64_t mk_timeax_extend_ticks(uint32_t wrap_count, uint16_t raw_ccr,

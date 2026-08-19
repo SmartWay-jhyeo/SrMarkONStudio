@@ -267,20 +267,29 @@ static void test_cfg_value_rejects_small_buffer(void)
 
 /* ---- $STAT (규격 §7.4) -------------------------------------------------- */
 
+/* 🔴 [신규, 2026-08-19] `pps_raw_age_ms`·`pps_raw_count`·`pps_unpaired_reason`
+ *    — "펄스가 오는가"(원시)와 "그 펄스를 시간축이 받아들였는가"(짝지어
+ *    채택된 `pps_age_ms`)를 가른다. 실기기 관측(UM981, 실내·fix 없음):
+ *    PPS 는 1초 간격으로 계속 들어왔는데(TIM8 CCR3·PC8 확인) RMC 가 전부
+ *    무효(V)라 한 번도 짝지어지지 않아 `pps_age_ms` 가 계속 null 이었다 —
+ *    배선·캡처는 멀쩡한데 "PPS 가 안 온다"로 보였다. 근거: mk_timeax.c. */
 static void test_stat_shape(void)
 {
     /* 🔴 din 세 항목이 늘면서 400 이 모자라졌다(레코드가 418자) — 잘리면
      *    mk_json 이 ok=0 으로 떨어져 이 시험이 아니라 다른 이유로 실패한
      *    것처럼 보인다. gnss.init_* 세 필드가 늘면서 512 도 모자라졌다
-     *    (515자) — 넉넉히 600 으로 둔다. */
-    char buf[600];
+     *    (515자). pps_raw_* 세 필드가 늘며 600 도 모자라졌다 — 700 으로
+     *    둔다. */
+    char buf[700];
     setup();
     ITEMS[5].cur.u = 1;                     /* pwr.24v 를 켠 것으로 */
 
     MkQueueStat q[2] = { {0, 3, 9, 0}, {1, 0, 1, 7} };
     MkDinState d[3] = { {18, 0}, {19, 0}, {20, 1} };
     int n = mk_cfgwire_stat(1772200855875LL, "CONFIG", "ACTIVE", "0.1.0", "2.0",
-                            123456u, "device_clock", 0u, 842, 11, 1, 0, 1,
+                            123456u, "device_clock", 0u,
+                            842, 842, 118u, NULL, 11,
+                            1, 0, 1,
                             &RS, d, 3, q, 2,
                             buf, sizeof buf);
     CHECK(n > 0, "stat 을 만든다");
@@ -290,10 +299,13 @@ static void test_stat_shape(void)
     CHECK_HAS(buf, "\"time_quality\":0", "시간 품질");
     CHECK_HAS(buf, "\"uptime_ms\":123456", "uptime");
     CHECK_HAS(buf,
-              "\"gnss\":{\"pps_age_ms\":842,\"sats\":11,"
+              "\"gnss\":{\"pps_age_ms\":842,\"pps_raw_age_ms\":842,"
+              "\"pps_raw_count\":118,\"pps_unpaired_reason\":null,"
+              "\"sats\":11,"
               "\"init_sent\":true,\"init_exhausted\":false,"
               "\"sentence_seen\":true}",
-              "gnss 진단은 중첩 객체(규격 §7.4·§4.1.1)");
+              "gnss 진단은 중첩 객체 — 짝지어진 나이 바로 옆에 원시 나이가 나란히 있다"
+              "(규격 §7.4·§4.1.1)");
     CHECK_HAS(buf, "\"rails\":{\"v24\":true,\"v14v9\":false,\"v5\":true}",
               "rails 는 중첩 객체");
     CHECK_HAS(buf,
@@ -311,29 +323,60 @@ static void test_stat_with_no_queues(void)
 {
     /* 🔴 3단계 전에는 큐가 없다. 없는 것을 있는 척하지 않는다 —
      *    빈 배열이라야 호스트가 "채널이 없다" 를 정확히 읽는다. */
-    char buf[400];
+    char buf[500];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                            "device_clock", 0u, -1, -1, 0, 0, 0,
+                            "device_clock", 0u,
+                            -1, -1, 0u, NULL, -1,
+                            0, 0, 0,
                             &RS, NULL, 0, NULL, 0,
                             buf, sizeof buf);
     CHECK(n > 0, "큐가 없어도 만든다");
     CHECK_HAS(buf, "\"queues\":[]", "빈 배열");
     CHECK_HAS(buf,
-              "\"gnss\":{\"pps_age_ms\":null,\"sats\":null,"
+              "\"gnss\":{\"pps_age_ms\":null,\"pps_raw_age_ms\":null,"
+              "\"pps_raw_count\":0,\"pps_unpaired_reason\":null,"
+              "\"sats\":null,"
               "\"init_sent\":false,\"init_exhausted\":false,"
               "\"sentence_seen\":false}",
-              "GNSS 를 아예 안 붙였으면 -1 이 null 로 나간다 — 0 을 지어내지 않는다");
+              "GNSS 를 아예 안 붙였으면 -1 이 null 로 나간다 — 0 을 지어내지 않는다. "
+              "pps_raw_count 는 카운터라 0 이 곧 '본 적 없음'이라 null 이 필요 없다");
+}
+
+/* 🔴 되돌림 검사 — 이 시험이 이번 작업의 핵심이다(작업 지시 원문). 실기기가
+ *    실제로 겪은 상태를 그대로 만든다: 원시 펄스는 온다(원시 나이·카운트가
+ *    값을 가짐)는데 짝짓기가 안 돼(`pps_age_ms` 는 null) 시간축이 못 받아
+ *    들인 상태. 누가 `pps_age_ms` 와 `pps_raw_age_ms` 를 다시 하나로 합치면
+ *    이 CHECK 가 바로 깨진다. */
+static void test_stat_pps_raw_present_while_paired_age_is_null(void)
+{
+    char buf[600];
+    setup();
+    int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
+                            "device_clock", 0u,
+                            -1, 300, 7u, "no_valid_nmea", 3,
+                            0, 0, 1,
+                            &RS, NULL, 0, NULL, 0,
+                            buf, sizeof buf);
+    CHECK(n > 0, "원시만 있어도 만든다");
+    CHECK_HAS(buf,
+              "\"gnss\":{\"pps_age_ms\":null,\"pps_raw_age_ms\":300,"
+              "\"pps_raw_count\":7,\"pps_unpaired_reason\":\"no_valid_nmea\","
+              "\"sats\":3,",
+              "펄스는 오는데(원시 나이·카운트) 짝짓기가 안 된(null) 상태 — "
+              "실기기가 겪은 바로 그 상황(UM981, 실내·fix 없음)을 그대로 싣는다");
 }
 
 static void test_stat_with_no_din(void)
 {
     /* 🔴 sol 이 안 붙어 있는 경우와 같은 규칙 — queues 와 마찬가지로
      *    0 을 채워 보내지 않고 빈 배열이다. */
-    char buf[400];
+    char buf[500];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                            "device_clock", 0u, -1, -1, 0, 0, 0,
+                            "device_clock", 0u,
+                            -1, -1, 0u, NULL, -1,
+                            0, 0, 0,
                             &RS, NULL, 0, NULL, 0,
                             buf, sizeof buf);
     CHECK(n > 0, "din 이 없어도 만든다");
@@ -346,12 +389,15 @@ static void test_queue_channel_comes_from_the_struct(void)
      *    6번 채널의 유실이 0번 것으로 보고된다. 유실을 찾으려고 보는
      *    창구가 채널을 헷갈리면 없느니만 못하다.
      *
-     *    gnss.init_* 세 필드가 늘면서 400 이 빠듯해졌다 — 512 로 둔다. */
-    char buf[512];
+     *    gnss.init_* 세 필드가 늘면서 400 이 빠듯해졌다. pps_raw_* 세
+     *    필드가 늘며 512 도 빠듯해졌다 — 600 으로 둔다. */
+    char buf[600];
     setup();
     MkQueueStat q[2] = { {2, 0, 0, 0}, {6, 0, 0, 41} };
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                    "device_clock", 0u, -1, -1, 0, 0, 0,
+                    "device_clock", 0u,
+                    -1, -1, 0u, NULL, -1,
+                    0, 0, 0,
                     &RS, NULL, 0, q, 2, buf, sizeof buf);
     CHECK_HAS(buf,
               "\"queues\":[{\"ch\":2,\"depth\":0,\"peak\":0,\"drops\":0},"
@@ -368,10 +414,11 @@ static void test_missing_rail_reads_as_off(void)
      *    pwr.5v 의 기본값(true)이 그대로 나가, 핀은 0 인데 $STAT 이
      *    "5V ON" 이라고 말했다 — 실기기에서 확인했다(2026-08-14).
      *    설정은 "원하는 것", rails 는 "낸 것" 이다. */
-    char buf[400];
+    char buf[500];
     setup();
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock", 0u,
-                    -1, -1, 0, 0, 0, NULL, NULL, 0, NULL, 0, buf, sizeof buf);
+                    -1, -1, 0u, NULL, -1,
+                    0, 0, 0, NULL, NULL, 0, NULL, 0, buf, sizeof buf);
     CHECK_HAS(buf, "\"rails\":{\"v24\":false,\"v14v9\":false,\"v5\":false}",
               "제어기가 없으면 전부 꺼진 것으로");
 
@@ -379,7 +426,8 @@ static void test_missing_rail_reads_as_off(void)
     MkCfgItem *v5 = mk_cfg_find(&CFG, "pwr.5v");
     if (v5 != NULL) { v5->cur.u = 1; }
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock", 0u,
-                    -1, -1, 0, 0, 0, NULL, NULL, 0, NULL, 0, buf, sizeof buf);
+                    -1, -1, 0u, NULL, -1,
+                    0, 0, 0, NULL, NULL, 0, NULL, 0, buf, sizeof buf);
     CHECK_HAS(buf, "\"v5\":false",
               "설정이 ON 이어도 아직 안 냈으면 false — 설정표를 안 읽는다");
 }
@@ -389,7 +437,7 @@ static void test_stat_rejects_small_buffer(void)
     char tiny[24];
     setup();
     CHECK(mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock",
-                          0u, -1, -1, 0, 0, 0, &RS, NULL, 0, NULL, 0,
+                          0u, -1, -1, 0u, NULL, -1, 0, 0, 0, &RS, NULL, 0, NULL, 0,
                           tiny, sizeof tiny) < 0,
           "버퍼가 작으면 실패하고 잘린 줄을 내지 않는다");
 }
@@ -423,6 +471,7 @@ int main(int argc, char **argv)
     test_field_bits_carry_records();
     test_stat_shape();
     test_stat_with_no_queues();
+    test_stat_pps_raw_present_while_paired_age_is_null();
     test_stat_with_no_din();
     test_queue_channel_comes_from_the_struct();
     test_missing_rail_reads_as_off();

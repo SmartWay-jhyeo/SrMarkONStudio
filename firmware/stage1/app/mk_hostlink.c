@@ -436,6 +436,9 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
     const char *time_source = "device_clock";
     uint32_t    time_quality = 0u;
     int64_t     gnss_pps_age_ms = -1;
+    int64_t     gnss_pps_raw_age_ms = -1;
+    uint32_t    gnss_pps_raw_count = 0u;
+    const char *gnss_pps_unpaired_reason = NULL;
     int32_t     gnss_sats = -1;
     if (h->timeax != NULL) {
         time_source  = mk_timeax_grade_name(mk_timeax_grade(h->timeax));
@@ -445,6 +448,14 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         gnss_sats = mk_timeax_sats(h->timeax);   /* GGA 가 한 번도 없어도 0 — sats 는
                                                     * "본 적 없음" 을 따로 구분할 근거가
                                                     * 없다(uint8_t 0 이 곧 그 뜻이다). */
+
+        /* 🔴 원시 캡처 — "펄스가 오는가"를 짝짓기와 무관하게 답한다(규격
+         *    §7.4, 실기기 관측 근거는 mk_timeax.h 헤더 주석). */
+        int64_t raw_age_us = mk_timeax_pps_raw_age_us_now(h->timeax);
+        gnss_pps_raw_age_ms = (raw_age_us >= 0) ? raw_age_us / 1000 : -1;
+        gnss_pps_raw_count = mk_timeax_pps_raw_count(h->timeax);
+        gnss_pps_unpaired_reason =
+            mk_timeax_pps_unpaired_reason_name(mk_timeax_pps_unpaired_reason(h->timeax));
     }
 
     /* 🔴 GNSS 초기화 진단(규격 §4.1.1·§7.4). gnssctl 이 안 붙어 있으면
@@ -458,19 +469,21 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         gnss_sentence_seen  = mk_gnssctl_sentence_seen(h->gnssctl);
     }
 
-    /* 🔴 896 이던 것을 1024 로 올렸다. 원래 rails+din+queues 최악
-     *    길이(721) + 여유였고(주석 윗줄 참고) "gnss":{"pps_age_ms":<i64>,
-     *    "sats":<i32>} 최악 ~45바이트는 그 여유 안이었다. 이번에 더한
-     *    "init_sent":false,"init_exhausted":false,"sentence_seen":false
-     *    가 최악 ~62바이트를 더 먹는다 — 옛 여유(175)에서 45를 빼면 130,
-     *    62를 더해도 남지만 빠듯해서 1024 로 올려 여유를 다시 확보한다. */
-    char body[1024];
+    /* 🔴 896 이던 것을 1024 로, 그 뒤 gnss.init_* 세 필드로 더 올렸다.
+     *    [신규, 2026-08-19] "pps_raw_age_ms":<i64>,"pps_raw_count":<u32>,
+     *    "pps_unpaired_reason":"no_valid_nmea" 가 최악 ~95바이트를 더
+     *    먹는다(문자열 이유 중 가장 긴 "no_valid_nmea" 기준). 옛 여유가
+     *    빠듯해 1280 으로 올려 다시 확보한다. */
+    char body[1280];
     int n = mk_cfgwire_stat(
         now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
         h->ctl_mode == MK_CTL_TEST ? "TEST" : "ACTIVE",
         h->fw, h->board_rev, (uint32_t)now_ms,
-        time_source, time_quality, gnss_pps_age_ms, gnss_sats,
+        time_source, time_quality,
+        gnss_pps_age_ms,
+        gnss_pps_raw_age_ms, gnss_pps_raw_count, gnss_pps_unpaired_reason,
+        gnss_sats,
         gnss_init_sent, gnss_init_exhausted, gnss_sentence_seen,
         &rs,
         n_din > 0 ? ds : NULL, n_din,

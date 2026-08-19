@@ -109,7 +109,27 @@ typedef struct {
  *    라도 마지막 PPS 가 1.4초 전이면 다음 tick 에 내려갈 참이라는 것을
  *    미리 알 수 있다. -1 은 "아직 모른다"(PPS 를 한 번도 못 봤다 · GGA 를
  *    한 번도 못 받았다)는 뜻이고 `null` 로 나간다 — 0 을 지어내지 않는다
- *    (설계 원칙 3·4와 같은 결). */
+ *    (설계 원칙 3·4와 같은 결).
+ *
+ * 🔴 [신규, 2026-08-19] `gnss_pps_raw_age_ms`·`gnss_pps_raw_count`·
+ *    `gnss_pps_unpaired_reason` — 실기기 관측(UM981, 실내·fix 없음)으로
+ *    필요해졌다. PPS 는 TIM8 CCR3·PC8 로 정확히 1초 간격으로 들어오고
+ *    있었는데, RMC 가 전부 무효(V)라 한 번도 짝지어지지 않아
+ *    `gnss_pps_age_ms` 가 계속 -1(null) 이었다 — 배선·캡처·ISR 은 전부
+ *    정상인데 "PPS 가 안 온다"로 보였다. `gnss_pps_age_ms` 가 **짝지어
+ *    채택된** PPS 의 나이(시간축이 실제로 쓰는 값)라면, 이 셋은 짝짓기와
+ *    무관하게 "펄스가 오는가"를 답한다:
+ *      - `gnss_pps_raw_age_ms` : 마지막 원시 캡처 이후 경과(ms). -1 은
+ *        "원시 캡처도 한 번도 없다"이고 null 로 나간다.
+ *      - `gnss_pps_raw_count`  : 지금까지 캡처한 원시 펄스 수. 카운터라
+ *        "본 적 없음"과 "0 번"이 같은 뜻이므로 0 이 곧 그 뜻이다(null 이
+ *        필요 없다 — `gnss_sats`(gga 없어도 0)와 같은 결).
+ *      - `gnss_pps_unpaired_reason` : 마지막 짝짓기 시도가 왜 안 됐는가.
+ *        NULL 이면 방금 짝지어졌거나(즉 `gnss_pps_age_ms` 가 값을 가짐)
+ *        아직 판단할 사건이 없다는 뜻이고 `null` 로 나간다. 그 외에는
+ *        `mk_timeax_pps_unpaired_reason_name()` 이 돌려주는 문자열
+ *        ("no_valid_nmea"/"no_pps") 을 그대로 싣는다 — 지어내지 않는다
+ *        (CLAUDE.md §5). */
 /* 🔴 `gnss_init_sent`·`gnss_init_exhausted`·`gnss_sentence_seen` 는 GNSS
  *    초기화 시퀀스(규격 §4.1.1)를 진단한다. `time_source`가 계속
  *    device_clock 에 머물 때 — 즉 아무것도 안 올 때 — 이 셋이 "명령을
@@ -120,7 +140,10 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *ctl_mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
-                    int64_t gnss_pps_age_ms, int32_t gnss_sats,
+                    int64_t gnss_pps_age_ms,
+                    int64_t gnss_pps_raw_age_ms, uint32_t gnss_pps_raw_count,
+                    const char *gnss_pps_unpaired_reason,
+                    int32_t gnss_sats,
                     int gnss_init_sent, int gnss_init_exhausted,
                     int gnss_sentence_seen,
                     const MkRailState *rails,

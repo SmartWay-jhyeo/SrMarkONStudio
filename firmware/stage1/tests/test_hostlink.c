@@ -9,6 +9,7 @@
 #include "../app/mk_ads1256.h"
 #include "../app/mk_solctl.h"
 #include "../app/mk_gnssctl.h"
+#include "../app/mk_timeax.h"
 
 static int failures = 0;
 
@@ -1052,6 +1053,96 @@ static void test_stat_gnss_init_fields_reflect_gnssctl(void)
     }
 }
 
+/* ---- $STAT 의 pps_raw_* vs pps_age_ms (규격 §7.4, 2026-08-19) ----------
+ *
+ * 🔴 실기기 관측(UM981, 실내·fix 없음)을 그대로 재현한다: PPS 는 TIM8
+ *    CCR3·PC8 로 정확히 1초 간격으로 들어오는데(GDB 로 직접 확인) RMC 가
+ *    전부 무효(V)라 한 번도 짝지어지지 않았다 — `pps_age_ms` 가 계속
+ *    null 이라 "PPS 가 안 온다"로 읽혔다. 배선·캡처·ISR 은 전부 정상이었다.
+ *    아래 첫 시험이 이번 작업의 핵심이다(작업 지시 원문). */
+
+static void test_stat_pps_raw_visible_even_when_nmea_never_pairs(void)
+{
+    MkTimeAx tx;
+    MkHostlink h; Sink s;
+
+    setup_cfg(&h, &s);
+    mk_timeax_init(&tx);
+    mk_hostlink_attach_timeax(&h, &tx);
+
+    mk_timeax_on_pps(&tx, 1000000ULL);              /* PPS @ 1.000000s — 실재한다 */
+    MkGnssRmc invalid_rmc;
+    memset(&invalid_rmc, 0, sizeof invalid_rmc);
+    invalid_rmc.valid = 0;                          /* 실내라 fix 없음 — RMC 가 V */
+    mk_timeax_on_rmc(&tx, &invalid_rmc, 1050000ULL);
+    mk_timeax_tick(&tx, 1100000ULL);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0], "\"pps_age_ms\":null") != NULL,
+              "짝지어진 나이는 여전히 null — 지금까지 화면이 보여주던 그 버그");
+        CHECK(strstr(s.lines[0], "\"pps_raw_age_ms\":100") != NULL,
+              "원시 캡처 나이는 값이 있다 — 펄스는 실제로 왔다");
+        CHECK(strstr(s.lines[0], "\"pps_raw_count\":1") != NULL,
+              "원시 캡처 1회");
+        CHECK(strstr(s.lines[0], "\"pps_unpaired_reason\":\"no_valid_nmea\"") != NULL,
+              "짝짓기 실패 이유가 실린다 — RMC 는 왔지만 fix 가 무효했다");
+    }
+}
+
+static void test_stat_pps_both_missing_when_pps_never_arrives(void)
+{
+    MkTimeAx tx;
+    MkHostlink h; Sink s;
+
+    setup_cfg(&h, &s);
+    mk_timeax_init(&tx);
+    mk_hostlink_attach_timeax(&h, &tx);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0], "\"pps_age_ms\":null") != NULL, "짝지어진 나이 없음");
+        CHECK(strstr(s.lines[0], "\"pps_raw_age_ms\":null") != NULL,
+              "PPS 자체가 안 왔으니 원시 나이도 없다");
+        CHECK(strstr(s.lines[0], "\"pps_raw_count\":0") != NULL, "원시 캡처 0회");
+        CHECK(strstr(s.lines[0], "\"pps_unpaired_reason\":null") != NULL,
+              "아직 아무 사건도 없으니 이유도 없다");
+    }
+}
+
+static void test_stat_pps_both_present_when_locked(void)
+{
+    MkTimeAx tx;
+    MkHostlink h; Sink s;
+
+    setup_cfg(&h, &s);
+    mk_timeax_init(&tx);
+    mk_hostlink_attach_timeax(&h, &tx);
+
+    mk_timeax_on_pps(&tx, 1000000ULL);
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1700000000000LL;
+    mk_timeax_on_rmc(&tx, &rmc, 1050000ULL);
+    mk_timeax_tick(&tx, 1100000ULL);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0], "\"pps_age_ms\":100") != NULL,
+              "짝지어진 나이가 있다");
+        CHECK(strstr(s.lines[0], "\"pps_raw_age_ms\":100") != NULL,
+              "원시 나이도 있다 — 정상 짝짓기에서는 같은 캡처를 가리켜 값이 같다");
+        CHECK(strstr(s.lines[0], "\"pps_raw_count\":1") != NULL, "원시 캡처 1회");
+        CHECK(strstr(s.lines[0], "\"pps_unpaired_reason\":null") != NULL,
+              "짝지어졌으니 실패 이유는 없다");
+    }
+}
+
 /* ---- Python 시뮬레이터와 대조할 시나리오 ------------------------------ */
 
 /* 🔴 이 대조가 이 계층에서 가장 값지다. GUI 는 시뮬레이터를 상대로 개발되고
@@ -1328,6 +1419,9 @@ int main(int argc, char **argv)
     test_gnss_send_failure_is_reported_as_busy();
     test_stat_gnss_init_fields_default_to_false_without_gnssctl();
     test_stat_gnss_init_fields_reflect_gnssctl();
+    test_stat_pps_raw_visible_even_when_nmea_never_pairs();
+    test_stat_pps_both_missing_when_pps_never_arrives();
+    test_stat_pps_both_present_when_locked();
     test_tick_emits_hb_at_1hz();
     test_tick_does_not_depend_on_mode();
     test_boots_in_active_control_mode();

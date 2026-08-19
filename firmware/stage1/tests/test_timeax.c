@@ -297,6 +297,114 @@ static void test_monotonic_does_not_clamp_an_older_channels_stale_sample(void)
           "같은 표본을 반복해도 매번 같은 값이어야 한다");
 }
 
+/* ---- 원시 PPS 캡처 vs 짝지어 채택된 PPS ------------------------------------
+ *
+ * 실기기 관측(2026-08-19, UM981, 실내 — fix 없음): TIM8 CCR3 가 1초 간격으로
+ * 계속 바뀌고 s_pps_pending 도 슈퍼루프가 매 바퀴 가져갔지만, RMC 가 전부
+ * `V`(무효 fix)라 한 번도 짝지어지지 않았다 — has_pps 가 끝까지 서지 않아
+ * $STAT.gnss.pps_age_ms 가 계속 null 이었다. 배선·캡처·ISR 은 전부 정상인데
+ * "PPS 가 안 온다"로 보인 것이 이 작업의 이유다(규격 §7.4).
+ *
+ * 아래 시험은 그 상황을 그대로 재현한다 — 짝지어진 나이(pps_age_us)는 여전히
+ * -1(null)이어야 하지만, 원시 캡처 나이(pps_raw_age_us)·횟수(pps_raw_count)는
+ * 값을 가져야 한다. 이 둘이 **같은 시험 안에서 갈리는 것**이 되돌림 검사를
+ * 겸한다 — 누가 둘을 다시 하나로 합치면 이 CHECK 들이 바로 깨진다. */
+
+static void test_raw_pps_tracks_independently_of_pairing(void)
+{
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+
+    CHECK(mk_timeax_pps_raw_age_us(&tx, 0ULL) == -1,
+          "원시 캡처도 한 번도 없었으면 -1");
+    CHECK(mk_timeax_pps_raw_count(&tx) == 0u, "초기 원시 카운트 0");
+    CHECK(mk_timeax_pps_unpaired_reason(&tx) == MK_TIMEAX_PPS_UNPAIRED_NONE,
+          "아직 아무 사건도 없으면 NONE");
+
+    mk_timeax_on_pps(&tx, 1000000ULL);                 /* PPS @ 1.000000s — 실재한다 */
+    MkGnssRmc invalid_rmc = { 0 };
+    invalid_rmc.valid = 0;                              /* 실내라 fix 없음 — RMC 가 V */
+    mk_timeax_on_rmc(&tx, &invalid_rmc, 1050000ULL);
+
+    /* 🔴 짝지어진 나이는 여전히 모른다 — 이것이 지금 실기기가 겪는 바로
+     *    그 상태다. pps_age_ms 는 이 값을 그대로 옮겨 null 로 나간다. */
+    CHECK(mk_timeax_pps_age_us(&tx, 1100000ULL) == -1,
+          "짝지어지지 않았으니 pps_age_us 는 여전히 -1(null) — 이게 지금까지의 버그였다");
+
+    /* 🔴 하지만 펄스 자체는 왔다 — 원시 쪽은 안다. */
+    CHECK(mk_timeax_pps_raw_age_us(&tx, 1100000ULL) == 100000LL,
+          "원시 캡처 나이는 짝짓기와 무관하게 잡힌다");
+    CHECK(mk_timeax_pps_raw_count(&tx) == 1u, "원시 캡처 1회");
+    CHECK(mk_timeax_pps_unpaired_reason(&tx) == MK_TIMEAX_PPS_UNPAIRED_NO_VALID_NMEA,
+          "짝짓기 실패 이유 — RMC 는 왔지만 fix 가 무효했다");
+    CHECK(mk_timeax_grade(&tx) == MK_TIMEAX_DEVICE_CLOCK,
+          "무효 RMC 는 등급을 올리지 못한다(기존 규칙, 회귀 아님)");
+}
+
+static void test_raw_pps_count_increments_regardless_of_pairing(void)
+{
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+
+    MkGnssRmc invalid_rmc = { 0 };
+    invalid_rmc.valid = 0;
+
+    mk_timeax_on_pps(&tx, 1000000ULL);
+    mk_timeax_on_rmc(&tx, &invalid_rmc, 1050000ULL);
+    mk_timeax_on_pps(&tx, 2000000ULL);
+    mk_timeax_on_rmc(&tx, &invalid_rmc, 2050000ULL);
+    mk_timeax_on_pps(&tx, 3000000ULL);
+
+    CHECK(mk_timeax_pps_raw_count(&tx) == 3u,
+          "짝짓기가 한 번도 안 됐어도 원시 캡처는 매번 센다");
+    CHECK(mk_timeax_pps_raw_age_us(&tx, 3200000ULL) == 200000LL,
+          "가장 최근 원시 캡처 기준으로 나이를 잰다");
+}
+
+static void test_pps_never_arrives_both_ages_unknown(void)
+{
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+
+    /* PPS 는 한 번도 안 왔는데 유효한 RMC 만 온다. */
+    MkGnssRmc rmc = make_rmc(1, 1700000000000LL);
+    mk_timeax_on_rmc(&tx, &rmc, 500000ULL);
+
+    CHECK(mk_timeax_pps_age_us(&tx, 500000ULL) == -1, "짝지어진 나이 없음");
+    CHECK(mk_timeax_pps_raw_age_us(&tx, 500000ULL) == -1,
+          "원시 캡처도 없음 — PPS 자체가 안 왔다");
+    CHECK(mk_timeax_pps_raw_count(&tx) == 0u, "원시 캡처 0회");
+    CHECK(mk_timeax_pps_unpaired_reason(&tx) == MK_TIMEAX_PPS_UNPAIRED_NO_PPS,
+          "짝짓기 실패 이유 — 유효한 RMC 는 왔지만 짝지을 원시 PPS 가 없다");
+}
+
+static void test_both_present_and_reason_clears_when_paired(void)
+{
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+
+    mk_timeax_on_pps(&tx, 1000000ULL);
+    MkGnssRmc rmc = make_rmc(1, 1700000000123LL);
+    mk_timeax_on_rmc(&tx, &rmc, 1050000ULL);
+
+    CHECK(mk_timeax_pps_age_us(&tx, 1200000ULL) == 200000LL, "짝지어진 나이 있음");
+    CHECK(mk_timeax_pps_raw_age_us(&tx, 1200000ULL) == 200000LL,
+          "정상 짝짓기에서는 둘이 같은 캡처를 가리켜 값이 같다");
+    CHECK(mk_timeax_pps_raw_count(&tx) == 1u, "원시 캡처 1회");
+    CHECK(mk_timeax_pps_unpaired_reason(&tx) == MK_TIMEAX_PPS_UNPAIRED_NONE,
+          "짝지어졌으니 실패 이유는 없다(NONE)");
+    CHECK(mk_timeax_pps_unpaired_reason_name(MK_TIMEAX_PPS_UNPAIRED_NONE) == NULL,
+          "NONE 의 이름은 NULL — $STAT 이 이것으로 null 을 낸다");
+}
+
+static void test_unpaired_reason_names(void)
+{
+    CHECK(strcmp(mk_timeax_pps_unpaired_reason_name(MK_TIMEAX_PPS_UNPAIRED_NO_VALID_NMEA),
+                 "no_valid_nmea") == 0, "이름: no_valid_nmea");
+    CHECK(strcmp(mk_timeax_pps_unpaired_reason_name(MK_TIMEAX_PPS_UNPAIRED_NO_PPS),
+                 "no_pps") == 0, "이름: no_pps");
+}
+
 /* ---- 위성 수 --------------------------------------------------------------- */
 
 static void test_gga_updates_sats_only(void)
@@ -341,6 +449,12 @@ int main(void)
     test_extend_ticks_monotonic_across_rollover();
     test_extend_ticks_corrects_back_half_overlap();
     test_extend_ticks_front_half_overlap_no_correction();
+    printf("-- 원시 PPS 캡처 vs 짝지어 채택된 PPS --\n");
+    test_raw_pps_tracks_independently_of_pairing();
+    test_raw_pps_count_increments_regardless_of_pairing();
+    test_pps_never_arrives_both_ages_unknown();
+    test_both_present_and_reason_clears_when_paired();
+    test_unpaired_reason_names();
     printf("-- 위성 수 --\n");
     test_gga_updates_sats_only();
 
