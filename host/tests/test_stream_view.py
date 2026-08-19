@@ -279,3 +279,106 @@ def test_save_writes_the_buffer_as_ndjson(app, tmp_path):
     out = tmp_path / "capture.ndjson"
     view.save_to_path(str(out))
     assert out.read_text(encoding="utf-8") == state.to_ndjson()
+
+
+# ------------------------------------------------------------ 도착 간격 분포
+
+def test_interval_label_shows_arrival_and_board_for_each_channel(app):
+    state = StreamState()
+    for i in range(3):
+        state.ingest([_ain_line(i)], now_s=i * 0.1)
+
+    view = StreamView()
+    view.render(state, now_s=0.3)
+
+    text = view._interval_label.text()
+    assert "ain" in text
+    assert "도착" in text
+    assert "보드" in text
+
+
+def test_interval_label_updates_as_more_channels_appear(app):
+    state = StreamState()
+    state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+    text = view._interval_label.text()
+    assert "ain" in text
+    assert "i2c" in text
+
+
+# --------------------------------------------------------------- seq 누락 위치
+
+def test_gaps_label_shows_recent_missing_ranges(app):
+    state = StreamState()
+    state.ingest([_ain_line(1)], now_s=0.0)
+    state.ingest([_ain_line(5)], now_s=0.5)          # 2,3,4 누락
+
+    view = StreamView()
+    view.render(state, now_s=1.0)
+
+    text = view._gaps_label.text()
+    assert "2" in text and "4" in text
+
+
+def test_gaps_label_says_none_when_nothing_is_missing(app):
+    state = StreamState()
+    state.ingest([_ain_line(1)], now_s=0.0)
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+    assert view._gaps_label.text() != ""
+
+
+# ------------------------------------------------------------- 초당 줄 수 흐름
+
+def test_spark_label_shows_a_non_empty_string_once_data_arrives(app):
+    state = StreamState()
+    state.ingest([_ain_line(1)], now_s=0.0)
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+    assert view._spark_label.text().strip() != ""
+
+
+# ----------------------------------------------------------------- 커넥터 필터
+
+def test_connector_checkboxes_are_created_from_seen_connectors(app):
+    state = StreamState()
+    state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)   # connector 3, 10
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+
+    assert set(view._connector_checks.keys()) == {3, 10}
+
+
+def test_unchecking_a_connector_hides_it_retroactively(app):
+    state = StreamState()
+    state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+    text = view._console.toPlainText()
+    assert _ain_line(1) in text and _i2c_line(2) in text
+
+    view._connector_checks[10].setChecked(False)
+    text = view._console.toPlainText()
+    assert _ain_line(1) in text
+    assert _i2c_line(2) not in text
+
+
+def test_rechecking_every_connector_shows_everything_again(app):
+    """🔴 되돌림 검사 — 커넥터 필터를 무력화하면 다시 전부 보여야 한다."""
+    state = StreamState()
+    state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+    view._connector_checks[10].setChecked(False)
+    assert _i2c_line(2) not in view._console.toPlainText()
+
+    view._connector_checks[10].setChecked(True)
+    text = view._console.toPlainText()
+    assert _ain_line(1) in text and _i2c_line(2) in text

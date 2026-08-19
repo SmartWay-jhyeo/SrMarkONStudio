@@ -58,7 +58,9 @@ from host.gui.stream import (
     DISPLAY_MAXLEN,
     StreamRow,
     StreamState,
+    format_gap,
     format_header,
+    format_interval,
     format_row,
     staleness_level,
 )
@@ -80,6 +82,10 @@ class StreamView(QWidget):
         #: 다시 아는 척하지 않는다(CLAUDE.md 설계 원칙 1과 같은 결).
         #: 처음 본 타입을 순서대로 만든다.
         self._filter_checks: dict[str, QCheckBox] = {}
+        #: 커넥터별 필터 체크박스. `ain` 7채널이 한 덩어리라 J4 만
+        #: 이상해도 타입 필터만으로는 못 가려낸다 — 축 하나를 더 둔다.
+        #: 타입 필터와 같은 이유로 고정 목록을 두지 않는다.
+        self._connector_checks: dict[int, QCheckBox] = {}
 
         # ---- 요약 ------------------------------------------------------
         self._type_label = QLabel("")
@@ -90,19 +96,77 @@ class StreamView(QWidget):
         self._bytes_label = QLabel("")
         self._since_label = QLabel("")
         self._since_label.setStyleSheet(f"font-weight: 700; color: {Color.INK_DIM};")
+        #: 초당 줄 수의 최근 흐름 — 문자 스파크라인(`host/gui/stream.py`
+        #: `_rate_sparkline` 머리말: 그래프 라이브러리를 새로 안 쓰는
+        #: 이유가 거기 있다).
+        self._spark_label = QLabel("")
+        self._spark_label.setStyleSheet(
+            f"font-family: {Font.MONO}; font-size: {Font.SIZE_MD}pt;"
+            f" color: {Color.INK_DIM};"
+        )
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(Space.LG)
         summary_row.addWidget(self._seq_label)
         summary_row.addWidget(self._bytes_label)
         summary_row.addWidget(self._since_label)
+        summary_row.addWidget(self._spark_label)
         summary_row.addStretch(1)
+
+        # ---- 간격 분석 -------------------------------------------------
+        #
+        # 🔴 HANDOFF.md §3 미해결 문제("표본 간격 202ms")를 갈라 보는 곳.
+        #    도착과 보드 간격을 나란히 찍는 이유는 `format_interval` 의
+        #    머리말과 같다 — 판정은 전부 `stream.py` 에서 끝났고 여기는
+        #    그 문자열을 그대로 라벨에 앉히기만 한다.
+        self._interval_label = QLabel("")
+        self._interval_label.setStyleSheet(
+            f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
+            f" color: {Color.INK};"
+        )
+
+        #: 최근 seq 누락 구간. 총계(`_seq_label`)는 위에 이미 있다 — 여기는
+        #: "어디서" 를 보여준다.
+        self._gaps_label = QLabel("")
+        self._gaps_label.setStyleSheet(
+            f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
+            f" color: {Color.INK_DIM};"
+        )
+
+        analysis_row = QHBoxLayout()
+        analysis_row.setSpacing(Space.LG)
+        analysis_row.addWidget(self._interval_label, 2)
+        analysis_row.addWidget(self._gaps_label, 1)
 
         # ---- 필터 · 조작 -------------------------------------------------
         self._filter_row = QHBoxLayout()
         self._filter_row.setSpacing(Space.SM)
         filter_host = QWidget()
         filter_host.setLayout(self._filter_row)
+
+        #: 커넥터별 필터 체크박스를 담는 행. 타입 필터와 같은 배선이지만
+        #: 축이 다르다(J4 만 격리해서 볼 수 있어야 한다).
+        self._connector_filter_row = QHBoxLayout()
+        self._connector_filter_row.setSpacing(Space.SM)
+        connector_filter_host = QWidget()
+        connector_filter_host.setLayout(self._connector_filter_row)
+
+        filters_col = QVBoxLayout()
+        filters_col.setSpacing(2)
+        type_row = QHBoxLayout()
+        type_row.setSpacing(Space.SM)
+        type_row.addWidget(card_title("타입"))
+        type_row.addWidget(filter_host, 1)
+        filters_col.addLayout(type_row)
+
+        conn_row = QHBoxLayout()
+        conn_row.setSpacing(Space.SM)
+        conn_row.addWidget(card_title("커넥터"))
+        conn_row.addWidget(connector_filter_host, 1)
+        filters_col.addLayout(conn_row)
+
+        filters_host = QWidget()
+        filters_host.setLayout(filters_col)
 
         self._pause_btn = QPushButton("일시정지")
         self._pause_btn.setCheckable(True)
@@ -113,7 +177,7 @@ class StreamView(QWidget):
 
         control_row = QHBoxLayout()
         control_row.setSpacing(Space.SM)
-        control_row.addWidget(filter_host, 1)
+        control_row.addWidget(filters_host, 1)
         control_row.addWidget(self._pause_btn)
         control_row.addWidget(self._save_btn)
 
@@ -152,6 +216,8 @@ class StreamView(QWidget):
         col.addWidget(self._type_label)
         col.addLayout(summary_row)
         col.addWidget(hairline())
+        col.addLayout(analysis_row)
+        col.addWidget(hairline())
         col.addLayout(control_row)
         col.addWidget(self._header_label)
         col.addWidget(self._console, 1)
@@ -161,6 +227,7 @@ class StreamView(QWidget):
         self._state = state
         self._last_now_s = now_s
         self._ensure_filter_checks(state)
+        self._ensure_connector_checks(state)
 
         summary = state.summary(now_s)
         self._type_label.setText(
@@ -191,6 +258,19 @@ class StreamView(QWidget):
 
         self._pause_btn.setChecked(state.paused)
         self._pause_btn.setText("재생" if state.paused else "일시정지")
+
+        # 🔴 판정은 전부 `StreamState.summary()` 안에서 끝났다(간격 창·
+        #    seq 구간·스파크라인 버킷 모두 고정 크기라 여기서도 상수
+        #    비용이다) — 여기는 그 결과를 라벨 텍스트로 앉히기만 한다.
+        self._interval_label.setText(
+            "\n".join(format_interval(ci) for ci in summary.intervals)
+            or "표본 없음"
+        )
+        self._gaps_label.setText(
+            "\n".join(format_gap(g, now_s) for g in reversed(summary.recent_gaps))
+            or "seq 누락 없음"
+        )
+        self._spark_label.setText(summary.rate_sparkline)
 
         self._append_new_rows(state.visible_rows())
 
@@ -266,6 +346,42 @@ class StreamView(QWidget):
         if self._state is None:
             return
         self._apply_filter_from_checks(self._state)
+        self._redraw_all()
+        self.render(self._state, self._last_now_s)
+
+    # ------------------------------------------------------------ 커넥터 필터
+    def _ensure_connector_checks(self, state: StreamState) -> None:
+        """새로 본 커넥터마다 체크박스를 만든다.
+
+        🔴 타입 필터와 달리 기본은 **전부 켜짐**(안 거름)이다 — 커넥터는
+           카탈로그 소음처럼 기본으로 숨겨야 할 이유가 없다. 사용자가
+           특정 커넥터를 지목하고 싶을 때만 나머지를 끄는 용도다.
+        """
+        new_conns = [c for c in sorted(state.connector_counts)
+                     if c not in self._connector_checks]
+        if not new_conns:
+            return
+        for c in new_conns:
+            cb = QCheckBox(f"J{c}")
+            cb.setChecked(True)
+            cb.toggled.connect(self._on_connector_toggled)
+            self._connector_filter_row.addWidget(cb)
+            self._connector_checks[c] = cb
+        self._apply_connector_filter_from_checks(state)
+
+    def _checked_connectors(self) -> set[int]:
+        return {c for c, cb in self._connector_checks.items() if cb.isChecked()}
+
+    def _apply_connector_filter_from_checks(self, state: StreamState) -> None:
+        checked = self._checked_connectors()
+        state.set_connector_filter(
+            None if len(checked) == len(self._connector_checks) else checked
+        )
+
+    def _on_connector_toggled(self, _checked: bool) -> None:
+        if self._state is None:
+            return
+        self._apply_connector_filter_from_checks(self._state)
         self._redraw_all()
         self.render(self._state, self._last_now_s)
 
