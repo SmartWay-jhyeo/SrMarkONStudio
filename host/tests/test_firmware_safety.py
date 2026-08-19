@@ -63,12 +63,24 @@ def test_sources_exist():
 #:    하드웨어 불변조건이 걸린 곳이라 섞지 않는다.
 RAIL_OWNER = "mk_rails.c"
 
+#: 🔴 GPIOD 를 열어도 되는 파일. **레일 핀을 소유하는 파일은 여전히
+#:    mk_rails.c 하나**이고(아래 test_rail_pins_only_appear_in_the_owner),
+#:    이 목록은 "같은 포트에 다른 것도 있다" 는 사실을 적을 뿐이다.
+#:
+#:    2026-08-19 에 mk_lcd_io.c 가 들어왔다 — LCD(J25)의 RESX·D/CX·터치 CS
+#:    가 PD13·PD15·PD14 다. 포트가 겹치는 것은 회로가 그런 것이고 옮길 수
+#:    없다. 대신 **핀 번호까지 보는 검사**가 그때부터 실제로 일을 한다:
+#:    예전에는 GPIOD 를 여는 파일이 소유자 하나뿐이라 아래 검사가 늘
+#:    skip 됐다(sol 이 GPIOA 에서 겪은 것과 같은 구도).
+GPIOD_OWNERS = {"mk_rails.c", "mk_lcd_io.c"}
 
-def test_only_one_file_touches_gpiod():
-    touching = [p.name for p in _sources()
-                if "GPIOD" in _strip_comments(p.read_text(encoding="utf-8"))]
-    assert touching == [RAIL_OWNER], (
-        f"GPIOD 를 건드리는 파일: {touching} — {RAIL_OWNER} 하나여야 한다"
+
+def test_only_the_listed_files_touch_gpiod():
+    touching = {p.name for p in _sources()
+                if "GPIOD" in _strip_comments(p.read_text(encoding="utf-8"))}
+    assert touching == GPIOD_OWNERS, (
+        f"GPIOD 를 건드리는 파일: {sorted(touching)} — "
+        f"{sorted(GPIOD_OWNERS)} 여야 한다"
     )
 
 
@@ -377,6 +389,132 @@ def test_only_one_file_drives_the_i2c_pins():
     assert touching == [], (
         f"I2C 핀을 {I2C_OWNER} 말고 다른 파일이 건드린다: {touching}"
     )
+
+
+#: 🔴 LCD(J25) 핀 — KiCad 넷리스트 확인 2026-08-19
+#:    (docs/superpowers/specs/2026-08-19-lcd-hardware-facts.md).
+#:
+#:    포트 둘에 걸쳐 있고, **같은 핀 번호가 두 포트에 다 있다** —
+#:    PB14 = MISO, PD14 = 터치 CS. 그래서 I2C 와 같은 모양으로 포트별
+#:    핀 집합을 쓴다. 번호만 보면 가려지지 않는다.
+LCD_OWNER = "mk_lcd_io.c"
+LCD_PORT_PINS = {
+    "GPIOB": {"GPIO_PIN_6": "PB6 = 백라이트 (USART1_TX 이기도 하다)",
+              "GPIO_PIN_12": "PB12 = LCD CS",
+              "GPIO_PIN_13": "PB13 = SPI2 SCK",
+              "GPIO_PIN_14": "PB14 = SPI2 MISO (터치와 공유)",
+              "GPIO_PIN_15": "PB15 = SPI2 MOSI"},
+    "GPIOD": {"GPIO_PIN_12": "PD12 = 터치 IRQ",
+              "GPIO_PIN_13": "PD13 = LCD RESX",
+              "GPIO_PIN_14": "PD14 = 터치 CS",
+              "GPIO_PIN_15": "PD15 = LCD D/CX"},
+}
+
+
+def test_only_one_file_drives_the_lcd_pins():
+    """J25 의 핀을 만지는 파일은 mk_lcd_io.c 하나.
+
+    🔴 두 포트 다 이미 남이 쓰고 있다 — GPIOB 는 UART(PB10·PB11)와
+       I2C1(PB8·PB9), GPIOD 는 전원 레일(PD8~PD10)과 상태 LED(PD11).
+       한 파일이 포트를 통째로 초기화하면 서로를 덮는다. 레일을 덮으면
+       24V 가 예고 없이 움직인다.
+    """
+    touching = []
+    for path in _sources():
+        if path.name == LCD_OWNER:
+            continue
+        code = _strip_comments(path.read_text(encoding="utf-8"))
+        for port, pins in LCD_PORT_PINS.items():
+            if port not in code:
+                continue
+            for pin in pins:
+                if re.findall(rf"\b{pin}\b", code):
+                    touching.append(f"{path.name}:{port}.{pin}")
+    assert touching == [], (
+        f"J25 핀을 {LCD_OWNER} 말고 다른 파일이 건드린다: {touching}"
+    )
+
+
+def test_the_lcd_owner_does_not_touch_the_rails_or_the_status_led():
+    """역방향 — mk_lcd_io.c 가 같은 포트(GPIOD)의 레일·LED 를 안 건드리는지.
+
+    🔴 test_rail_pins_only_appear_in_the_owner 가 PD8·PD9·PD10 을 이미
+       보지만 상태 LED(PD11)는 RAIL_PINS 에 없다. LCD 가 GPIOD 를 여는
+       첫 남의 파일이므로 여기서 함께 못박는다 — 상태 LED 는 시리얼이
+       조용할 때 "보드가 죽었나 통신만 안 되나" 를 가르는 유일한 신호다
+       (main.c 의 blink).
+    """
+    code = _strip_comments((FW / "bsp" / LCD_OWNER).read_text(encoding="utf-8"))
+    for pin, what in (("GPIO_PIN_8", "PD8 = 24V"), ("GPIO_PIN_9", "PD9 = 14.9V"),
+                      ("GPIO_PIN_10", "PD10 = 5V"), ("GPIO_PIN_11", "PD11 = 상태 LED")):
+        assert not re.findall(rf"\b{pin}\b", code), (
+            f"{LCD_OWNER} 이 {pin} ({what}) 을 언급한다 — GPIOD 를 함께 쓰는 "
+            f"파일이라 이 핀들은 {RAIL_OWNER} 만 만진다"
+        )
+
+
+def test_the_lcd_owner_pins_the_touch_chip_select_high():
+    """🔴 터치 CS(PD14)를 비선택(High)으로 못박고 다시는 안 내리는지.
+
+    LCD 와 터치(XPT2046)가 **같은 SPI 버스**다 — SCK·MOSI·MISO 가 한 넷이고
+    CS 만 갈린다(넷리스트 확인 2026-08-19). 터치 CS 가 떠 있거나 어쩌다
+    Low 로 가면, 그 칩이 LCD 로 보내는 클럭에 반응해 MISO 를 물고 늘어진다.
+    R89 10k 풀업이 리셋 직후를 덮어 주지만 풀업은 "아직 아무도 안 몬 상태"
+    일 뿐이라 근거로 삼지 않는다.
+
+    1단계는 터치를 안 쓰므로 이 핀에 대한 옳은 코드는 **딱 한 줄**,
+    초기화에서 High 로 쓰는 것뿐이다.
+    """
+    code = _strip_comments((FW / "bsp" / LCD_OWNER).read_text(encoding="utf-8"))
+    lines = [ln for ln in code.splitlines() if "PIN_TOUCH_CS" in ln]
+    assert lines, f"{LCD_OWNER} 에 PIN_TOUCH_CS 가 없다 — 이름이 바뀌었나"
+
+    wrote_high = [ln for ln in lines
+                  if "HAL_GPIO_WritePin" in ln and "GPIO_PIN_SET" in ln]
+    assert wrote_high, (
+        f"{LCD_OWNER} 이 터치 CS 를 High(비선택)로 세우지 않는다"
+    )
+    for ln in lines:
+        assert "GPIO_PIN_RESET" not in ln and "?" not in ln, (
+            f"{LCD_OWNER} 이 터치 CS 를 내릴 수 있다: {ln.strip()} — "
+            f"1단계에서 이 핀은 High 로 고정이다"
+        )
+
+
+def test_nothing_opens_usart1():
+    """🔴 PB6 은 이 보드에서 백라이트다 — USART1_TX 로 열면 안 된다.
+
+    STM32H723 의 AF 표(DS13313 p.75 Table 8)에는 PB6 에 USART1_TX 가 있다.
+    회로가 그 핀을 J25.8(백라이트)로 뺐으므로, 누가 USART1 을 기본 핀맵으로
+    열면 백라이트가 시리얼 파형으로 깜빡인다. 증상이 "화면이 이상하게
+    깜빡인다" 뿐이라 UART 를 의심하기까지 오래 걸린다.
+    """
+    offenders = [p.name for p in _sources()
+                 if "USART1" in _strip_comments(p.read_text(encoding="utf-8"))]
+    assert offenders == [], (
+        f"USART1 을 언급하는 파일: {offenders} — PB6 이 백라이트다"
+    )
+
+
+def test_the_lcd_test_still_exists():
+    """초기화 순서·대기시간·비차단을 보는 C 시험이 지워지지 않았는지.
+
+    🔴 대기시간이 빠져도 **켜지는 판이 있다.** 그래서 화면으로는 못 잡고,
+       나중에 다른 판에서 "가끔 안 켜진다" 로 돌아온다. 시험이 사라지면
+       그 자리로 조용히 되돌아간다.
+    """
+    t = (FW / "tests" / "test_lcd.c").read_text(encoding="utf-8")
+    for name in ("test_pixel_bytes_keep_the_top_six_bits",
+                 "test_disabled_lcd_never_touches_anything",
+                 "test_reset_pulse_comes_first_and_is_long_enough",
+                 "test_no_command_before_the_reset_cancel_time",
+                 "test_init_command_order_is_exactly_what_the_datasheet_needs",
+                 "test_colmod_selects_eighteen_bits_per_pixel",
+                 "test_tick_never_waits_for_the_transfer",
+                 "test_sleep_out_is_followed_by_the_datasheet_wait",
+                 "test_chip_select_stays_low_through_the_pixel_stream",
+                 "test_the_catalog_has_the_lcd_enabled_item"):
+        assert name in t, f"{name} 이 사라졌다"
 
 
 def test_makefile_builds_the_tested_sources():
