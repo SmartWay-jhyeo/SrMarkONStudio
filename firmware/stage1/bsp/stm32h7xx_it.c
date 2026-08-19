@@ -50,6 +50,18 @@ void EXTI15_10_IRQHandler(void)
     mk_ads_io_drdy_isr();
 }
 
+/* 🔴 수집의 심장. 1 kHz 로 mk_ads_tick() 을 민다 (bsp/mk_ads_io.c).
+ *
+ *    슈퍼루프가 아니라 여기서 미는 이유: mk_i2c_tick() 의 HAL 블로킹이
+ *    한 바퀴에 최악 60 ms 이고 mk_telem_tick() 의 HAL_UART_Transmit 도
+ *    블로킹이라, 슈퍼루프가 시작 신호를 쥐고 있으면 채널당 10 ms 가
+ *    구조적으로 불가능하다. 이것이 빠지면 컴파일도 부팅도 되고 값도
+ *    나오지만, 표본이 조용히 사라진다. */
+void TIM7_IRQHandler(void)
+{
+    mk_ads_io_tick_isr();
+}
+
 /* 🔴 디지털 입력 J18(PA4) 전용선. EXTI 는 포트가 아니라 핀 번호로 갈라져
  *    있어(RM0468), "4번 핀"은 어느 GPIO 포트든 항상 EXTI4 다. */
 void EXTI4_IRQHandler(void)

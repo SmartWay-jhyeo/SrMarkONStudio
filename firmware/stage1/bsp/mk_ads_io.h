@@ -45,6 +45,16 @@ void mk_ads_io_init(MkAds *a);
 /* EXTI15 인터럽트에서 부른다 (stm32h7xx_it.c). */
 void mk_ads_io_drdy_isr(void);
 
+/* 1 kHz 깨우기 (TIM7). stm32h7xx_it.c 에서 부른다.
+ *
+ * 🔴 수집의 진행은 **슈퍼루프에 있지 않다.** 다음 채널로 넘어가는 것은
+ *    SPI 완료 인터럽트 안의 finish() 가, 다 돌고 쉬다가 다시 시작하는 것은
+ *    이 타이머가 한다. main() 은 mk_ads_tick() 을 부르지 않는다 — 부르면
+ *    수집 주기가 슈퍼루프 주기(mk_i2c 의 HAL 블로킹만으로도 최악 60 ms)에
+ *    다시 묶여 채널당 10 ms 가 무너진다. mk_ads_io.c 의 MK_ADS_TICK_HZ
+ *    주석에 계산이 있다. */
+void mk_ads_io_tick_isr(void);
+
 /* SPI4 인터럽트에서 부른다 — H7 은 EOT 로 완료를 알린다. */
 void mk_ads_io_spi_isr(void);
 

@@ -23,6 +23,54 @@ _Static_assert(MK_SPI_DIV_FROM_MBR(
                == MK_ADS_SPI_DIV,
                "BaudRatePrescaler below does not match MK_ADS_SPI_DIV");
 
+/* 🔴 수집을 다시 시작하는 인터럽트의 주기 (Hz).
+ *
+ *    한 바퀴가 끝나면 app/mk_ads1256.c 의 finish() 가 **밀린 채널로 곧바로
+ *    이어 간다.** 그래도 타이머가 필요한 자리가 하나 남는다 — 일곱 채널을
+ *    다 돌고 다음 예정까지 쉬는 구간이다. 거기서 다시 깨우는 것을
+ *    슈퍼루프에 맡기면 채널당 10 ms 가 무너진다:
+ *
+ *      - mk_i2c_tick() 의 HAL 블로킹이 한 바퀴에 최악 60 ms (mk_i2c_io.c)
+ *      - mk_telem_tick() 의 HAL_UART_Transmit 도 블로킹 — 163 B 한 줄이
+ *        921600 baud 에서 1.77 ms, 한 바퀴에 여러 줄
+ *
+ *      7채널 × 10 ms 면 채널 하나에 1.43 ms 다. 슈퍼루프가 시작 신호를
+ *      쥐고 있으면 그 예산은 지킬 수 없고, 못 뜬 표본은 finish() 의
+ *      따라잡기 포기 때문에 큐의 drops 에도 안 잡힌 채 사라진다.
+ *
+ *    1 kHz 인 이유: 표본 예정(MkAdsChannel.next_due_ms)의 단위가 밀리초라
+ *    그보다 성기게 깨우면 예정이 그 간격만큼 반올림된다. 그보다 촘촘히
+ *    깨워도 얻는 것이 없다. */
+#define MK_ADS_TICK_HZ   1000u
+
+/* 🔴 TIM7 을 고른 이유: 남아 있는 기본 타이머다. TIM3 은 WS2812(PWM+DMA),
+ *    TIM8 은 PPS 입력 캡처가 이미 쓴다. 기본 타이머라 출력핀이 없어
+ *    이 보드의 배선과 충돌할 여지도 없다. */
+#define MK_ADS_TICK_TIM  TIM7
+
+/* APB1 타이머 클럭에서 1 MHz 를 만든 뒤 그 안에서 다시 나눈다 — 숫자를
+ * 손으로 적지 않는다(bsp/mk_clock.h 머리말). */
+#define MK_ADS_TICK_PSC  MK_TIM_PSC_1US_APB1
+#define MK_ADS_TICK_ARR  (1000000u / MK_ADS_TICK_HZ - 1u)
+_Static_assert(1000000u % MK_ADS_TICK_HZ == 0u,
+               "tick period is not an integer number of microseconds");
+
+/* 🔴 수집에 관여하는 인터럽트는 **전부 같은 우선순위**여야 한다.
+ *
+ *    DRDY(EXTI15) · SPI4 EOT · DMA1 완료 · 그리고 위의 tick 타이머가 같은
+ *    `MkAds` 구조체를 건드린다. Cortex-M 은 **같은 우선순위의 인터럽트가
+ *    서로를 선점하지 못한다** — 늦게 온 것은 앞의 핸들러가 끝날 때까지
+ *    대기(pending)만 한다. 그래서 넷을 같은 값으로 두면 임계구역 없이
+ *    상호배제가 된다.
+ *
+ *    하나만 값이 다르면 그것이 나머지를 상태 전이 도중에 끊고 들어와
+ *    전송이 겹친다 — 재현이 거의 불가능한 결함이 되므로, 값을 하나로
+ *    묶고 host/tests/test_firmware_acquisition.py 가 넷이 같은지 본다.
+ *
+ *    5 가 아니라 6 인 이유는 그대로다 — UART(5)보다 낮게 둔다. 획득 시각이
+ *    몇 µs 늦는 것보다 명령 링크가 끊기는 편이 나쁘다. */
+#define MK_ADS_IRQ_PRIO  6u
+
 #define ADS_PORT     GPIOE
 #define PIN_SYNC     GPIO_PIN_9
 #define PIN_RST      GPIO_PIN_10
@@ -42,6 +90,7 @@ static SPI_HandleTypeDef s_spi;
  *    불완전하다" 가 양쪽으로 나타난 셈이다 — 놓치기도 하고 헛짚기도 한다. */
 static DMA_HandleTypeDef s_hdma_rx;
 static DMA_HandleTypeDef s_hdma_tx;
+static TIM_HandleTypeDef s_tick;
 static MkAds            *s_ads;
 
 /* 🔴 DMA 가 닿는 곳에 둔다. 그냥 static 으로 두면 DTCM(0x2000_0000)에
@@ -111,7 +160,7 @@ static void gpio_init(void)
     /* 🔴 UART(우선순위 5)보다 낮게 둔다. 획득 시각은 이 인터럽트 안에서
      *    찍히지만, 몇 µs 늦는 것보다 명령 링크가 끊기는 편이 나쁘다.
      *    16.84 ms 짜리 변환에서 µs 단위 지터는 무시할 수 있다. */
-    HAL_NVIC_SetPriority(EXTI15_10_IRQn, 6, 0);
+    HAL_NVIC_SetPriority(EXTI15_10_IRQn, MK_ADS_IRQ_PRIO, 0);
     HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 }
 
@@ -178,9 +227,9 @@ static void spi_init(void)
     HAL_DMA_Init(&s_hdma_tx);
     __HAL_LINKDMA(&s_spi, hdmatx, s_hdma_tx);
 
-    HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, 6, 0);
+    HAL_NVIC_SetPriority(DMA1_Stream0_IRQn, MK_ADS_IRQ_PRIO, 0);
     HAL_NVIC_EnableIRQ(DMA1_Stream0_IRQn);
-    HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 6, 0);
+    HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, MK_ADS_IRQ_PRIO, 0);
     HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
 
     /* 🔴 SPI4 자신의 인터럽트도 켜야 한다. DMA 인터럽트만으로는 부족하다.
@@ -193,7 +242,7 @@ static void spi_init(void)
      *    서 있고, DMA 스트림은 EN=0·NDTR=0 으로 이미 끝나 있는데,
      *    s_spi.State 는 5(BUSY_TX_RX) 그대로였다. 상태머신은 SETUP 에서
      *    영원히 기다리다 채널마다 타임아웃만 쌓았다. */
-    HAL_NVIC_SetPriority(SPI4_IRQn, 6, 0);
+    HAL_NVIC_SetPriority(SPI4_IRQn, MK_ADS_IRQ_PRIO, 0);
     HAL_NVIC_EnableIRQ(SPI4_IRQn);
 }
 
@@ -220,6 +269,23 @@ static void io_delay_us(void *ctx, uint32_t us)
     }
 }
 
+/* 수집을 다시 시작하는 1 kHz 타이머. 위 MK_ADS_TICK_HZ 주석 참고. */
+static void tick_init(void)
+{
+    __HAL_RCC_TIM7_CLK_ENABLE();
+
+    s_tick.Instance               = MK_ADS_TICK_TIM;
+    s_tick.Init.Prescaler         = MK_ADS_TICK_PSC;
+    s_tick.Init.CounterMode       = TIM_COUNTERMODE_UP;
+    s_tick.Init.Period            = MK_ADS_TICK_ARR;
+    s_tick.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+    HAL_TIM_Base_Init(&s_tick);
+
+    HAL_NVIC_SetPriority(TIM7_IRQn, MK_ADS_IRQ_PRIO, 0);
+    HAL_NVIC_EnableIRQ(TIM7_IRQn);
+    HAL_TIM_Base_Start_IT(&s_tick);
+}
+
 void mk_ads_io_init(MkAds *a)
 {
     s_ads = a;
@@ -231,6 +297,10 @@ void mk_ads_io_init(MkAds *a)
      *    400.18 ms 이므로(ADS1256.pdf p.20 Table 13) 그보다 넉넉해야 한다.
      *    이보다 짧게 잡으면 느린 설정에서 정상 변환을 고장으로 오인한다. */
     mk_ads_init(a, &io, s_tx_buf, s_rx_buf, sizeof s_tx_buf, 500);
+
+    /* 🔴 상태머신을 세운 **뒤에** 깨우기를 켠다. 순서를 뒤집으면 첫
+     *    인터럽트가 아직 초기화 안 된 구조체를 밀 수 있다. */
+    tick_init();
 }
 
 /* ---- 하드웨어 사건 ------------------------------------------------------- */
@@ -247,6 +317,29 @@ void mk_ads_io_drdy_isr(void)
      *    타임스탬프에 섞인다. */
     if (s_ads != NULL) {
         mk_ads_on_drdy(s_ads, mk_time_ms());
+    }
+}
+
+/* 1 kHz 깨우기 (TIM7). 쉬고 있다가 다음 예정이 도착했으면 한 바퀴를
+ * 시작한다. 돌고 있는 중이면 DRDY 타임아웃만 본다 — 둘 다 mk_ads_tick()
+ * 안에 있다.
+ *
+ * 🔴 HAL_TIM_IRQHandler 를 쓰지 않고 UIF 를 직접 지운다. HAL 로 가면
+ *    HAL_TIM_PeriodElapsedCallback 이라는 **전역 콜백 하나**를 다른 타이머
+ *    (WS2812 의 TIM3, PPS 의 TIM8)와 나눠 쓰게 되고, 거기서 인스턴스를
+ *    가르는 분기가 하나 더 생긴다. 기본 타이머는 인터럽트 원인이 업데이트
+ *    하나뿐이라 그 왕복이 아무것도 사 주지 않는다. */
+void mk_ads_io_tick_isr(void)
+{
+    if ((MK_ADS_TICK_TIM->SR & TIM_SR_UIF) == 0u) {
+        return;
+    }
+    /* 🔴 다른 플래그를 함께 지우지 않도록 쓰기 마스크를 반전해 넣는다
+     *    (RM0468 의 rc_w0 필드 — 0 을 쓴 비트만 지워진다). */
+    MK_ADS_TICK_TIM->SR = ~(uint32_t)TIM_SR_UIF;
+
+    if (s_ads != NULL) {
+        mk_ads_tick(s_ads, mk_time_ms());
     }
 }
 

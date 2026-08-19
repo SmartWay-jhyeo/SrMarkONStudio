@@ -104,8 +104,36 @@ static int      s_led_on;
  *    수집은 정상인데 $STAT 의 drops 만 올라갔다(qcount=0, qdrops=32).
  *    mk_queue 가 저장소 없는 push 도 세어 주기 때문에 원인이 바로 보였다.
  *
- * 32칸이면 100 ms 주기에서 3.2초분이다. 슈퍼루프가 그보다 훨씬 자주 돈다. */
-#define SAMPLES_PER_CHANNEL  32
+ * 🔴 깊이를 어림으로 고르지 않는다 (2026-08-19, 채널당 10 ms 작업).
+ *
+ *    예전 값 32 는 "100 ms 주기에서 3.2초분" 이라는 근거였다. 주기를
+ *    10 ms 로 내리면 같은 32 칸이 **0.32 초분**이 된다 — 근거가 통째로
+ *    바뀐 것이지 값이 여전히 넉넉한 것이 아니다.
+ *
+ *    깊이가 견뎌야 하는 것은 **슈퍼루프가 큐를 안 비우고 지나가는 최악
+ *    시간**이다. 그 값은 소스에 적혀 있다:
+ *
+ *      60 ms   I2C — HAL 블로킹. HAL 고정 I2C_TIMEOUT_BUSY(25 ms) +
+ *              우리 타임아웃(5 ms) = xfer 한 번에 30 ms 이고, BH1750 의
+ *              start 가 한 스텝에서 xfer 를 두 번 부른다
+ *              (bsp/mk_i2c_io.c 머리말).
+ *     134 ms   텔레메트리 — mk_uart_write 가 HAL_UART_Transmit(블로킹)이다.
+ *              한 바퀴에 ain·i2c·din·gnss_raw 가 각각 최대
+ *              MK_TELEM_MAX_LINES(16) 줄, 한 줄 최대 MK_LINE_MAX(192)+1 B
+ *              → 64 × 193 = 12,352 B. 921600 baud 는 8N1 이라 92,160 B/s.
+ *      ----
+ *     194 ms   합. 10 ms 주기면 그 사이에 20 칸이 찬다.
+ *
+ *    2배를 둔다 — 정지가 풀린 직후에도 배출은 한 바퀴에
+ *    MK_TELEM_MAX_LINES 줄까지만 나가므로, 밀린 것을 내보내는 동안에도
+ *    새 표본이 계속 들어온다. 40 칸 이상이면 되고, 링버퍼라 2의 거듭제곱이
+ *    편하므로 64 로 올린다 (10 ms 에서 0.64 초분, 100 ms 에서 6.4 초분).
+ *
+ *    비용은 7 × 64 × 16 B = 7 KB 다. DTCM 128 KB 에서 문제가 되지 않는다.
+ *
+ *    🔴 같은 계산이 host/tests/test_firmware_acquisition.py 에도 있다.
+ *       거기서 이 값을 읽어 최소 깊이를 다시 계산하므로, 되돌리면 깨진다. */
+#define SAMPLES_PER_CHANNEL  64
 static MkSample s_samples[MK_ADS_CHANNELS][SAMPLES_PER_CHANNEL];
 
 /* 🔴 크기를 어림으로 잡지 않는다. 실제 항목 수에서 나온다.
@@ -154,6 +182,20 @@ static void sync_rails(MkRailCtl *rc, MkConfig *cfg, int64_t now_ms)
  * 🔴 핀 번호가 아니라 커넥터 개념으로 다룬다 — 채널 n 은 J(n+3) 이고,
  *    그 대응은 설정 키 이름에만 있다(설계 원칙 1). */
 
+/* 🔴 여기만 임계구역이 필요하다.
+ *
+ *    수집의 진행은 인터럽트에 있다 — mk_ads_tick() 은 TIM7(1 kHz)이,
+ *    다음 채널로 넘어가는 것은 SPI 완료 인터럽트가 한다. 그 인터럽트들은
+ *    서로 같은 우선순위라 서로를 선점하지 못하지만(bsp/mk_ads_io.c 의
+ *    MK_ADS_IRQ_PRIO), **슈퍼루프는 그 대열 밖**이다.
+ *
+ *    이 함수는 채널의 enabled·period_ms·next_due_ms 와 칩 설정(chip_dirty)
+ *    을 쓴다. 그 도중에 인터럽트가 끼면 절반만 바뀐 상태로 한 바퀴가
+ *    시작될 수 있다. 값이 실제로 바뀌는 일은 드물지만(설정 변경 때뿐),
+ *    드문 만큼 재현이 안 되는 결함이 된다.
+ *
+ *    읽기 쪽(mk_telem 의 큐 배출)은 이미 mk_queue 자신이 같은 방식으로
+ *    보호한다(app/mk_queue.h 의 [I3]). */
 static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
 {
     /* 🔴 칩 전체 설정(증폭률·데이터율)을 밀어 넣는다.
@@ -164,9 +206,11 @@ static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
      *    없었던 것 — ain*.enabled 때와 같은 종류의 빠짐이다. */
     MkCfgItem *pga = mk_cfg_find(cfg, "adc.pga");
     MkCfgItem *dr  = mk_cfg_find(cfg, "adc.drate");
+    mk_critsec_enter();
     mk_ads_set_chip(ads,
                     pga != NULL ? pga->cur.u : 1u,
                     dr  != NULL ? dr->cur.u  : 60u);
+    mk_critsec_exit();
 
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
         char key[24];
@@ -190,7 +234,9 @@ static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
         if (en == NULL || pr == NULL) {
             continue;
         }
+        mk_critsec_enter();
         mk_ads_configure(ads, ch, (int)en->cur.u, (uint16_t)pr->cur.u, now_ms);
+        mk_critsec_exit();
     }
 }
 
@@ -463,7 +509,20 @@ int main(void)
          *    전송이 겹치지 않는다. */
         mk_i2c_tick(&s_i2c, &s_cfg, now);
 
-        mk_ads_tick(&s_ads, now);
+        /* 🔴 여기에 mk_ads_tick() 이 **없다** (2026-08-19).
+         *
+         *    수집의 진행은 인터럽트로 옮겼다 — TIM7(1 kHz)이 쉬고 있던
+         *    상태머신을 깨우고, SPI 완료 인터럽트 안의 finish() 가 밀린
+         *    다음 채널로 곧바로 이어 간다 (bsp/mk_ads_io.c 의
+         *    MK_ADS_TICK_HZ 주석에 계산이 있다).
+         *
+         *    여기서 부르면 수집 주기가 이 루프의 주기에 다시 묶인다. 바로
+         *    아래 mk_i2c_tick() 하나가 최악 60 ms 를 잡고, mk_telem_tick()
+         *    의 HAL_UART_Transmit 도 블로킹이다. 7채널 × 10 ms 면 채널
+         *    하나에 1.43 ms 인데 그 예산이 지켜질 수 없고, 못 뜬 표본은
+         *    큐의 drops 에도 안 잡힌 채 사라진다.
+         *
+         *    host/tests/test_firmware_acquisition.py 가 이 자리를 지킨다. */
 
         /* 🔴 화면도 매 바퀴 민다. 한 바퀴에 걸음 하나뿐이고, 전송이 떠
          *    있으면 즉시 돌아온다 — 한 장(460,800바이트)을 다 그리는 동안
