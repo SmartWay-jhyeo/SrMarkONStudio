@@ -81,9 +81,9 @@ static int io_send(void *ctx, const uint8_t *buf, size_t n)
 
 /* ── SPI 클럭 ─────────────────────────────────────────────────────────────
  *
- * 🔴 SPI2 의 커널 클럭은 **per_ck = hsi_ker_ck = 64 MHz** 다. 이 펌웨어는
- *    PLL 을 안 켜므로 기본 소스(pll1_q_ck)를 쓸 수 없어 아래 spi_init() 이
- *    직접 골라 준다. 아래 계산이 전부 그 64 MHz 를 전제로 한다.
+ * 🔴 SPI2 의 커널 클럭은 **per_ck = hsi_ker_ck = MK_SPI2_KERNEL_HZ
+ *    (64 MHz)** 다. 아래 spi_init() 이 직접 골라 준다 — sys_ck 가 아니므로
+ *    시스템 클럭을 HSE 로 옮겨도 이 표는 안 바뀐다.
  *
  *        64 / 4  = 16 MHz   쓰기 상한 20 MHz 안 (twc MIN 50 ns,
  *                           ILI9488.pdf p.332 §17.4.3)
@@ -217,11 +217,16 @@ static void gpio_init(void)
 
 static void spi_init(void)
 {
-    /* 🔴 SPI1/2/3 의 커널 클럭을 per_ck 로 돌린다. 기본값 pll1_q_ck 는 이
-     *    펌웨어에서 존재하지 않는다(PLL 을 안 켠다) — 그대로 두면 SCK 가
-     *    한 번도 안 움직이고, 증상은 "화면이 검다" 하나뿐이라 배선 불량과
-     *    구분되지 않는다. per_ck 의 기본 소스는 hsi_ker_ck = 64 MHz 다.
-     *    (헤더 주석 참고) */
+    /* 🔴 SPI1/2/3 의 커널 클럭을 per_ck 로 돌린다.
+     *
+     *    기본값 pll1_q_ck 는 이 코드를 쓸 당시 존재하지 않았다(PLL 을 안
+     *    켰다) — 그대로 두면 SCK 가 한 번도 안 움직이고, 증상은 "화면이
+     *    검다" 하나뿐이라 배선 불량과 구분되지 않는다.
+     *
+     *    지금은 PLL1 이 돌지만(bsp/mk_clock.c) **여전히 per_ck 를 쓴다.**
+     *    화면 SPI 에 클럭 정확도는 뜻이 없고, 실기기에서 도는 조합을 이유
+     *    없이 흔들지 않는다. per_ck 의 소스는 hsi_ker_ck =
+     *    MK_SPI2_KERNEL_HZ 다 (헤더 주석 참고). */
     RCC_PeriphCLKInitTypeDef pk = {0};
     pk.PeriphClockSelection = RCC_PERIPHCLK_SPI123 | RCC_PERIPHCLK_CKPER;
     pk.CkperClockSelection  = RCC_CLKPSOURCE_HSI;

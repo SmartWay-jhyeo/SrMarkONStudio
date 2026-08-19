@@ -515,8 +515,8 @@ static size_t add_lcd(size_t i)
      *
      *    분주비로 낼 수 있는 값만 고를 수 있게 enum 이다. SPI2 커널 클럭은
      *    per_ck = hsi_ker_ck = **64 MHz** 이고(bsp/mk_lcd_io.c 의 spi_init
-     *    — 이 펌웨어는 PLL 을 안 켜므로 기본 소스 pll1_q_ck 를 쓸 수 없다),
-     *    HAL 의 분주비는 2 의 거듭제곱뿐이다:
+     *    이 직접 고른다 — sys_ck 가 아니라서 시스템 클럭을 HSE 로 옮겨도
+     *    이 표는 안 바뀐다), HAL 의 분주비는 2 의 거듭제곱뿐이다:
      *
      *        64 / 4  = 16 MHz    쓰기 상한 20 MHz 안 (twc MIN 50 ns,
      *                            ILI9488.pdf p.332 §17.4.3)

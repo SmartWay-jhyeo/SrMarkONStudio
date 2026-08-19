@@ -1,9 +1,27 @@
 #include "mk_ads_io.h"
 
+#include "mk_clock.h"
 #include "mk_dma_mem.h"
 #include "mk_time.h"
 
 #include "stm32h7xx_hal.h"
+
+/* 🔴 SPI4 커널 클럭(APB2, D2CCIP1R.SPI45SEL 리셋값 000)을 여기서 나눈다.
+ *
+ *    SCLK 은 fCLKIN/4 = 1.92 MHz 를 넘을 수 없다(ADS1256.pdf). 분주비를
+ *    HAL 매크로 이름으로만 적어 두면 클럭이 바뀌었을 때 결과 주파수가
+ *    조용히 올라가므로, **숫자로 이름을 붙이고 상한을 컴파일 시 본다.**
+ *
+ *    500 kHz 는 한 바이트에 16 us 다. app/mk_ads1256.c 의 t6 대기 계산이
+ *    이 속도를 전제로 한다 — 바꾸면 그쪽도 함께 본다. */
+#define MK_ADS_SPI_DIV   128u
+#define MK_ADS_SPI_HZ    (MK_SPI4_KERNEL_HZ / MK_ADS_SPI_DIV)
+_Static_assert(MK_ADS_SPI_HZ <= 1920000u,
+               "SCLK exceeds fCLKIN/4 = 1.92 MHz - ADS1256.pdf");
+_Static_assert(MK_SPI_DIV_FROM_MBR(
+                   (SPI_BAUDRATEPRESCALER_128 >> SPI_CFG1_MBR_Pos) & 7u)
+               == MK_ADS_SPI_DIV,
+               "BaudRatePrescaler below does not match MK_ADS_SPI_DIV");
 
 #define ADS_PORT     GPIOE
 #define PIN_SYNC     GPIO_PIN_9
@@ -124,9 +142,9 @@ static void spi_init(void)
     s_spi.Init.CLKPolarity       = SPI_POLARITY_LOW;
     s_spi.Init.CLKPhase          = SPI_PHASE_2EDGE;
     s_spi.Init.NSS               = SPI_NSS_SOFT;
-    /* 🔴 SCLK 은 fCLKIN/4 = 1.92 MHz 를 넘을 수 없다(ADS1256 데이터시트).
-     *    분주비는 실기기에서 SPI4 커널 클럭을 확인한 뒤 확정한다 —
-     *    지금 값은 넉넉히 느린 쪽으로 잡아 둔 것이고 [미확인]이다. */
+    /* 🔴 커널 클럭 / MK_ADS_SPI_DIV = 500 kHz. 상한(1.92 MHz)은 파일 위
+     *    _Static_assert 가 본다. 실기기에서 SPI4_CFG1 = 0x60070007 (MBR=6,
+     *    ÷128)로 확인했다 [실증 2026-08-19]. */
     s_spi.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;
     s_spi.Init.FirstBit          = SPI_FIRSTBIT_MSB;
     s_spi.Init.TIMode            = SPI_TIMODE_DISABLE;
@@ -190,12 +208,13 @@ static void spi_init(void)
  *    않으면 켜져 있지 않을 수 있고(TRCENA), 그 경우 조용히 0 을 돌려주며
  *    지연이 통째로 사라진다 — 지금 고치려는 바로 그 증상으로 되돌아간다.
  *
- * 클럭은 64 MHz(main.c SystemClock_Config). 한 바퀴에 최소 3사이클로 보아
- * 넉넉히 잡는다 — 남는 것은 무해하고 모자라면 값이 틀린다. */
+ * 🔴 루프 횟수를 손으로 적지 않는다. 예전에는 `64u / 3u + 1u` 라고 적혀
+ *    있었는데, 그 64 는 클럭이지 상수가 아니다 — 클럭을 올리면 대기가
+ *    그대로 짧아지고 t6 를 다시 어긴다. bsp/mk_clock.h 에서 파생시킨다. */
 static void io_delay_us(void *ctx, uint32_t us)
 {
     (void)ctx;
-    volatile uint32_t n = us * (64u / 3u + 1u);
+    volatile uint32_t n = us * MK_BUSY_WAIT_LOOPS_PER_US;
     while (n--) {
         __asm volatile ("nop");
     }

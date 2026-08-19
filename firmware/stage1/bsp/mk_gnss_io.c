@@ -2,6 +2,7 @@
 
 #include "stm32h7xx_hal.h"
 
+#include "mk_clock.h"
 #include "../app/mk_timeax.h"
 
 /* ---- USART6 (GNSS NMEA) ---------------------------------------------------
@@ -21,10 +22,13 @@ static volatile uint32_t  s_overruns;
 
 static TIM_HandleTypeDef s_tim;
 
-/* 🔴 PSC=63 → 64MHz/64 = 1MHz(1us 분해능). ARR=0xFFFF → 주기 65536us
- *    (65.536ms). SystemClock_Config(main.c) 가 HSI 64MHz·분주 전부 1 이라
- *    APB2 도 64MHz 다(TIM8 은 APB2). 클럭 설정을 바꾸면 이 프리스케일도
- *    함께 바꿔야 한다 — mk_ws2812_io.c 의 같은 주석 참고. */
+/* 🔴 1 MHz(1us 분해능)를 만든다. ARR=0xFFFF → 주기 65536us (65.536ms).
+ *
+ *    TIM8 은 APB2 에 있고, 프리스케일은 **손으로 적지 않고 클럭에서
+ *    파생시킨다**(MK_TIM_PSC_1US_APB2, bsp/mk_clock.h). 이 값이 캡처
+ *    레지스터의 단위를 정하므로, 클럭이 바뀌었는데 여기가 그대로면
+ *    시간축이 **아무 오류 없이** 틀린 값을 낸다. 예전에는 63 이라고
+ *    적혀 있었다. */
 #define MK_GNSS_TIM_PERIOD  65536u    /* ARR+1 */
 
 static volatile uint32_t s_wrap_count;
@@ -85,7 +89,7 @@ void mk_gnss_io_init(uint32_t baud)
     __HAL_RCC_TIM8_CLK_ENABLE();
 
     s_tim.Instance               = TIM8;
-    s_tim.Init.Prescaler         = 63u;                       /* 64MHz -> 1MHz */
+    s_tim.Init.Prescaler         = MK_TIM_PSC_1US_APB2;
     s_tim.Init.CounterMode       = TIM_COUNTERMODE_UP;
     s_tim.Init.Period            = MK_GNSS_TIM_PERIOD - 1u;   /* ARR */
     s_tim.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;

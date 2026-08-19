@@ -1,5 +1,7 @@
 #include "mk_i2c_io.h"
 
+#include "mk_clock.h"
+
 #include "stm32h7xx_hal.h"
 
 /* 🔴 전송 타임아웃 — 이것이 최악 블로킹 시간이 **아니다**.
@@ -49,12 +51,21 @@
 #define I2C3_AF              GPIO_AF4_I2C3
 #define I2C5_AF              GPIO_AF4_I2C5
 
-/* 커널 클럭 64 MHz(APB1, RCC_D2CCIP2R_I2C1235SEL 리셋값) 에서 100 kHz.
+/* 커널 클럭(APB1, RCC_D2CCIP2R_I2C1235SEL 리셋값) 에서 100 kHz.
  * ST 자체 유틸리티(i2c_timing_utility.c, Cube FW_H7 V1.13.0) 로 산출했다
  * — SDADEL·SCLDEL·아날로그 필터 지연까지 함께 푸는 계산이라 손으로
  * 짓지 않는다. 클럭을 바꾸면 같은 유틸리티로 다시 뽑는다(400 kHz 는
- * 0x30D00A13 이었다). */
+ * 0x30D00A13 이었다).
+ *
+ * 🔴 그래서 이것만은 **파생시킬 수 없다.** 대신 어느 클럭에서 뽑았는지를
+ *    상수로 남긴다 — 커널 클럭이 바뀌면 아래 _Static_assert 와
+ *    host/tests/test_firmware_clock.py 가 함께 깨지고, 그것이 "유틸리티를
+ *    다시 돌려라" 는 신호다. 숫자만 남겨 두면 SCL 이 조용히 다른 주파수로
+ *    나가고 증상은 "가끔 안 읽힌다" 로만 보인다. */
+#define MK_I2C_TIMINGR_100K_KERNEL_HZ  64000000u
 #define I2C_TIMINGR_100K     0x60702729u
+_Static_assert(MK_I2C_KERNEL_HZ == MK_I2C_TIMINGR_100K_KERNEL_HZ,
+               "I2C kernel clock changed: recompute TIMINGR with ST i2c_timing_utility.c");
 
 static I2C_HandleTypeDef s_i2c1, s_i2c3, s_i2c5;
 
@@ -153,9 +164,9 @@ int mk_i2c_io_xfer(void *ctx, uint8_t bus, uint8_t addr,
  *    (>=800us)와 명령 전송 뒤(>=1.5ms) 실제로 기다려야 한다(데이터시트
  *    p.17) — mk_ads1256.c 의 t6·t11 대기와 같은 이유로 app/ 은 HAL 을
  *    몰라야 하니 콜백으로 뺀다(MkAdsIo.delay_us 와 같은 모양,
- *    bsp/mk_ads_io.c 의 io_delay_us 를 그대로 본떴다 — 같은 클럭
- *    가정(64MHz, HSI, PLL 없음 — main.c SystemClock_Config)이라 같은
- *    계산을 쓴다).
+ *    bsp/mk_ads_io.c 의 io_delay_us 를 그대로 본떴다 — 루프 횟수를 같은
+ *    곳(bsp/mk_clock.h 의 MK_BUSY_WAIT_LOOPS_PER_US)에서 가져오므로
+ *    두 파일이 갈릴 수 없다).
  *
  *    이 함수는 main 슈퍼루프에서 불린다(SPI ISR 안이 아니다) — AM2320
  *    포트 하나가 read() 를 부르는 순간(최소 2초에 한 번, warmup_ms)
@@ -164,7 +175,7 @@ int mk_i2c_io_xfer(void *ctx, uint8_t bus, uint8_t addr,
 void mk_i2c_io_delay_us(void *ctx, uint32_t us)
 {
     (void)ctx;
-    volatile uint32_t n = us * (64u / 3u + 1u);
+    volatile uint32_t n = us * MK_BUSY_WAIT_LOOPS_PER_US;
     while (n--) {
         __asm volatile ("nop");
     }

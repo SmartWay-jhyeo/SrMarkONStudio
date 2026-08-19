@@ -93,6 +93,29 @@ def _eval(expr: str, defs: dict[str, str], depth: int = 0) -> Fraction:
     return eval(expr, {"__builtins__": {}}, {"Fraction": Fraction})  # noqa: S307
 
 
+def _eval_c(expr: str, defs: dict[str, str]) -> int:
+    """같은 식을 **C 의 정수 나눗셈 그대로** 푼다.
+
+    🔴 위의 `_eval` 은 분수로 풀어 "정확히 64 MHz 인가" 를 본다. 이쪽은
+       반대로 **컴파일러가 실제로 넣을 값**을 본다. 일부러 버림하는
+       상수(MK_BUSY_WAIT_LOOPS_PER_US)의 불변조건은 이 값으로 봐야 한다.
+    """
+    value = _eval(expr, defs)      # 식별자 검사·순환 검사를 그대로 재사용
+    del value
+    expanded = _strip_comments(expr)
+    expanded = re.sub(r"\(\s*(?:unsigned\s+|signed\s+)?"
+                      r"(?:u?int(?:8|16|32|64)_t|unsigned|int|long|short)\s*\)",
+                      " ", expanded)
+    expanded = re.sub(r"\b(\d+)[uUlL]+\b", r"\1", expanded)
+
+    def sub(m: re.Match[str]) -> str:
+        return "(" + str(_eval_c(defs[m.group(0)], defs)) + ")"
+
+    expanded = re.sub(r"\b(?!0[xX])[A-Za-z_]\w*\b", sub, expanded)
+    expanded = expanded.replace("/", "//")
+    return eval(expanded, {"__builtins__": {}}, {})  # noqa: S307
+
+
 @pytest.fixture(scope="module")
 def clk() -> dict[str, Fraction]:
     """mk_clock.h 의 상수를 분수로 푼 표."""
@@ -109,9 +132,10 @@ def clk() -> dict[str, Fraction]:
 
 
 #: 🔴 일부러 버림하는 상수. 여기 넣는 것은 "정수가 아니어도 된다" 가 아니라
-#:    **버림이 설계의 일부**라는 뜻이다 — 버림 + 1 로 "넉넉한 쪽" 을 잡는
-#:    관용식이라 분수로 보면 정수가 아니다.
+#:    **버림이 설계의 일부**라는 뜻이고, 그 대신 아래에서 따로 검사한다.
 TRUNCATION_IS_INTENDED = {
+    # 올림 아닌 버림 + 1 로 "넉넉한 쪽" 을 잡는 관용식이다.
+    # test_busy_wait_loop_constant_is_derived 가 실제 불변조건을 본다.
     "MK_BUSY_WAIT_LOOPS_PER_US",
 }
 
@@ -203,6 +227,133 @@ def test_hal_conf_hse_value_matches(clk):
     defs = _defines(FW / "bsp" / "stm32h7xx_hal_conf.h")
     assert "HSE_VALUE" in defs
     assert _eval(defs["HSE_VALUE"], defs) == clk["MK_HSE_HZ"]
+
+
+# ── 파생 상수 ──────────────────────────────────────────────────────────────
+
+def _assignment(path: Path, pattern: str) -> str:
+    text = _strip_comments(path.read_text(encoding="utf-8"))
+    m = re.search(pattern, text)
+    assert m is not None, f"{path.name} 에서 {pattern} 를 못 찾았다"
+    return m.group(1)
+
+
+def test_tim8_prescaler_makes_a_1mhz_timebase(clk):
+    """🔴 PPS 입력 캡처의 분해능이 여기서 정해진다.
+
+    TIM8 은 APB2 에 있고 PSC 로 1 MHz(1 us)를 만든다. 클럭이 바뀌었는데
+    이 프리스케일이 그대로면 캡처 값이 us 가 아닌 다른 단위가 되고,
+    시간축은 **아무 오류 없이** 틀린 값을 낸다.
+    """
+    defs = _defines(FW / "bsp" / "mk_gnss_io.c")
+    expr = _assignment(FW / "bsp" / "mk_gnss_io.c",
+                       r"s_tim\.Init\.Prescaler\s*=\s*([^;]+);")
+    psc = _eval(expr, {**defs, **{k: str(v) for k, v in clk.items()}})
+    assert (clk["MK_APB2_TIMER_HZ"] / (psc + 1)) == 1_000_000, (
+        f"TIM8 이 {float(clk['MK_APB2_TIMER_HZ'] / (psc + 1))} Hz 로 돈다"
+    )
+
+
+def test_ws2812_slot_is_1250ns(clk):
+    """WS2812B 한 비트 = 1.25 us. TIM3 은 APB1 에 있고 PSC=0 이다.
+
+    ARR 은 app/mk_ws2812.h 에 있다 — 그쪽은 HAL 도 bsp 도 모르는 층이라
+    클럭 상수를 include 하지 못한다. 그래서 **여기서 묶는다.**
+    """
+    ws = _defines(FW / "app" / "mk_ws2812.h")
+    arr = _eval(ws["MK_WS2812_ARR"], ws)
+    psc = _eval(_assignment(FW / "bsp" / "mk_ws2812_io.c",
+                            r"s_tim\.Init\.Prescaler\s*=\s*([^;]+);"),
+                {**_defines(FW / "bsp" / "mk_ws2812_io.c"),
+                 **{k: str(v) for k, v in clk.items()}})
+    tick_hz = clk["MK_APB1_TIMER_HZ"] / (psc + 1)
+    slot_ns = (arr + 1) * Fraction(1_000_000_000) / tick_hz
+    assert slot_ns == 1250, f"한 슬롯이 {float(slot_ns)} ns 다"
+
+
+def test_ads1256_spi_clock_is_within_the_chip_limit(clk):
+    """SCLK ≤ fCLKIN/4 = 1.92 MHz — ADS1256.pdf.
+
+    SPI4 커널 클럭은 APB2 다(D2CCIP1R.SPI45SEL 리셋값 000).
+    """
+    defs = {**_defines(FW / "bsp" / "mk_ads_io.c"),
+            **{k: str(v) for k, v in clk.items()}}
+    assert "MK_ADS_SPI_DIV" in defs, "SPI4 분주비가 이름을 갖고 있어야 한다"
+    sclk = clk["MK_SPI4_KERNEL_HZ"] / _eval(defs["MK_ADS_SPI_DIV"], defs)
+    assert sclk <= 1_920_000, f"SCLK = {float(sclk)} Hz 는 상한을 넘는다"
+    # 🔴 ADS1256 의 t6(마지막 SCLK ~ DOUT 구동)를 이 속도 위에서 계산해
+    #    두었다(app/mk_ads1256.c). 클럭이 바뀌면 그 계산도 다시 봐야 한다.
+    assert sclk == 500_000, f"SCLK 가 500 kHz 에서 {float(sclk)} Hz 로 바뀌었다"
+
+
+def test_i2c_timingr_is_anchored_to_the_clock_it_was_computed_for(clk):
+    """🔴 TIMINGR 은 파생시킬 수 없다.
+
+    SDADEL·SCLDEL·아날로그 필터 지연까지 함께 푸는 계산이라 ST 의 유틸리티
+    (i2c_timing_utility.c)로 뽑는다. 그래서 **어느 클럭에서 뽑았는지**를
+    상수로 남기고 여기서 대조한다 — 클럭이 바뀌면 이 시험이 깨지고,
+    그것이 "유틸리티를 다시 돌려라" 는 신호다.
+    """
+    defs = {**_defines(FW / "bsp" / "mk_i2c_io.c"),
+            **{k: str(v) for k, v in clk.items()}}
+    assert "MK_I2C_TIMINGR_100K_KERNEL_HZ" in defs, (
+        "TIMINGR 이 어느 커널 클럭에서 나왔는지 적혀 있지 않다"
+    )
+    assert _eval(defs["MK_I2C_TIMINGR_100K_KERNEL_HZ"], defs) == \
+        clk["MK_I2C_KERNEL_HZ"]
+
+
+def test_uart_baud_error_is_inside_the_usual_tolerance(clk):
+    """USART3(PB10/PB11) — BRR 은 정수라 반드시 오차가 생긴다.
+
+    보통 허용치는 2~3 % 다. 921600 에서 64 MHz 는 +0.64 % 였다.
+    """
+    defs = {**_defines(FW / "main.c"), **{k: str(v) for k, v in clk.items()}}
+    baud = _eval(defs["UART_BAUD"], defs)
+    brr = int(clk["MK_USART3_KERNEL_HZ"] / baud)
+    assert brr >= 16, f"BRR={brr} — 16 미만이면 오버샘플 16 으로 못 낸다"
+    actual = clk["MK_USART3_KERNEL_HZ"] / brr
+    err = abs(actual - baud) / baud
+    assert err < Fraction(2, 100), f"보율 오차 {float(err) * 100:.2f} %"
+
+
+def test_lcd_spi_choices_come_from_the_spi2_kernel_clock(clk):
+    """설정 카탈로그의 `lcd.spi_khz` 선택지는 분주비로 실제 낼 수 있는
+    값이어야 한다.
+
+    🔴 SPI2 의 커널 클럭은 sys_ck 가 아니라 **per_ck = hsi_ker_ck** 다
+       (bsp/mk_lcd_io.c 가 직접 고른다). 그래서 시스템 클럭을 HSE 로
+       옮겨도 이 표는 안 바뀐다 — 그 사실 자체를 여기 적어 둔다.
+    """
+    text = _strip_comments((FW / "app" / "mk_cfgtable.c").read_text(
+        encoding="utf-8"))
+    m = re.search(r"LCD_SPI_KHZ_CHOICES\[\]\s*=\s*\{([^}]*)\}", text)
+    assert m is not None, "LCD_SPI_KHZ_CHOICES 를 못 찾았다"
+    choices = sorted(int(x) for x in re.findall(r"\d+", m.group(1)))
+    kernel_khz = clk["MK_SPI2_KERNEL_HZ"] / 1000
+    expected = sorted(int(kernel_khz / d) for d in (4, 8, 16, 32))
+    assert choices == expected, f"{choices} != {expected}"
+
+
+def test_busy_wait_loop_constant_is_derived(clk):
+    """`app/` 이 HAL 을 모르므로 us 대기는 bsp 의 콜백이 낸다. 그 루프
+    횟수가 클럭에 매여 있어야 한다 — 안 그러면 ADS1256 의 t6 도 AM2320 의
+    깨우기 대기도 조용히 짧아진다."""
+    for name in ("mk_ads_io.c", "mk_i2c_io.c"):
+        text = _strip_comments((FW / "bsp" / name).read_text(encoding="utf-8"))
+        assert "MK_BUSY_WAIT_LOOPS_PER_US" in text, (
+            f"{name} 의 us 대기가 클럭 상수를 안 쓴다"
+        )
+
+    # 🔴 이 상수만 일부러 버림한다. 그러니 **C 가 실제로 넣을 값**으로
+    #    불변조건을 본다: 한 바퀴 3사이클로 쳐서 1 us 를 채워야 한다.
+    #    모자라면 ADS1256 의 t6 를 다시 어긴다(값이 조용히 틀린다).
+    defs = _defines(CLOCK_H)
+    loops = _eval_c(defs["MK_BUSY_WAIT_LOOPS_PER_US"], defs)
+    cycles_per_us = clk["MK_SYSCLK_HZ"] / 1_000_000
+    assert loops * 3 >= cycles_per_us, (
+        f"1 us 대기가 {float(loops * 3 / cycles_per_us):.2f} us 밖에 안 된다"
+    )
 
 
 # ── HSE 가 안 뜰 때 ────────────────────────────────────────────────────────

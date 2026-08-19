@@ -29,11 +29,17 @@
  *    뺐다. USART1 을 PB6 으로 열면 백라이트가 시리얼 파형으로 깜빡인다.
  *
  * 🔴 SPI2 커널 클럭을 **직접 골라야 한다**. SPI1/2/3 의 기본 소스는
- *    pll1_q_ck 인데(RCC_D2CCIP1R.SPI123SEL 리셋값 000) 이 펌웨어는 PLL 을
- *    아예 켜지 않는다(main.c SystemClock_Config — HSI 64 MHz, PLL 없음).
- *    그대로 두면 커널 클럭이 없어 **SCK 가 한 번도 안 움직인다**.
- *    SPI4 가 멀쩡했던 것은 SPI4/5 의 기본 소스가 APB2 라서다.
- *    → per_ck(=hsi_ker_ck, 64 MHz)로 돌린다.
+ *    pll1_q_ck 인데(RCC_D2CCIP1R.SPI123SEL 리셋값 000), 이 코드를 쓸
+ *    당시 펌웨어는 PLL 을 아예 켜지 않아 커널 클럭이 없었다 — SCK 가
+ *    한 번도 안 움직였고, 증상은 "화면이 검다" 하나뿐이라 배선 불량과
+ *    구분되지 않았다. SPI4 가 멀쩡했던 것은 SPI4/5 의 기본 소스가
+ *    APB2 라서다. → per_ck(=hsi_ker_ck, 64 MHz)로 돌린다.
+ *
+ *    🔴 2026-08-19 에 시스템 클럭이 HSE→PLL1 로 바뀌어 pll1_q_ck 가
+ *       실재하게 됐지만, **여기는 그대로 per_ck 를 쓴다.** 화면 SPI 에
+ *       클럭 정확도는 아무 뜻이 없고(비동기 명령 버스다), 지금 실기기에서
+ *       도는 조합을 이유 없이 흔들지 않는다. 그래서 아래 클럭 표는
+ *       sys_ck 가 아니라 MK_SPI2_KERNEL_HZ(= MK_HSI_HZ)에 매여 있다.
  *
  * 🔴 SCK 상한은 20 MHz 다. ILI9488.pdf p.332 §17.4.3 "DBI Type C Option 3
  *    (4-Line SPI System) Timing Characteristics": twc(Serial clock cycle,

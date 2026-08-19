@@ -2,8 +2,20 @@
 
 #include "stm32h7xx_hal.h"
 
+#include "mk_clock.h"
 #include "mk_dma_mem.h"
 #include "../app/mk_ws2812.h"
+
+/* 🔴 한 슬롯이 정확히 1.25 us 여야 한다 — WS2812B 는 그 폭 안의 High
+ *    길이로 0 과 1 을 가른다. ARR 은 app/mk_ws2812.h 에 있는데(그 층은
+ *    HAL 도 bsp 도 모른다) 클럭은 여기 있으므로, **둘이 만나는 이 파일에서
+ *    묶는다.** 클럭을 올리면 여기서 빌드가 깨진다.
+ *
+ *    TIM3 은 APB1 이고 프리스케일은 0(WS_TIM_PSC)이다. */
+#define WS_TIM_PSC   0u
+_Static_assert((MK_WS2812_ARR + 1u) * 1000000000ull /
+               (MK_APB1_TIMER_HZ / (WS_TIM_PSC + 1u)) == 1250ull,
+               "WS2812 slot is not 1.25 us: the clock changed but MK_WS2812_ARR did not");
 
 /* 🔴 이 파일이 GPIOA 핀 7 과 TIM3 을 만지는 유일한 곳이다. */
 #define WS_PORT   GPIOA
@@ -36,12 +48,11 @@ void mk_ws2812_io_init(void)
     g.Alternate = GPIO_AF2_TIM3;      /* DS13313 Rev 1 p.72 Table 8 */
     HAL_GPIO_Init(WS_PORT, &g);
 
-    /* 🔴 분주 0 이다. TIM3 은 APB1 에 있고 이 펌웨어는 HSI 64MHz·분주 1 로
-     *    돌므로 타이머 클럭이 곧 64MHz 다(main.c SystemClock_Config).
-     *    ARR+1 = 80 → 1.25us = 800kHz. 클럭 설정을 바꾸면 여기가 함께
-     *    틀어진다 — app/mk_ws2812.h 의 시험이 그 값을 못 박아 두고 있다. */
+    /* 🔴 분주 0 이다. TIM3 은 APB1 에 있고 APB 분주가 1 이라 타이머 클럭이
+     *    곧 sys_ck 다(bsp/mk_clock.h). ARR+1 = 80 → 1.25us = 800kHz.
+     *    위의 _Static_assert 가 그 곱셈을 지킨다. */
     s_tim.Instance               = TIM3;
-    s_tim.Init.Prescaler         = 0u;
+    s_tim.Init.Prescaler         = WS_TIM_PSC;
     s_tim.Init.CounterMode       = TIM_COUNTERMODE_UP;
     s_tim.Init.Period            = MK_WS2812_ARR;
     s_tim.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
