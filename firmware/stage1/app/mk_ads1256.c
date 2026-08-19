@@ -232,7 +232,42 @@ static void begin_channel(MkAds *a, int ch, int64_t now_ms)
     send_setup_step(a);
 }
 
-/* 한 바퀴를 끝내고 쉬는 자리로 돌아간다. */
+/* 밀려 있는 채널이 있으면 곧바로 한 바퀴를 시작한다. 없으면 쉰다.
+ *
+ * 🔴 `pick_next` 를 그대로 쓴다 — **예정을 앞지르지 않는다.** 앞지르면
+ *    ain*.period_ms 가 뜻을 잃고, 링크가 감당 못 할 만큼 표본이 쏟아져
+ *    큐가 넘친다(고치려던 것과 반대 방향의 유실). */
+static void start_if_due(MkAds *a, int64_t now_ms)
+{
+    int ch = pick_next(a, now_ms);
+    if (ch >= 0) {
+        begin_channel(a, ch, now_ms);
+    }
+}
+
+/* 한 바퀴를 끝내고, 밀려 있는 다음 채널로 **곧바로** 넘어간다.
+ *
+ * 🔴 예전에는 여기서 IDLE 로 돌아가 끝이었고, 다음 채널은 슈퍼루프가
+ *    mk_ads_tick() 을 부를 때에야 시작됐다. 그것이 채널당 10 ms 를
+ *    구조적으로 불가능하게 만들던 자리다:
+ *
+ *      - 7채널 × 10 ms 면 채널 하나에 쓸 수 있는 시간이 1.43 ms 다.
+ *      - 그런데 슈퍼루프 한 바퀴는 mk_i2c 의 HAL 블로킹만으로도 최악
+ *        60 ms 이고(bsp/mk_i2c_io.c 머리말), 텔레메트리의
+ *        HAL_UART_Transmit 도 블로킹이라 한 줄에 약 1.8 ms 다
+ *        (921600 baud, 163 B).
+ *      - 즉 다음 채널의 시작이 수십 ms 씩 밀렸고, finish() 가 따라잡기를
+ *        포기하므로 그 표본들은 **큐의 drops 에도 안 잡힌 채 사라졌다.**
+ *        사용자가 가장 싫어하는 실패다 — "센서 값을 늦게 보내도 되지만
+ *        수집은 반드시 정상적으로 타임스탬프를 찍어 가지고 있어야 한다."
+ *
+ *    여기는 SPI 완료 인터럽트 안이므로, 이어 시작하면 슈퍼루프가 통째로
+ *    막혀 있어도 한 바퀴가 끝까지 돈다. 절차는 하나도 줄이지 않는다 —
+ *    begin_channel() 이 MUX → SYNC → WAKEUP 을 다시 밟으므로 정착 시간이
+ *    그대로 지켜진다 (ADS1256.pdf p.21 Figure 19).
+ *
+ * 🔴 재귀가 되지 않는다. begin_channel() 은 전송을 **시작만** 하고 돌아온다
+ *    (MkAdsIo.transfer 계약). 완료는 다음 인터럽트로 온다. */
 static void finish(MkAds *a, int64_t now_ms)
 {
     MkAdsChannel *c = (a->cur >= 0) ? &a->ch[a->cur] : NULL;
@@ -251,15 +286,13 @@ static void finish(MkAds *a, int64_t now_ms)
     io_cs(a, 0);
     a->state = MK_ADS_IDLE;
     a->cur = -1;
+    start_if_due(a, now_ms);
 }
 
 void mk_ads_tick(MkAds *a, int64_t now_ms)
 {
     if (a->state == MK_ADS_IDLE) {
-        int ch = pick_next(a, now_ms);
-        if (ch >= 0) {
-            begin_channel(a, ch, now_ms);
-        }
+        start_if_due(a, now_ms);
         return;
     }
 

@@ -550,12 +550,15 @@ static void test_drdy_timeout_frees_the_other_channels(void)
     CHECK(mk_ads_state(&A) == MK_ADS_CONVERTING, "타임아웃 전에는 기다린다");
 
     mk_ads_tick(&A, 700);                   /* 500 ms 초과 */
-    CHECK(mk_ads_state(&A) == MK_ADS_IDLE, "포기하고 풀려난다");
     CHECK(mk_ads_timeouts(&A, stuck) == 1, "그 채널에 타임아웃을 센다");
 
-    /* 다른 채널은 계속 돈다 — 이것이 요점이다. */
-    mk_ads_tick(&A, 700);
-    CHECK(mk_ads_state(&A) == MK_ADS_SETUP, "다음 채널이 시작된다");
+    /* 다른 채널은 계속 돈다 — 이것이 요점이다.
+     *
+     * 🔴 예전에는 여기서 한 번 IDLE 로 돌아갔다가 다음 tick 에 시작했다.
+     *    지금은 finish() 가 밀린 채널로 곧바로 이어 간다 — 막힌 채널
+     *    하나가 다음 채널의 시작까지 슈퍼루프 한 바퀴만큼 더 늦추지
+     *    않는다. */
+    CHECK(mk_ads_state(&A) == MK_ADS_SETUP, "포기한 자리에서 다음 채널이 시작된다");
     CHECK(mk_ads_current_channel(&A) != stuck, "막힌 채널이 아니다");
 }
 
@@ -636,6 +639,138 @@ static void test_disabled_channel_is_never_read(void)
     CHECK(mk_ads_state(&A) == MK_ADS_IDLE, "계속 쉰다");
 }
 
+/* ---- 채널당 10 ms — 슈퍼루프에 매이지 않는다 --------------------------- */
+
+static void test_the_next_due_channel_starts_without_waiting_for_a_tick(void)
+{
+    /* 🔴 채널당 10 ms 를 요구하면 한 채널에 쓸 수 있는 시간이 1.43 ms 다
+     *    (7채널 × 10 ms). 그런데 예전 판은 한 바퀴가 끝나면 IDLE 로 돌아가
+     *    **슈퍼루프가 mk_ads_tick 을 부를 때까지** 다음 채널을 시작하지
+     *    않았다.
+     *
+     *    슈퍼루프 한 바퀴는 그보다 훨씬 길다 — mk_i2c 의 HAL 블로킹이 최악
+     *    60 ms(bsp/mk_i2c_io.c), 텔레메트리의 HAL_UART_Transmit 도 블로킹
+     *    이라 한 줄에 1.8 ms 다. 즉 예전 판에서는 **채널당 10 ms 가 구조적
+     *    으로 불가능**했고, 100 ms 에서도 밀린 만큼이 조용히 사라졌다
+     *    (finish() 가 따라잡기를 포기하므로 큐의 drops 에도 안 잡힌다).
+     *
+     *    그래서 한 바퀴가 끝나는 자리(= 인터럽트 안)에서 다음에 밀린 채널을
+     *    곧바로 시작한다. */
+    setup(0);
+    mk_ads_configure(&A, 0, 1, 10, 0);
+    mk_ads_configure(&A, 1, 1, 10, 0);
+
+    mk_ads_tick(&A, 10);                     /* 마지막 tick — 이후로는 안 부른다 */
+    int first = mk_ads_current_channel(&A);
+    drive_setup(10);
+    mk_ads_on_drdy(&A, 11);
+    deliver(111, 11);
+
+    CHECK(mk_ads_state(&A) == MK_ADS_SETUP,
+          "tick 없이도 다음 채널이 곧바로 시작된다");
+    CHECK(mk_ads_current_channel(&A) != first, "다른 채널이다");
+}
+
+static void test_chaining_still_runs_the_full_sync_sequence(void)
+{
+    /* 🔴 이어 돌리면서 절차를 줄이면 **정착 시간이 사라진다.**
+     *
+     *    ADS1256.pdf p.21 "Settling Time Using the Input Multiplexer":
+     *      "restart the conversion process by issuing the SYNC and WAKEUP
+     *       commands ... There is no need to ignore or discard data while
+     *       cycling through the channels of the input multiplexer because
+     *       the ADS1256 fully settles before DRDY goes low"
+     *
+     *    즉 "버릴 변환이 없다"는 보장은 **MUX 를 바꾼 뒤 SYNC/WAKEUP 으로
+     *    필터를 다시 채웠을 때만** 성립한다. SYNC 를 빼고 이어서 도는
+     *    DRDY 를 그냥 읽으면 그 값은 이전 채널과 섞인 값이다(같은 문서
+     *    Figure 21). 배선상 J3 에만 신호가 있는 지금은 그 오염이 "이웃
+     *    채널이 J3 을 따라 움직인다" 로 나타난다. */
+    setup(0);
+    mk_ads_configure(&A, 0, 1, 10, 0);
+    mk_ads_configure(&A, 2, 1, 10, 0);
+
+    mk_ads_tick(&A, 10);
+    drive_setup(10);
+    mk_ads_on_drdy(&A, 11);
+    deliver(111, 11);
+
+    int base = FK.n;                          /* 이어 돌린 채널의 첫 전송 */
+    CHECK(base >= 1 && FK.bytes[base - 1][0] ==
+              (uint8_t)(MK_ADS_CMD_WREG | MK_ADS_REG_MUX),
+          "이어 도는 채널도 MUX 부터 다시 쓴다");
+
+    mk_ads_on_spi_done(&A, 12);
+    CHECK(FK.n == base + 1 && FK.bytes[base][0] == MK_ADS_CMD_SYNC,
+          "SYNC 를 건너뛰지 않는다");
+    mk_ads_on_spi_done(&A, 12);
+    CHECK(FK.n == base + 2 && FK.bytes[base + 1][0] == MK_ADS_CMD_WAKEUP,
+          "WAKEUP 도 보낸다");
+    mk_ads_on_spi_done(&A, 12);
+    CHECK(mk_ads_state(&A) == MK_ADS_CONVERTING,
+          "그리고 자기 DRDY 를 기다린다 — 정착 시간이 여기 있다");
+}
+
+static void test_chaining_does_not_run_ahead_of_the_schedule(void)
+{
+    /* 🔴 이어 돌리기가 "예정" 을 무시하면 안 된다. 무시하면 주기 설정이
+     *    뜻을 잃고, 링크가 감당 못 할 만큼 표본이 쏟아져 큐가 넘친다 —
+     *    고치려던 것과 정확히 반대 방향의 유실이다. */
+    setup(0);
+    mk_ads_configure(&A, 0, 1, 100, 0);
+    mk_ads_configure(&A, 1, 1, 100, 0);
+
+    mk_ads_tick(&A, 100);
+    drive_setup(100);
+    mk_ads_on_drdy(&A, 101);
+    deliver(111, 101);
+    CHECK(mk_ads_state(&A) == MK_ADS_SETUP, "함께 밀린 채널은 이어 돈다");
+
+    drive_setup(101);
+    mk_ads_on_drdy(&A, 102);
+    deliver(222, 102);
+    CHECK(mk_ads_state(&A) == MK_ADS_IDLE,
+          "둘 다 냈으면 다음 예정까지 쉰다 — 앞질러 읽지 않는다");
+}
+
+static void test_a_seven_channel_round_needs_no_tick_at_all(void)
+{
+    /* 🔴 7채널 × 10 ms 의 실제 모양. 첫 tick 하나만 주고, 그다음은
+     *    인터럽트 사건만으로 일곱 채널이 전부 표본을 남겨야 한다.
+     *
+     *    이것이 "수집에는 방해가 안 된다" 의 시험 형태다 — 슈퍼루프가
+     *    통째로 멈춰 있어도(사용자 절대 제약) 한 바퀴가 끝난다. */
+    static MkSample tail[3][8];
+    setup(0);
+    for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
+        if (ch >= 4) { mk_ads_attach_queue(&A, ch, tail[ch - 4], 8); }
+        mk_ads_configure(&A, ch, 1, 10, 0);
+    }
+
+    mk_ads_tick(&A, 10);                      /* 딱 한 번 */
+
+    int seen[MK_ADS_CHANNELS] = {0};
+    int64_t t = 10;
+    for (int i = 0; i < MK_ADS_CHANNELS; i++) {
+        int ch = mk_ads_current_channel(&A);
+        if (ch < 0) { break; }
+        seen[ch]++;
+        drive_setup(t);
+        mk_ads_on_drdy(&A, t + 1);
+        deliver(1000 + i, t + 1);
+        t += 1;                               /* 채널 하나에 약 1 ms */
+    }
+
+    int covered = 0;
+    for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
+        MkSample s;
+        if (seen[ch] == 1 && mk_ads_last(&A, ch, &s)) { covered++; }
+    }
+    CHECK(covered == MK_ADS_CHANNELS,
+          "tick 한 번으로 일곱 채널이 모두 한 표본씩 남긴다");
+    CHECK(mk_ads_state(&A) == MK_ADS_IDLE, "다 돌면 다음 예정까지 쉰다");
+}
+
 static void test_null_io_does_not_crash(void)
 {
     /* 아직 SPI 가 준비되지 않은 부팅 초기. */
@@ -681,6 +816,10 @@ int main(void)
     test_far_behind_gives_up_catching_up();
     test_channel_without_a_queue_still_counts_drops();
     test_disabled_channel_is_never_read();
+    test_the_next_due_channel_starts_without_waiting_for_a_tick();
+    test_chaining_still_runs_the_full_sync_sequence();
+    test_chaining_does_not_run_ahead_of_the_schedule();
+    test_a_seven_channel_round_needs_no_tick_at_all();
     test_null_io_does_not_crash();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;

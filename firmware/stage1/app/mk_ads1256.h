@@ -28,6 +28,46 @@
  *    정착시간이고 데이터시트 값이다. 이 층이 하는 일은 그 시간 동안 CPU 를
  *    풀어 주는 것이다. 주기를 줄이려면 DRATE 를 올려야 하고, 그 계산은
  *    호스트의 용량 검사(tools/simulator/capacity.py)가 한다.
+ *
+ * ── 정착 시간 (ADS1256.pdf SBAS288K, fCLKIN = 7.68 MHz — 이 보드와 같다)
+ *
+ * 🔴 채널을 바꾼 뒤 **첫 DRDY 가 곧 유효한 값**이다. 단, 조건이 있다.
+ *
+ *    p.21 "Settling Time Using the Input Multiplexer":
+ *      "Step 1: When DRDY goes low ... update the multiplexer register MUX
+ *       using the WREG command.
+ *       Step 2: Restart the conversion process by issuing a SYNC command
+ *       immediately followed by a WAKEUP command. Make sure to follow
+ *       timing specification t11 between commands.
+ *       ... There is no need to ignore or discard data while cycling
+ *       through the channels of the input multiplexer because the ADS1256
+ *       fully settles before DRDY goes low, indicating data is ready."
+ *
+ *    → SYNC + WAKEUP 으로 디지털 필터를 다시 채웠을 때만 성립한다. SYNC 를
+ *      빼고 이어 도는 DRDY 를 그냥 읽으면 그 값은 이전 채널과 섞인다
+ *      (p.22 Figure 21: "Mix of Old and New VIN Data"). 이 보드는 J3 에만
+ *      신호가 있으므로, 그 오염은 "이웃 채널이 J3 을 따라 움직인다" 로
+ *      나타난다. send_setup_step() 이 채널마다 셋을 다 보내는 이유다.
+ *
+ *    p.20 Table 13 "Settling Time vs Data Rate" (t18):
+ *
+ *      DRATE   t18       +SPI      7채널 한 바퀴   채널당 10 ms 가능?
+ *      7500    0.31 ms   0.47 ms    3.3 ms         ○
+ *      3750    0.44 ms   0.60 ms    4.2 ms         ○
+ *      2000    0.68 ms   0.84 ms    5.9 ms         ○  ← 권장
+ *      1000    1.18 ms   1.34 ms    9.4 ms         △ 여유 6 %
+ *       500    2.18 ms   2.34 ms   16.4 ms         ×
+ *       100   10.18 ms  10.34 ms   72.4 ms         ×
+ *        60   16.84 ms  17.00 ms  119.0 ms         ×  (지금 기본값)
+ *
+ *      "+SPI" 는 이 절차가 SPI 로 쓰는 시간 0.155 ms 를 더한 것이다
+ *      (500 kHz SCLK 에서 9 B = 144 µs, t11 4 µs, t6 7 µs).
+ *      같은 계산이 tools/simulator/capacity.py 에 있고 시험이 지킨다.
+ *
+ *    p.13 Table 6 "Noise-Free Resolution (bits), Buffer Off"(PGA=1) — 속도의
+ *    대가:  60 SPS 21.2 b · 500 SPS 20.0 b · 1000 SPS 19.0 b ·
+ *           2000 SPS 18.5 b · 3750 SPS 18.1 b · 7500 SPS 17.7 b.
+ *      BUFEN=0 이므로 Table 1~3(버퍼 온)이 아니라 Table 4~6 을 본다.
  */
 #ifndef MK_ADS1256_H
 #define MK_ADS1256_H
