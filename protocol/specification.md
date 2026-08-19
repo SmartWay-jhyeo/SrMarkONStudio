@@ -602,7 +602,8 @@ zero  = 4 - v4 / scale          (scale ≠ 0)
  "ctl_mode":"ACTIVE",
  "fw":"0.1.0","board_rev":"2.0","time_source":"gnss_pps","time_quality":2,
  "uptime_ms":123456,
- "gnss":{"pps_age_ms":842,"sats":11,
+ "gnss":{"pps_age_ms":842,"pps_raw_age_ms":842,"pps_raw_count":118,
+         "pps_unpaired_reason":null,"sats":11,
          "init_sent":true,"init_exhausted":false,"sentence_seen":true},
  "rails":{"v24":false,"v14v9":false,"v5":true},
  "din":[{"connector_id":18,"state":0},{"connector_id":19,"state":0},
@@ -628,6 +629,54 @@ zero  = 4 - v4 / scale          (scale ≠ 0)
 아직 모르면(PPS·GGA를 한 번도 못 받았으면) `null`이다 — 0을 지어내지
 않는다. `time_source`가 `gnss_pps`라도 `pps_age_ms`가 1.5초에 가까우면
 다음 tick에 `gnss_nmea`로 내려갈 참이라는 뜻이다.
+
+🔴 **`pps_age_ms`와 `pps_raw_age_ms`는 다른 것을 잰다 — 이 구분이 아래
+세 필드가 존재하는 이유 전부다.**
+
+`pps_age_ms`는 **짝지어 채택된** PPS의 나이다. §7.1.2 표대로 PPS
+에지는 그 초의 `.000`을, 뒤이은 RMC 문장은 "몇 초인지"를 말해 주는데,
+둘이 짝지어져야만 시간축이 그 PPS를 실제로 쓴다(`time_source`가
+`gnss_pps`로 오르는 조건). RMC가 계속 무효(`V`, fix 없음)로 오면 PPS가
+아무리 규칙적으로 들어와도 **한 번도 짝지어지지 않아 `pps_age_ms`는
+계속 `null`이다** — 이것만 보는 사람에게는 "PPS가 안 온다"로 읽힌다.
+
+이 구분이 필요했던 이유(실기기 관측, 2026-08-19, UM981): 실내에서 GNSS
+fix가 안 잡혀 RMC 문장이 계속 `V`로 왔다. 그런데 PPS는 정확히 1초
+간격으로 들어오고 있었다 — TIM8 CCR3(입력 캡처 레지스터)가 43174 →
+63026 → 17526 → 37584로, PC8 핀이 1,0,1,0,0,1로 계속 토글하는 것을 GDB로
+직접 확인했고, 슈퍼루프도 `s_pps_pending`을 매 바퀴 가져가고 있었다.
+배선·입력 캡처·ISR·슈퍼루프 소비까지 전부 정상이었는데, `pps_age_ms`가
+`null`인 것만 보고 배선을 의심해 GDB까지 붙이게 됐다 — 진단을 위한
+표시가 오히려 사람을 헤매게 한 것이다.
+
+그래서 짝짓기 여부와 **무관하게** "펄스가 실제로 오는가"를 답하는
+원시 캡처 필드를 따로 둔다:
+
+| 필드 | 뜻 |
+|---|---|
+| `pps_raw_age_ms` | 마지막 **원시** PPS 캡처 이후 경과(ms). 짝짓기 성공 여부와 무관하다. 한 번도 못 봤으면 `null`(0을 지어내지 않는다) |
+| `pps_raw_count` | 부팅 이후 지금까지 캡처한 원시 PPS 펄스 수(누적). 카운터라 "본 적 없음"과 "0번"이 같은 뜻이므로 `null`이 필요 없다 — 0부터 시작한다 |
+| `pps_unpaired_reason` | 마지막 짝짓기 시도가 왜 안 됐는가(아래 표) |
+
+정상 짝짓기가 이루어지는 동안은 `pps_raw_age_ms`가 `pps_age_ms`와 같은
+캡처를 가리켜 값이 같다. 위 실기기 상황처럼 짝짓기가 안 되는 동안에는
+`pps_age_ms`는 `null`인 채로 `pps_raw_age_ms`·`pps_raw_count`만 값을
+가진다 — 그 차이 자체가 "펄스는 오는데 시간축이 못 받아들이고 있다"는
+진단이다.
+
+`pps_unpaired_reason`은 **판단할 수 있는 범위에서만** 이유를 싣는다(§5
+— 지어내지 않는다). 방금 짝지어졌으면(즉 `pps_age_ms`가 값을 가지면)
+설명할 것이 없으므로 `null`이고, 아직 PPS·RMC 모두 한 번도 안 왔을 때도
+`null`이다.
+
+| 값 | 뜻 |
+|---|---|
+| `null` | 방금 짝지어졌거나(`pps_age_ms`가 값을 가짐) 아직 판단할 사건이 없다 |
+| `"no_valid_nmea"` | RMC 문장은 왔지만 fix가 무효(`V`)였다 — 위 실기기 상황이 정확히 이 경우다 |
+| `"no_pps"` | 유효한 RMC는 왔지만 그 순간 짝지을 원시 PPS 캡처가 창 안에 없었다(PPS가 아직 안 왔거나 짝짓기 창을 이미 넘겼다) |
+
+배선 불량·모듈 고장처럼 보드가 실제로 확인할 수 없는 이유는 넣지
+않는다.
 
 🔴 **`init_sent`·`init_exhausted`·`sentence_seen`은 §4.1.1의 초기화
 시퀀스를 진단한다.** `time_source`가 계속 `device_clock`에 머물 때 —
