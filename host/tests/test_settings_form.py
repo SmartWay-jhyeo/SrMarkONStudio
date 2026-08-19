@@ -455,14 +455,26 @@ def test_telemetry_shape_ignores_i2c_channels(form):
     assert telemetry_shape(form).channels == before
 
 
-def test_record_shape_i2c_counts_i2c_ports_only(form):
+def test_record_shape_i2c_counts_records_not_ports(form):
     """🔴 [신규, 2026-08-19] `i2c` 카드는 자기 포트만 센다 — `ain` 채널이
-    몇 개 켜져 있든 무관하다."""
+    몇 개 켜져 있든 무관하다.
+
+    🔴 [개정, 2026-08-20] 세는 것은 포트가 아니라 **레코드 수**다.
+
+       포트 하나가 레코드 하나가 아니다. 온습도(kind 2)는 `temp` 와
+       `humidity` 를 따로 내고(device_sim `_emit_i2c`), 종류를 안 고른
+       포트는 켜도 아무것도 안 낸다. 포트로 세면 앞은 절반으로, 뒤는 있지도
+       않은 트래픽으로 잡힌다.
+    """
     assert record_shape(form, "i2c").channels == 0
     form.edit("i2c10.enabled", "true")
+    assert record_shape(form, "i2c").channels == 0   # 종류가 없다 — 낼 것도 없다
+    form.edit("i2c10.kind", "1")                     # 조도 — 양 하나
     assert record_shape(form, "i2c").channels == 1
+    form.edit("i2c10.kind", "2")                     # 온습도 — 양 둘
+    assert record_shape(form, "i2c").channels == 2
     form.edit("ain1.enabled", "true")
-    assert record_shape(form, "i2c").channels == 1
+    assert record_shape(form, "i2c").channels == 2
 
 
 def test_record_shape_din_has_no_channel_count():

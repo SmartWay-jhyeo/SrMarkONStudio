@@ -308,7 +308,7 @@ FIELD_MASK_KEYS: dict[str, str] = {
 #: `matrix_of` 가 표로 접지 못한다(반복 최소 3줄, MATRIX_MIN_ROWS). 그래서
 #: `din` 의 대역폭은 "채널 수 × 주기" 로 어림할 수 없다 — 애초에 이벤트성
 #: 레코드라(규격 §7.6) 지어내지 않는다(설계 원칙 3·4와 같은 결).
-_RECORD_GROUP: dict[str, str] = {"ain": "ain", "i2c": "i2c", "din": "sol"}
+RECORD_GROUPS: dict[str, str] = {"ain": "ain", "i2c": "i2c", "din": "sol"}
 
 #: 이 필드는 잠겨 있다 — 마스크 비트가 아예 없어 항상 실린다(규격 §7.1·
 #: §7.5·§7.6). 카드가 "잠김" 으로 보여 줄 항목들이다. `time_source`는
@@ -337,15 +337,27 @@ class TelemetryShape:
     """지금 설정이 만들어 낼 텔레메트리의 모양. 대역폭 계산의 입력이다."""
 
     channels: int
+    """주기마다 나갈 **레코드 수**. 켜진 커넥터 수가 아니다 —
+    🔴 I2C 는 포트 하나가 양을 둘 낼 수 있다(온습도). `labels` 와 수가
+       다른 것이 정상이다."""
+
     period_ms: int
     float_digits: int
+
+    labels: tuple[str, ...] = ()
+    """켜진 커넥터의 이름들 (`J3` · `J12` …).
+
+    🔴 "몇 %" 만으로는 무엇을 끄면 되는지 알 수 없다. 어느 커넥터 때문에
+       그 수가 나왔는지 화면이 말할 수 있어야 한다. 이름은 카탈로그 라벨
+       에서 온다 — 채널 번호로 커넥터 번호를 짐작하지 않는다(설계 원칙 1:
+       화면은 `ain0` 이 아니라 `J3` 을 쓴다)."""
 
 
 def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
     """`kind`(`ain`·`i2c`·`din`) 레코드가 만들어 낼 텔레메트리의 모양.
 
     🔴 [개정, 2026-08-19] 채널 수는 **그 종류의 그룹 하나만** 센다
-       (`_RECORD_GROUP`). `tx.fields` 가 하나였던 시절에는 모든 그룹의
+       (`RECORD_GROUPS`). `tx.fields` 가 하나였던 시절에는 모든 그룹의
        토글 열을 통째로 더해도 우연히 맞았다(꺼진 그룹은 0을 보탤 뿐이라)
        — 마스크를 셋으로 나눈 지금은 `ain` 카드가 `i2c` 채널까지 세면
        안 된다.
@@ -358,14 +370,20 @@ def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
        (`matrix_of`). 보드가 채널 항목의 이름을 바꿔도 따라간다. `din`은
        채널을 켜고 끄는 항목이 없어(J18~J20은 항상 감시된다) 표로 접히지
        않고, `channels`는 항상 0이다 — 이벤트성 레코드라 "채널 수 × 주기"
-       로 대역폭을 어림할 근거 자체가 없다(모듈 위 `_RECORD_GROUP` 주석).
+       로 대역폭을 어림할 근거 자체가 없다(모듈 위 `RECORD_GROUPS` 주석).
 
     🔴 `i2c`의 전송 주기도 `ain`과 같은 `tx.period_ms`다(규격 §7.1) —
        포트마다 다른 `i2cN.period_ms`는 **수집** 주기이지 **송신** 주기가
        아니다.
+
+    🔴 [개정, 2026-08-20] `i2c`의 `channels`는 **켜진 포트 수가 아니라 그
+       포트들이 내는 양(quantity)의 수**다. 포트 하나가 레코드 하나가 아니다 —
+       온습도 센서는 `temp`와 `humidity`를 따로 내고(device_sim `_emit_i2c`,
+       펌웨어 mk_i2c.c), 종류를 안 고른 포트(`kind`=없음)는 켜도 아무것도
+       안 낸다. 포트로 세면 앞은 절반으로, 뒤는 있지도 않은 트래픽으로 잡힌다.
     """
-    group_name = _RECORD_GROUP.get(kind, kind)
-    channels = 0
+    group_name = RECORD_GROUPS.get(kind, kind)
+    enabled: list[tuple[int, str]] = []          # (번호, 커넥터 이름)
     for group in form.groups:
         if group.name != group_name:
             continue
@@ -375,13 +393,41 @@ def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
         for mrow in matrix.rows:
             for cell in mrow.cells:
                 if cell is not None and cell.widget is Widget.TOGGLE:
-                    channels += 1 if cell.value == "true" else 0
+                    if cell.value == "true":
+                        enabled.append((mrow.index, mrow.label))
                     break
+
+    if kind == "i2c":
+        ports = i2c_ports(form)
+        channels = sum(i2c_record_count(ports.get(index, (0, False))[0])
+                       for index, _label in enabled)
+    else:
+        channels = len(enabled)
+
     return TelemetryShape(
         channels=max(channels, 0),
         period_ms=_int_or(form, KEY_PERIOD_MS, 100, minimum=1),
         float_digits=_int_or(form, KEY_FLOAT_DIGITS, 4, minimum=0),
+        labels=tuple(label for _index, label in enabled),
     )
+
+
+def i2c_record_count(kind_value: int) -> int:
+    """I2C 종류 하나가 주기마다 내는 **레코드 수** = 그 종류가 내는 양의 수.
+
+    🔴 표를 여기에 다시 적지 않는다. `host/gui/screen.py`의
+       `I2C_KIND_QUANTITIES`가 유일한 출처이고, 그것은 시뮬레이터
+       (`config_store.I2C_KINDS`)·펌웨어와 대조돼 있다
+       (`host/tests/test_i2c_quantities_crosscheck.py`). 두 벌이 되면
+       대시보드가 세우는 카드 수와 대역폭 계산이 갈린다.
+
+    함수 안에서 import 하는 이유는 순환을 피하려는 것이 아니라, 설정 폼이
+    대시보드 화면에 **모듈 수준으로 매달리지 않게** 하기 위해서다
+    (`channel_ranges`가 `host.core.scaling`을 그렇게 쓰는 것과 같다).
+    """
+    from host.gui.screen import I2C_KIND_QUANTITIES
+
+    return len(I2C_KIND_QUANTITIES.get(kind_value, ()))
 
 
 def telemetry_shape(form: "SettingsForm") -> TelemetryShape:
