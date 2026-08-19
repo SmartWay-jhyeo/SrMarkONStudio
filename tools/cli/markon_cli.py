@@ -105,14 +105,27 @@ def cmd_list(svc: BoardService) -> int:
     return 0
 
 
+#: 레코드 종류 → 자기 마스크 설정 키. `tx.fields` 를 나눈 세 항목이다
+#: (규격 §7.2·§7.5·§7.6).
+_FIELD_MASK_KEYS = {"ain": "tx.fields_ain", "i2c": "tx.fields_i2c",
+                    "din": "tx.fields_din"}
+
+
 def cmd_fields(svc: BoardService) -> int:
+    """🔴 [개정, 2026-08-19] `tx.fields` 하나였던 것이 셋으로 나뉘어,
+    레코드 종류마다 절을 나눠 찍는다 — 비트가 해당 레코드에 없으면
+    그 절에는 아예 안 보여 준다(schema.fields[bit].records)."""
     schema = svc.fetch_schema()
-    mask = int(schema.items["tx.fields"].current)
-    print("NDJSON 필드 마스크")
-    for bit in sorted(schema.fields):
-        f = schema.fields[bit]
-        state = "ON " if mask & (1 << bit) else "off"
-        print(f"  bit{bit:>2}  {state}  {f.name:16} {f.label}")
+    for kind, key in _FIELD_MASK_KEYS.items():
+        item = schema.items.get(key)
+        mask = int(item.current) if item is not None else 0
+        print(f"NDJSON 필드 마스크 ({kind})")
+        for bit in sorted(schema.fields):
+            f = schema.fields[bit]
+            if kind not in f.records:
+                continue
+            state = "ON " if mask & (1 << bit) else "off"
+            print(f"  bit{bit:>2}  {state}  {f.name:16} {f.label}")
     return 0
 
 
