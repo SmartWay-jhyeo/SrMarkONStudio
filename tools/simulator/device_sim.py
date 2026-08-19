@@ -80,8 +80,29 @@ class DeviceSim:
         self._last_hb_rx_ms: int | None = None
         self._last_hb_tx_ms = 0
         self._last_emit_ms = 0
-        #: I2C 는 포트마다 주기가 따로다 — 마지막으로 낸 시각을 각각 센다.
+
+        # 🔴 [2026-08-19] 수집과 송신을 뗀다(사용자 설계) — 펌웨어
+        #    mk_ads1256.c 의 MkAdsChannel.last · mk_i2c.c 의 last[][] 와 같은
+        #    자리다. `tick()` 이 매번(= tx.period_ms 와 무관하게) 채널·포트
+        #    주기(ain{ch}.period_ms · i2cN.period_ms)로 여기를 덮어쓰고,
+        #    송신은 tx.period_ms 마다 이 값만 읽는다 — 새 수집이 없으면
+        #    같은 값(과 같은 t_ms)이 반복해서 나간다.
+        #: 채널별 마지막 표본 (t_ms, raw). 아직 없으면 키가 없다.
+        self._last_ain: dict[int, tuple[int, int]] = {}
+        #: 채널별 마지막 수집 시각 — ain{ch}.period_ms 게이트.
+        self._last_ain_collect_ms: dict[int, int] = {}
+
+        #: I2C 는 포트마다 주기가 따로다 — 마지막 **수집** 시각을 각각 센다
+        #: (송신 시각이 아니다. i2cN.period_ms 게이트).
         self._last_i2c_ms: dict[int, int] = {}
+        #: 포트별 마지막 값들 — {quantity: value}. 없으면 키가 없다.
+        self._last_i2c_values: dict[int, dict[str, float]] = {}
+        #: 포트별 마지막 수집 시각(=레코드의 t).
+        self._last_i2c_t: dict[int, int] = {}
+        #: 포트별로 마지막에 물려 있던 kind. 바뀌면 마지막 값을 비운다 —
+        #: 옛 종류가 내던 양을 새 종류인 척 계속 내보내지 않기 위해서다
+        #: (mk_i2c.c 의 clear_last 와 같은 이유).
+        self._last_i2c_kind: dict[int, int] = {}
         #: 디지털 입력 지금 상태 (규격 §7.6). `$STAT` 이 이걸 그대로 싣는다.
         self._din_state: dict[int, int] = dict.fromkeys(DIN_CONNECTORS, 0)
         #: 데모 토글이 마지막으로 넘긴 구간 번호. 커넥터마다 위상이 달라
@@ -277,6 +298,11 @@ class DeviceSim:
             self._last_hb_tx_ms = now_ms
             out.append(build_command("HB").rstrip("\r\n"))
 
+        # 🔴 수집은 송신 주기와 무관하게 매번 돈다 — "변수 a 에 계속 넣는다"
+        #    (사용자 설계 2026-08-19). 각자의 채널·포트 주기로 게이트한다.
+        self._collect_ain(now_ms)
+        self._collect_i2c(now_ms)
+
         period = int(self.store.get("tx.period_ms"))
         if now_ms - self._last_emit_ms >= period:
             self._last_emit_ms = now_ms
@@ -284,11 +310,69 @@ class DeviceSim:
 
         return out
 
-    def _emit_telemetry(self, now_ms: int) -> list[str]:
-        lines: list[str] = []
+    def _collect_ain(self, now_ms: int) -> None:
+        """ain{ch}.period_ms 마다 마지막 표본을 덮어쓴다 (수집).
+
+        🔴 꺼진 채널은 여기서 손대지 않는다 — 값이 있었다면 그대로 남는다.
+           "보낼지 말지"는 `_emit_telemetry`가 `enabled`를 다시 확인해서
+           정한다(펌웨어 mk_telem.c 와 같다: has_last 와 enabled 는 별개
+           게이트다).
+        """
         for ch in range(AIN_CHANNELS):
             if not self.store.get(f"ain{ch}.enabled"):
                 continue
+            period = int(self.store.get(f"ain{ch}.period_ms")) or 1
+            last = self._last_ain_collect_ms.get(ch, -period)
+            if now_ms - last < period:
+                continue
+            self._last_ain_collect_ms[ch] = now_ms
+            self._last_ain[ch] = (now_ms, _synthetic_raw(ch, now_ms))
+
+    def _collect_i2c(self, now_ms: int) -> None:
+        """i2cN.period_ms 마다 마지막 값들을 덮어쓴다 (수집).
+
+        🔴 껐거나 지원 안 하는(양이 없는) 종류, 또는 종류가 막 바뀐
+           포트는 마지막 값을 **비운다** — 옛 종류가 내던 양을 새 종류인
+           척 계속 내보내면 안 된다(mk_i2c.c 의 clear_last 와 같은 이유).
+        """
+        for cid in I2C_PORTS:
+            enabled = bool(self.store.get(f"i2c{cid}.enabled"))
+            kind = int(self.store.get(f"i2c{cid}.kind"))
+            quantities = I2C_QUANTITIES.get(kind, ()) if enabled else ()
+
+            if not quantities:
+                self._last_i2c_t.pop(cid, None)
+                self._last_i2c_values.pop(cid, None)
+                self._last_i2c_kind.pop(cid, None)
+                continue
+
+            if self._last_i2c_kind.get(cid) != kind:
+                self._last_i2c_t.pop(cid, None)
+                self._last_i2c_values.pop(cid, None)
+                self._last_i2c_kind[cid] = kind
+
+            period = int(self.store.get(f"i2c{cid}.period_ms")) or 1
+            last = self._last_i2c_ms.get(cid, -period)
+            if now_ms - last < period:
+                continue
+            self._last_i2c_ms[cid] = now_ms
+            self._last_i2c_t[cid] = now_ms
+            self._last_i2c_values[cid] = {
+                q: synthetic_i2c_value(cid, q, now_ms) for q in quantities
+            }
+
+    def _emit_telemetry(self, now_ms: int) -> list[str]:
+        lines: list[str] = []
+        for ch in range(AIN_CHANNELS):
+            # 🔴 [2026-08-19] "지금 값을 만든다"가 아니라 "마지막 값을
+            #    읽는다"다 — 새 수집이 없었으면 같은 raw·t_ms 가 그대로
+            #    반복된다. `t` 는 수집 시각(t_ms)이지 지금(now_ms)이 아니다.
+            if not self.store.get(f"ain{ch}.enabled"):
+                continue
+            sample = self._last_ain.get(ch)
+            if sample is None:
+                continue                      # 한 번도 수집 안 됐다 — 지어내지 않는다
+            t_ms, raw = sample
             self._seq += 1
             lines.append(
                 render(
@@ -296,13 +380,13 @@ class DeviceSim:
                         self.store,
                         channel=ch,
                         seq=self._seq,
-                        t_ms=now_ms,
-                        raw=_synthetic_raw(ch, now_ms),
-                        capture_counter=now_ms * 1000,
+                        t_ms=t_ms,
+                        raw=raw,
+                        capture_counter=t_ms * 1000,
                     )
                 )
             )
-        lines += self._emit_i2c(now_ms)
+        lines += self._emit_i2c()
         lines += self._emit_din(now_ms)
         return lines
 
@@ -333,38 +417,23 @@ class DeviceSim:
             )))
         return lines
 
-    def _emit_i2c(self, now_ms: int) -> list[str]:
-        """규격 §7.5 — 켜 둔 포트만 내보낸다.
-
-        🔴 꺼졌거나 안 꽂힌 포트는 **아무것도 보내지 않는다**. 설계 원칙 3 —
-           센서 미연결은 정상 상태이고 오류로 올리지 않는다.
-
-        🔴 주기는 포트마다 다르다(`i2cN.period_ms`). 아날로그처럼 한 주기로
-           묶으면 200 ms 짜리 온도계와 20 ms 짜리 조도계를 같은 속도로
-           읽게 되어 설정이 뜻을 잃는다.
+    def _emit_i2c(self) -> list[str]:
+        """규격 §7.5 — tx.period_ms 마다 **마지막 값**을 낸다(수집·송신
+        분리, 사용자 설계 2026-08-19). 값 자체는 `_collect_i2c` 가
+        `i2cN.period_ms` 마다 미리 만들어 둔다 — 여기서는 그것을 읽기만
+        한다. 한 번도 수집되지 않은(꺼졌거나 미지원 종류인) 포트는
+        `_last_i2c_t` 에 자리가 없으므로 조용히 건너뛴다(설계 원칙 3).
         """
         lines: list[str] = []
         for cid in I2C_PORTS:
-            if not self.store.get(f"i2c{cid}.enabled"):
+            if cid not in self._last_i2c_t:
                 continue
-            # 🔴 무엇을 내는지는 사용자가 고른 종류가 정한다. 시뮬레이터가
-            #    포트마다 종류를 지어내면, 실기기에서 그 자리를 채우는 것이
-            #    무엇인지 코드를 봐야 알게 된다.
-            quantities = I2C_QUANTITIES.get(
-                int(self.store.get(f"i2c{cid}.kind")), ())
-            if not quantities:
-                continue
-            period = int(self.store.get(f"i2c{cid}.period_ms"))
-            last = self._last_i2c_ms.get(cid, -period)
-            if now_ms - last < period:
-                continue
-            self._last_i2c_ms[cid] = now_ms
-            for quantity in quantities:
+            t_ms = self._last_i2c_t[cid]
+            for quantity, value in self._last_i2c_values[cid].items():
                 self._seq += 1
                 lines.append(render(build_i2c_record(
                     self.store, connector_id=cid, quantity=quantity,
-                    seq=self._seq, t_ms=now_ms,
-                    value=synthetic_i2c_value(cid, quantity, now_ms),
+                    seq=self._seq, t_ms=t_ms, value=value,
                 )))
         return lines
 

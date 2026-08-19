@@ -350,6 +350,82 @@ def test_tick_emits_hb_once_per_second():
     assert not any(ln.startswith("$HB") for ln in sim.tick(1500))
 
 
+# ------------------------------------ 수집·송신 분리 (사용자 설계 2026-08-19)
+#
+#   "수집은 수집대로 하고 송신은 내가 원하는 간격에 맞춰서 하는거지.
+#    변수 a 라는 곳에 수집된 값을 계속 넣고, 송신 할 때는 변수 a 를
+#    사용하면 어쨋든 그 안에 있던 값이 날라갈거 아니야"
+#
+#   시뮬레이터도 펌웨어(mk_ads1256.c·mk_i2c.c)와 같은 구조를 지켜야 한다 —
+#   안 그러면 대조가 갈리고 GUI 가 시뮬레이터에서만 다르게 보인다.
+
+def test_repeats_the_last_ain_value_when_nothing_new_was_collected():
+    """🔴 채널 수집 주기(ain0.period_ms)가 송신 주기보다 길면, 새 수집이
+    없어도 송신 주기마다 마지막 값이 반복된다. `t` 는 **수집 시각** 그대로다
+    — 송신 시각(200)으로 바뀌면 안 된다."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "ain0.period_ms", "10000"))
+
+    first = [parse_record(ln) for ln in sim.tick(100) if ln.startswith("{")]
+    ain_first = next(r for r in first if r["type"] == "ain")
+
+    second = [parse_record(ln) for ln in sim.tick(200) if ln.startswith("{")]
+    ain_second = next(r for r in second if r["type"] == "ain")
+
+    assert ain_second["t"] == ain_first["t"], "t 는 송신 시각이 아니라 수집 시각 그대로"
+    assert ain_second["raw"] == ain_first["raw"], "새 수집이 없으니 값도 그대로"
+
+
+def test_only_the_latest_ain_sample_is_sent_when_collection_outpaces_tx():
+    """🔴 수집(ain0.period_ms=10)이 송신(tx.period_ms=500)보다 훨씬 빠르면,
+    그 사이 여러 번 수집돼도 송신은 마지막 값 한 줄만 낸다."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "ain0.period_ms", "10"))
+    sim.feed(build_command("CFG", "SET", "tx.period_ms", "500"))
+
+    lines: list[str] = []
+    for now in range(0, 501, 10):
+        lines = sim.tick(now)
+    recs = [parse_record(ln) for ln in lines if ln.startswith("{")]
+    ains = [r for r in recs if r["type"] == "ain"]
+    assert len(ains) == 1, "채널당 한 줄 — 중간 표본은 조용히 버려진다"
+    assert ains[0]["t"] == 500, "가장 최근에 수집된 시각"
+
+
+def test_changing_tx_period_ms_changes_the_send_interval():
+    """🔴 되돌림 관점 — tx.period_ms 를 바꾸면 송신 간격이 그대로 따라온다."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "tx.period_ms", "50"))
+    sim.tick(0)
+    assert [ln for ln in sim.tick(40) if ln.startswith("{")] == [], "50ms 전에는 안 보낸다"
+    assert [ln for ln in sim.tick(50) if ln.startswith("{")] != [], "50ms 가 되면 보낸다"
+
+
+def test_i2c_repeats_last_value_and_never_touched_ports_stay_silent():
+    """🔴 i2c 도 ain 과 같은 구조 — 마지막 값이 반복되고(`t` 는 수집 시각
+    그대로), 한 번도 켠 적 없는 다른 포트는 절대 안 나간다."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "i2c10.kind", "1"))       # 조도(LUX)
+    sim.feed(build_command("CFG", "SET", "i2c10.enabled", "true"))
+    sim.feed(build_command("CFG", "SET", "i2c10.period_ms", "10000"))
+
+    first = [parse_record(ln) for ln in sim.tick(100) if ln.startswith("{")]
+    i2c_first = next(r for r in first if r["type"] == "i2c")
+
+    second = [parse_record(ln) for ln in sim.tick(200) if ln.startswith("{")]
+    i2c_second = next(r for r in second if r["type"] == "i2c")
+
+    assert i2c_second["t"] == i2c_first["t"], "수집 시각 그대로 반복된다"
+    assert i2c_second["value"] == i2c_first["value"], "새 수집이 없으니 값도 그대로"
+    assert not any(
+        r["type"] == "i2c" and r["connector_id"] != 10 for r in first + second
+    ), "켠 적 없는 다른 포트는 값이 없으니 절대 나가지 않는다"
+
+
 # ------------------------------------------------------------------- din
 #
 # 🔴 시뮬레이터에는 옵토가 없다 — 실기기는 사람이 신호선을 흔들어야
