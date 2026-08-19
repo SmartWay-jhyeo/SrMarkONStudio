@@ -326,6 +326,31 @@ H723은 USB 연결을 감지할 수 없다(VBUS가 MCU에 배선되지 않음). 
 — 큐가 아니다. `din`은 이 절과 무관하다(§7.6) — 엣지 그 자체가 이벤트라
 상태가 바뀔 때만 나가고, 반복도 `tx.period_ms` 게이트도 없다.
 
+### 7.1.2 `time_source` 등급 (Phase 3 — GNSS/PPS 시간축)
+
+계획서 §7.2는 6단계 시간 등급을 말하지만, **지금 실제로 도달 가능한 것은
+셋뿐이다.** 지어내지 않는다 — 아래가 `time_source`가 실을 수 있는 값
+전부다.
+
+| 값 | `time_quality` | 뜻 |
+|---|---|---|
+| `gnss_pps` | 2 | PPS 에지와 그 직후 RMC 문장이 짝지어져 `t`가 UTC epoch_ms다. 가장 정확하다 |
+| `gnss_nmea` | 1 | RMC 문장은 유효한데 PPS 짝을 못(또는 아직 못) 지었다. `t`는 UTC epoch_ms이지만 PPS만큼 정밀하지 않다 |
+| `device_clock` | 0 | GNSS가 없거나 PPS·RMC가 둘 다 오래(각각 1.5초·3초) 조용하다. `t`는 UTC가 **아니라** 부팅 후 경과 ms다 |
+
+🔴 **`device_clock`일 때 `t`를 시각으로 저장하면 안 된다.** 부팅 후
+경과 ms일 뿐이라 재부팅하면 시간축이 리셋된다 — 이 필드가 §0의 "왜
+필요한가"가 풀려던 문제 그 자체다.
+
+🔴 **등급은 오직 내려간다, 저절로 안 오른다.** `gnss_pps`에서 PPS가
+1.5초 이상 끊기면 `gnss_nmea`로, RMC마저 3초 이상 끊기면 `device_clock`
+으로 내려간다. 다시 올라가려면 PPS와 RMC가 다시 짝을 지어야 한다 —
+"한 번 잠겼으니 계속 정확하다"고 화면이 가정하면 안 된다.
+
+`host_clock`(호스트 시각을 보드가 대신 씀)은 계획서가 언급하지만 아직
+구현되지 않았다 — GNSS도 호스트 연결도 없는 상태에서 그나마 나은
+근사치를 주는 미래 등급이고, 지금 보드는 이 값을 내지 않는다.
+
 ### 7.2 텔레메트리 (`type` = `ain`)
 
 ```json
@@ -340,8 +365,8 @@ H723은 USB 연결을 감지할 수 없다(VBUS가 MCU에 배선되지 않음). 
 | 필드 | 비트 | 타입 | 기본 | 의미 |
 |---|---|---|---|---|
 | `device_id` | 0 | str≤15 | off | 보드 식별자 |
-| `time_source` | 1 | str | on | `gnss`/`gnss_nmea`/`host_clock`/`device_clock` |
-| `time_quality` | 2 | u8 | off | 0=미동기 |
+| `time_source` | 1 | str | on | `gnss_pps`/`gnss_nmea`/`device_clock` — §7.1.2 |
+| `time_quality` | 2 | u8 | off | 등급 숫자(0~2), §7.1.2 참고. 0=미동기 |
 | `raw` | 3 | **int32** | on | ADS1256 원시 카운트 (24bit 부호확장) |
 | `ma` | 4 | float | on | 전류 환산 (mA) |
 | `value` | 5 | float | on | 물리량 환산 |
@@ -429,8 +454,9 @@ zero  = 4 - v4 / scale          (scale ≠ 0)
 ```json
 {"schema_ver":3,"seq":0,"t":1772200855875,"type":"stat","mode":"CONFIG",
  "ctl_mode":"ACTIVE",
- "fw":"0.1.0","board_rev":"2.0","time_source":"device_clock","time_quality":0,
+ "fw":"0.1.0","board_rev":"2.0","time_source":"gnss_pps","time_quality":2,
  "uptime_ms":123456,
+ "gnss":{"pps_age_ms":842,"sats":11},
  "rails":{"v24":false,"v14v9":false,"v5":true},
  "din":[{"connector_id":18,"state":0},{"connector_id":19,"state":0},
         {"connector_id":20,"state":1}],
@@ -443,11 +469,18 @@ zero  = 4 - v4 / scale          (scale ≠ 0)
 `rails` 값은 **명령 상태**이지 실측이 아니다. 피드백 회로가 없으므로 호스트는
 `정상 ON`이 아니라 `ON 명령됨`으로 표시해야 한다.
 
-`time_source`·`time_quality`는 §7.2의 같은 이름 필드와 같은 뜻이다. 여기 두는
-이유는 **`t`의 기준점을 알려 줄 곳이 여기뿐**이기 때문이다. §7.1.2대로 `t`는
-시간 소스에 따라 UTC epoch이기도 하고 부팅 후 경과 ms이기도 한데, 텔레메트리는
-필드 마스크로 실어 보낼 수 있지만 명령 응답에는 그 자리가 없다. 호스트는 연결
-직후 `$STAT`을 한 번 물어 그 답을 얻는다.
+`time_source`·`time_quality`는 §7.2의 같은 이름 필드와 같은 뜻이다(값은
+§7.1.2 참고). 여기 두는 이유는 **`t`의 기준점을 알려 줄 곳이 여기뿐**이기
+때문이다. §7.1.2대로 `t`는 시간 소스에 따라 UTC epoch이기도 하고 부팅 후
+경과 ms이기도 한데, 텔레메트리는 필드 마스크로 실어 보낼 수 있지만 명령
+응답에는 그 자리가 없다. 호스트는 연결 직후 `$STAT`을 한 번 물어 그 답을
+얻는다.
+
+`gnss`는 그 등급을 **얼마나 믿을 수 있나**를 보탠다(Phase 3). `pps_age_ms`는
+마지막 PPS 에지 이후 경과(ms), `sats`는 마지막 GGA 문장의 위성 수다. 둘 다
+아직 모르면(PPS·GGA를 한 번도 못 받았으면) `null`이다 — 0을 지어내지
+않는다. `time_source`가 `gnss_pps`라도 `pps_age_ms`가 1.5초에 가까우면
+다음 tick에 `gnss_nmea`로 내려갈 참이라는 뜻이다.
 
 `queues[].ch`는 **채널 번호**이지 배열 첨자가 아니다. 꺼진 채널은 목록에서
 빠지므로 둘은 일치하지 않는다.
