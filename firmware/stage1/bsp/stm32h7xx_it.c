@@ -12,6 +12,7 @@
 
 #include "mk_ads_io.h"
 #include "mk_gnss_io.h"
+#include "mk_lcd_io.h"
 #include "mk_sol.h"
 #include "mk_uart.h"
 #include "mk_ws2812_io.h"
@@ -84,6 +85,18 @@ void DMA1_Stream1_IRQHandler(void)   /* SPI4 TX */
 void DMA1_Stream2_IRQHandler(void)   /* TIM3_CH2 — WS2812 */
 {
     mk_ws2812_io_dma_isr();
+}
+
+void DMA1_Stream3_IRQHandler(void)   /* SPI2 TX — LCD */
+{
+    mk_lcd_io_dma_tx_isr();
+}
+
+/* 🔴 SPI4 와 같은 이유로 SPI2 자신의 인터럽트도 필요하다 — H7 은 전송
+ *    종료를 EOT 로 알린다. 없으면 첫 전송에서 화면이 그대로 선다. */
+void SPI2_IRQHandler(void)
+{
+    mk_lcd_io_spi_isr();
 }
 
 /* 🔴 GNSS UART(Phase 3). SWAP 을 걸어 PC6/PC7 을 넷 이름(GNSS_TX/RX)과

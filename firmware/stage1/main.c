@@ -29,6 +29,7 @@
 #include "app/mk_ws2812.h"
 #include "app/mk_solctl.h"
 #include "app/mk_i2c.h"
+#include "app/mk_lcd.h"
 #include "app/mk_gnss.h"
 #include "app/mk_gnssctl.h"
 #include "app/mk_timeax.h"
@@ -36,6 +37,7 @@
 #include "bsp/mk_ws2812_io.h"
 #include "bsp/mk_sol.h"
 #include "bsp/mk_i2c_io.h"
+#include "bsp/mk_lcd_io.h"
 #include "bsp/mk_gnss_io.h"
 #include "bsp/mk_critsec.h"
 #include "mk_config.h"
@@ -84,6 +86,7 @@ static MkI2c     s_i2c;
 static MkGnss    s_gnss;
 static MkGnssCtl s_gnssctl;
 static MkTimeAx  s_timeax;
+static MkLcd     s_lcd;
 static int      s_led_on;
 
 /* 채널별 표본 저장소.
@@ -332,6 +335,17 @@ int main(void)
     MkI2cIo i2c_io = { mk_i2c_io_xfer, NULL, mk_i2c_io_delay_us };
     mk_i2c_init(&s_i2c, &i2c_io);
 
+    /* 🔴 LCD(J25). 하드웨어는 늘 연다 — `lcd.enabled` 가 꺼져 있으면
+     *    mk_lcd_tick() 이 SPI 로 한 바이트도 안 내보내므로, 패널이 안 물린
+     *    보드에서도 아무 일이 없다(mk_i2c_io_init() 이 포트마다 kind=없음
+     *    이어도 버스를 여는 것과 같은 결).
+     *
+     *    이 초기화 자체는 해 둬야 한다 — PD14(터치 CS)를 High 로 못박는
+     *    일이 여기 있고, 그것은 화면을 쓰든 안 쓰든 필요하다. LCD 와
+     *    터치가 같은 SPI 버스라 떠 있는 CS 하나가 나중에 버스를 물고
+     *    늘어질 수 있다 (bsp/mk_lcd_io.h). */
+    mk_lcd_io_init(&s_lcd);
+
     mk_ads_io_init(&s_ads);
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
         mk_ads_attach_queue(&s_ads, ch, s_samples[ch], SAMPLES_PER_CHANNEL);
@@ -413,6 +427,11 @@ int main(void)
         mk_i2c_tick(&s_i2c, &s_cfg, now);
 
         mk_ads_tick(&s_ads, now);
+
+        /* 🔴 화면도 매 바퀴 민다. 한 바퀴에 걸음 하나뿐이고, 전송이 떠
+         *    있으면 즉시 돌아온다 — 한 장(460,800바이트)을 다 그리는 동안
+         *    수집이 서지 않는 것이 이 구조의 요지다 (app/mk_lcd.h). */
+        mk_lcd_tick(&s_lcd, &s_cfg, now);
 
         /* 🔴 GNSS/PPS(Phase 3). 순서가 뜻이 있다 —
          *
