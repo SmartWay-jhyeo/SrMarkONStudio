@@ -23,6 +23,14 @@ static int failures = 0;
     else         { printf("  ok   %s\n", msg); }                \
 } while (0)
 
+#define CHECK_EQ(got, want, msg) do {                                       \
+    if (strcmp((got), (want)) != 0) {                                       \
+        printf("  FAIL %s\n        got  %s\n        want %s\n",             \
+               msg, (got), (want));                                         \
+        failures++;                                                         \
+    } else { printf("  ok   %s\n", msg); }                                  \
+} while (0)
+
 static void feed_str(MkGnss *g, const char *s)
 {
     for (const char *p = s; *p; p++) {
@@ -215,6 +223,95 @@ static void test_invalid_fix_status_is_reported(void)
     CHECK(rmc.valid == 0, "상태 필드 V = 무효로 표시된다");
 }
 
+/* ---- 원시 문장 에코 (규격 §7.7, gnss.echo) -------------------------------- */
+
+static void test_raw_line_is_captured_verbatim(void)
+{
+    /* 🔴 '그대로' 다 — '$' 는 담고 CR/LF 는 빠진다. 체크섬 통과 여부와
+     * 무관하게 담아야 진단(§7.7)이 성립한다. */
+    MkGnss g;
+    char out[128];
+    size_t len = 0;
+    mk_gnss_init(&g);
+    feed_str(&g, "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*73\r\n");
+
+    CHECK(mk_gnss_take_raw(&g, out, sizeof out, &len) == 1, "원시 줄을 하나 꺼낼 수 있다");
+    CHECK_EQ(out,
+             "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*73",
+             "'$' 포함, CR/LF 제외 그대로");
+    CHECK(mk_gnss_take_raw(&g, out, sizeof out, &len) == 0, "한 번 꺼내면 비었다");
+}
+
+static void test_raw_line_captured_even_on_bad_checksum(void)
+{
+    /* 🔴 파싱 성공 여부와 무관하다 — "왜 파싱이 안 되는지" 를 보려고
+     * 만든 채널이다. RMC/GGA 로도 못 만들 텐데도 원문은 남아야 한다. */
+    MkGnss g;
+    char out[128];
+    mk_gnss_init(&g);
+    feed_str(&g, "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*74\r\n");
+
+    CHECK(mk_gnss_take_raw(&g, out, sizeof out, NULL) == 1,
+          "체크섬이 틀려도 원문은 그대로 남는다");
+    CHECK(strstr(out, "*74") != NULL, "틀린 체크섬 문자 그대로");
+}
+
+static void test_raw_queue_drops_oldest_when_full(void)
+{
+    /* 🔴 진단용이라 최신이 더 값지다 — 비우지 않고 계속 먹이면 오래된
+     * 것부터 밀려난다(가장 오래된 것을 버린다). 큐가 죽지 않고 계속
+     * 동작하는지만 본다 — 정확한 용량은 구현 세부다. */
+    MkGnss g;
+    char out[128];
+    size_t got = 0;
+    mk_gnss_init(&g);
+    for (int i = 0; i < 20; i++) {
+        feed_str(&g, "$GNRMC,000000.000,A,4807.038,N,01131.000,E,022.4,084.4,190826,,,A*7A\r\n");
+    }
+    while (mk_gnss_take_raw(&g, out, sizeof out, NULL)) { got++; }
+    CHECK(got > 0, "큐가 넘쳐도 최소한 최근 것은 남아 있다");
+    CHECK(got < 20u, "다 담지는 못한다 — 큐는 무한이 아니다");
+}
+
+/* ---- 문장 수신 여부 (규격 §4.1.1 초기화 재시도의 근거) -------------------- */
+
+static void test_sentence_seen_starts_false(void)
+{
+    MkGnss g;
+    mk_gnss_init(&g);
+    CHECK(mk_gnss_any_sentence_seen(&g) == 0, "부팅 직후에는 아직 아무것도 못 받았다");
+}
+
+static void test_sentence_seen_becomes_true_on_valid_sentence(void)
+{
+    /* 🔴 체크섬만 통과하면 된다 — RMC 의 상태 필드(A/V)와 무관하다.
+     * "모듈이 말은 하고 있다" 는 사실이 전부다. */
+    MkGnss g;
+    mk_gnss_init(&g);
+    feed_str(&g, "$GNRMC,120000.000,V,,,,,,,190826,,,N*54\r\n");
+    CHECK(mk_gnss_any_sentence_seen(&g) == 1, "체크섬 통과 문장을 받으면 켜진다");
+}
+
+static void test_sentence_seen_stays_false_on_checksum_failure(void)
+{
+    MkGnss g;
+    mk_gnss_init(&g);
+    feed_str(&g, "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*74\r\n");
+    CHECK(mk_gnss_any_sentence_seen(&g) == 0, "체크섬이 틀리면 아직 안 켜진다");
+}
+
+static void test_sentence_seen_never_resets(void)
+{
+    /* 🔴 "받은 적 있는가" 는 부팅 이후 누적이다 — 한 번 켜지면 그 뒤로
+     * 다시 조용해져도 꺼지지 않는다. */
+    MkGnss g;
+    mk_gnss_init(&g);
+    feed_str(&g, "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*73\r\n");
+    CHECK(mk_gnss_any_sentence_seen(&g) == 1, "한 번 받았다");
+    feed_str(&g, "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*74\r\n");
+    CHECK(mk_gnss_any_sentence_seen(&g) == 1, "그 뒤로 깨진 줄이 와도 유지된다");
+}
+
 int main(void)
 {
     printf("-- UTC -> epoch_ms 손으로 박은 기준값 --\n");
@@ -234,6 +331,15 @@ int main(void)
     test_new_dollar_mid_sentence_restarts();
     printf("-- 되돌림: 유효하지 않은 fix --\n");
     test_invalid_fix_status_is_reported();
+    printf("-- 원시 문장 에코 --\n");
+    test_raw_line_is_captured_verbatim();
+    test_raw_line_captured_even_on_bad_checksum();
+    test_raw_queue_drops_oldest_when_full();
+    printf("-- 문장 수신 여부 --\n");
+    test_sentence_seen_starts_false();
+    test_sentence_seen_becomes_true_on_valid_sentence();
+    test_sentence_seen_stays_false_on_checksum_failure();
+    test_sentence_seen_never_resets();
 
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
     return failures ? 1 : 0;

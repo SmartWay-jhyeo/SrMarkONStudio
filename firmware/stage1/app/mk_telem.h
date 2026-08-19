@@ -22,6 +22,7 @@
 #include "mk_ads1256.h"
 #include "mk_cfgwire.h"
 #include "mk_config.h"
+#include "mk_gnss.h"
 #include "mk_i2c.h"
 #include "mk_solctl.h"
 #include "mk_timeax.h"
@@ -54,6 +55,9 @@ typedef struct {
     MkSolCtl         *sol;                  /* 없으면 NULL — din 을 안 낸다 */
     MkTimeAx         *timeax;               /* 없으면 NULL — time_source 는
                                               * "device_clock" 고정(1단계와 같다) */
+    MkGnss           *gnss;                 /* 없으면 NULL — gnss_raw 를 안 낸다.
+                                              * 있어도 gnss.echo 가 꺼져 있으면
+                                              * 안 낸다(규격 §7.7) */
 
     /* 규격 §7.1 — 레코드마다 1씩 오른다. 호스트가 누락을 검출한다. */
     uint32_t          seq;
@@ -76,6 +80,11 @@ void mk_telem_attach_sol(MkTelem *t, MkSolCtl *sol);
  * `time_source`·`time_quality` 가 실제 등급을 싣는다. 붙이지 않으면
  * "device_clock"·0 고정이다(1단계와 같은 동작). */
 void mk_telem_attach_timeax(MkTelem *t, MkTimeAx *timeax);
+
+/* GNSS 원시 문장 파서를 물린다(규격 §7.7). 붙이지 않으면 `gnss_raw` 를
+ * 안 낸다 — `gnss.echo` 설정과 별개의 게이트다(붙었어도 echo 가 꺼져
+ * 있으면 안 낸다). */
+void mk_telem_attach_gnss(MkTelem *t, MkGnss *gnss);
 
 /* 전송 주기가 됐으면 큐를 비워 내보낸다. 반환은 내보낸 줄 수.
  *

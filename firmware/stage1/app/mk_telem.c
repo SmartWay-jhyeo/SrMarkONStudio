@@ -209,6 +209,44 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
     return mk_json_end(&j);
 }
 
+/* gnss_raw 레코드 조립(규격 §7.7). **필드 순서는 시뮬레이터
+ * build_gnss_raw_record 와 같게** 둔다 (`schema_ver` `seq` `t` `type` `line`
+ * `device_id` `time_source` `time_quality`). */
+static int build_gnss_raw_record(MkTelem *t, const char *line, int64_t now_ms,
+                                 char *out, size_t cap)
+{
+    uint32_t mask = cfg_u32(t->cfg, "tx.fields", 0u);
+
+    MkJson j;
+    mk_json_begin(&j, out, cap);
+    mk_json_u32(&j, "schema_ver", 3u);
+    mk_json_u32(&j, "seq", t->seq);
+    /* 🔴 `t` 는 이 줄이 완성된(파서가 CR/LF 를 본) 시점을 시간축으로 바꾼
+     *    값이다. mk_gnss.c 는 바이트만 먹고 시각을 모르므로, 슈퍼루프가
+     *    GNSS UART 를 비운 직후 같은 바퀴에서 이 함수를 부르는 시각
+     *    (now_ms)을 쓴다 — 오차는 한 바퀴(수백 us~수 ms) 이내다. ain 의
+     *    DRDY 인터럽트 시각처럼 하드웨어가 확정한 정밀 시각이 아니라
+     *    진단용 근사치다(규격 §7.7 — 이 레코드의 목적이 통신 여부 확인이지
+     *    정밀 계측이 아니다). */
+    mk_json_i64(&j, "t", acquired_epoch_ms(t, now_ms));
+    mk_json_str(&j, "type", "gnss_raw");
+    /* 🔴 line 은 마스크로 끌 수 없다 — i2c 의 quantity·value 와 같은 이유,
+     *    빠지면 레코드가 아무 말도 안 한다(규격 §7.7). mk_json_str 이
+     *    `"` `\` 와 제어문자를 이스케이프하므로 원문에 그런 바이트가
+     *    섞여도 줄이 깨지지 않는다. */
+    mk_json_str(&j, "line", line);
+    if (field_on(t, mask, "device_id")) {
+        mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
+    }
+    /* 🔴 time_source 는 마스크로 못 끈다 — ain 의 build_record 와 같은
+     *    근거. */
+    mk_json_str(&j, "time_source", time_source_of(t));
+    if (field_on(t, mask, "time_quality")) {
+        mk_json_u32(&j, "time_quality", time_quality_of(t));
+    }
+    return mk_json_end(&j);
+}
+
 /* i2c 레코드 조립. **필드 순서는 시뮬레이터 build_i2c_record 와 같게** 둔다
  * (`schema_ver` `seq` `t` `type` `connector_id` `quantity` `value` `status`
  *  `device_id` `time_source` `time_quality`). */
@@ -327,6 +365,11 @@ void mk_telem_attach_timeax(MkTelem *t, MkTimeAx *timeax)
     t->timeax = timeax;
 }
 
+void mk_telem_attach_gnss(MkTelem *t, MkGnss *gnss)
+{
+    t->gnss = gnss;
+}
+
 int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
 {
     if (t->cfg == NULL || t->ads == NULL || emit == NULL) {
@@ -356,6 +399,27 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
         }
     }
 
+    /* 🔴 gnss_raw 도 din 과 같은 성격이다 — 사건(줄 완성)이 이벤트라
+     *    `tx.period_ms` 를 기다리지 않는다(규격 §7.7). `gnss.echo` 가
+     *    꺼져 있으면(기본값) 큐를 비우지 않는다 — mk_gnss.c 의 원시
+     *    큐는 자체 용량(MK_GNSS_RAW_QUEUE_CAP)이 차면 가장 오래된 것을
+     *    스스로 버리므로, 안 비워도 무한히 쌓이지 않는다. */
+    int sent_gnss = 0;
+    if (t->gnss != NULL && cfg_u32(t->cfg, "gnss.echo", 0u)) {
+        char raw[MK_GNSS_LINE_MAX + 2];
+        while (sent_gnss < MK_TELEM_MAX_LINES &&
+               mk_gnss_take_raw(t->gnss, raw, sizeof raw, NULL)) {
+            char body[MK_LINE_MAX + 8];
+            t->seq++;
+            int len = build_gnss_raw_record(t, raw, now_ms, body, sizeof body);
+            if (len <= 0 || (size_t)len + 2u > sizeof body) { continue; }
+            body[len] = '\n';
+            body[len + 1] = '\0';
+            emit(ctx, body, (size_t)len + 1u);
+            sent_gnss++;
+        }
+    }
+
     /* 🔴 수집과 송신을 떼어 놓는다 (사용자 설계, 2026-08-19):
      *
      *      "수집은 수집대로 하고 송신은 내가 원하는 간격에 맞춰서 하는거지.
@@ -369,7 +433,7 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
         period = 1u;
     }
     if (now_ms - t->last_ms < (int64_t)period) {
-        return sent_din;
+        return sent_din + sent_gnss;
     }
     t->last_ms = now_ms;
 
@@ -462,5 +526,5 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
         }
     }
 
-    return sent + sent_i2c + sent_din;
+    return sent + sent_i2c + sent_din + sent_gnss;
 }

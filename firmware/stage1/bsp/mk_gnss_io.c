@@ -116,6 +116,17 @@ void mk_gnss_io_init(uint32_t baud)
     HAL_TIM_IC_Start_IT(&s_tim, TIM_CHANNEL_3);
 }
 
+int mk_gnss_io_write(void *ctx, const char *data, size_t len)
+{
+    (void)ctx;
+    if (data == NULL || len == 0u) {
+        return 0;
+    }
+    HAL_StatusTypeDef st = HAL_UART_Transmit(&s_uart, (const uint8_t *)data,
+                                             (uint16_t)len, 100u);
+    return st == HAL_OK ? 1 : 0;
+}
+
 /* ---- USART6 ISR ------------------------------------------------------------ */
 
 void mk_gnss_io_uart_isr(void)

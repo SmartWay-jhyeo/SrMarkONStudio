@@ -49,6 +49,7 @@ C_SRC = \
   app/mk_i2c_am2320.c \
   app/mk_i2c_mlx90614.c \
   app/mk_gnss.c \
+  app/mk_gnssctl.c \
   app/mk_timeax.c \
   bsp/mk_gnss_io.c \
   bsp/mk_time.c \

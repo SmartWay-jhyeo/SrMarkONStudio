@@ -266,11 +266,45 @@ static void process_line(MkGnss *g)
 
     if (addr_is(addr, "RMC")) {
         parse_rmc(g, line, star);
+        g->sentences_seen_count++;   /* 체크섬 통과 — 모듈이 말은 하고 있다 */
     } else if (addr_is(addr, "GGA")) {
         parse_gga(g, line, star);
+        g->sentences_seen_count++;
     }
     /* 그 외 문장은 조용히 버린다(mk_gnss.h — "나머지 문장은 조용히
      * 버린다"). */
+}
+
+/* 완성된 줄(체크섬 통과 여부와 무관)을 원시 에코 큐에 담는다(규격 §7.7).
+ * '$' 는 여기서 붙인다 — mk_gnss_feed 는 그 글자를 g->line 에 담지 않는다. */
+static void push_raw_line(MkGnss *g)
+{
+    if (g->used == 0u) {
+        return;                      /* "$\n" 처럼 빈 줄은 진단 가치가 없다 */
+    }
+
+    MkGnssRawLine *r = &g->raw_q[g->raw_head];
+    size_t n = 0;
+    r->text[n++] = '$';
+    size_t copy = g->used;
+    if (copy > sizeof r->text - 2u) {
+        copy = sizeof r->text - 2u;   /* 이론상 g->line 보다 커서 안 된다 — 방어적 */
+    }
+    memcpy(r->text + n, g->line, copy);
+    n += copy;
+    r->text[n] = '\0';
+    r->len = n;
+
+    size_t next = (g->raw_head + 1u) % MK_GNSS_RAW_QUEUE_CAP;
+    if (next == g->raw_tail) {
+        /* 🔴 큐가 찼다 — 가장 오래된 것을 버린다. 진단용이라 최신이 더
+         *    값지다(mk_gnss.h 주석). drops 를 세지 않는다 — 에코는 기본
+         *    꺼짐이고 켰다면 사람이 화면을 보고 있는 진단 상황이라, 큐가
+         *    밀리는 것 자체가 "너무 많이 온다"는 신호로 화면에 이미
+         *    드러난다. */
+        g->raw_tail = (g->raw_tail + 1u) % MK_GNSS_RAW_QUEUE_CAP;
+    }
+    g->raw_head = next;
 }
 
 /* ---- 공개 API --------------------------------------------------------------- */
@@ -304,6 +338,11 @@ void mk_gnss_feed(MkGnss *g, uint8_t byte)
 
     if (c == '\n') {
         if (!g->dropping) {
+            /* 🔴 원문 큐잉이 먼저다. process_line() 은 g->line 을 읽기만
+             *    하므로 순서는 뜻이 없지만, "체크섬 실패와 무관하게
+             *    담는다"는 계약을 코드로도 분명히 하려고 파싱 성패와
+             *    상관없이 둘 다 부른다(규격 §7.7). */
+            push_raw_line(g);
             process_line(g);
         }
         g->used = 0;
@@ -354,4 +393,25 @@ uint32_t mk_gnss_checksum_fail_count(const MkGnss *g)
 uint32_t mk_gnss_parse_fail_count(const MkGnss *g)
 {
     return g->parse_fail_count;
+}
+
+int mk_gnss_take_raw(MkGnss *g, char *out, size_t cap, size_t *out_len)
+{
+    if (g->raw_tail == g->raw_head || cap == 0u) {
+        return 0;
+    }
+    const MkGnssRawLine *r = &g->raw_q[g->raw_tail];
+    size_t n = r->len < cap - 1u ? r->len : cap - 1u;
+    memcpy(out, r->text, n);
+    out[n] = '\0';
+    if (out_len != NULL) {
+        *out_len = n;
+    }
+    g->raw_tail = (g->raw_tail + 1u) % MK_GNSS_RAW_QUEUE_CAP;
+    return 1;
+}
+
+int mk_gnss_any_sentence_seen(const MkGnss *g)
+{
+    return g->sentences_seen_count > 0u ? 1 : 0;
 }

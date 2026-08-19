@@ -8,6 +8,7 @@
 #include "../app/mk_framing.h"
 #include "../app/mk_ads1256.h"
 #include "../app/mk_solctl.h"
+#include "../app/mk_gnssctl.h"
 
 static int failures = 0;
 
@@ -806,6 +807,203 @@ static void test_cfg_unknown_subcommand(void)
              "하위 명령이 아예 없으면");
 }
 
+/* ---- $GNSS (Phase 3, 규격 §4.1) — GNSS 모듈에 원시 명령 전달 ------------ */
+
+static int    gnss_sent_calls;
+static int    gnss_send_ok = 1;    /* 반환값을 조절해 BUSY 시험에 쓴다 */
+static char   gnss_sent_buf[64];
+static size_t gnss_sent_len;
+
+static int fake_gnss_send(void *ctx, const char *text, size_t len)
+{
+    (void)ctx;
+    gnss_sent_calls++;
+    size_t n = len < sizeof gnss_sent_buf - 1u ? len : sizeof gnss_sent_buf - 1u;
+    memcpy(gnss_sent_buf, text, n);
+    gnss_sent_buf[n] = '\0';
+    gnss_sent_len = len;
+    return gnss_send_ok;
+}
+
+static void reset_gnss_fake(void)
+{
+    gnss_sent_calls = 0;
+    gnss_send_ok = 1;
+    gnss_sent_buf[0] = '\0';
+    gnss_sent_len = 0;
+}
+
+static void test_gnss_requires_config_mode(void)
+{
+    /* 규격 §4.1 — $GNSS 는 CONFIG 전용이다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    reset_gnss_fake();
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    CHECK(mk_hostlink_mode(&h, 0) == MK_MODE_RUN, "지금 RUN 이다");
+    sink_reset(&s);
+    feed(&h, "GNSS,LOG GPRMC ONTIME 1", 0);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,ERR,MODE"), "RUN 이면 MODE");
+    CHECK(gnss_sent_calls == 0, "모듈로 나가지 않는다");
+}
+
+static void test_gnss_forwards_text_verbatim_and_appends_line_end(void)
+{
+    /* 🔴 원문 그대로 + 줄 끝은 보드가 붙인다(규격 §4.1). */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    reset_gnss_fake();
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "GNSS,LOG GPRMC ONTIME 1", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,OK"), "CONFIG 면 받는다");
+    CHECK(gnss_sent_calls == 1, "모듈로 한 번 나갔다");
+    CHECK_EQ(gnss_sent_buf, "LOG GPRMC ONTIME 1\r\n",
+             "인자 그대로 + 보드가 붙인 CR/LF");
+}
+
+static void test_gnss_rejects_control_characters(void)
+{
+    /* 🔴 콤마가 아닌 제어문자(탭)는 mk_parse_line 이 그대로 args[0] 에
+     * 담는다 — 여기서 걸러야 한다. 체크섬은 맞게 손으로 계산해 두었다
+     * (payload "GNSS,LOG<TAB>A" 의 XOR = 0x29). */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    reset_gnss_fake();
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    mk_hostlink_feed(&h, "$GNSS,LOG\tA*29\r\n", 16, 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,ERR,RANGE"), "제어문자는 RANGE");
+    CHECK(gnss_sent_calls == 0, "모듈로 안 나간다");
+}
+
+static void test_gnss_rejects_empty_text(void)
+{
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    reset_gnss_fake();
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "GNSS", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,ERR,RANGE"), "인자가 없으면 RANGE");
+    CHECK(gnss_sent_calls == 0, "모듈로 안 나간다");
+}
+
+static void test_gnss_rejects_embedded_comma(void)
+{
+    /* 콤마가 들어가면 인자가 둘로 쪼개진다 — argc != 1. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    reset_gnss_fake();
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "GNSS,LOG,GPRMC", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,ERR,RANGE"), "콤마가 있으면 RANGE");
+    CHECK(gnss_sent_calls == 0, "모듈로 안 나간다");
+}
+
+static void test_gnss_text_over_arg_limit_is_silently_dropped(void)
+{
+    /* 규격 §3.1/§4.1 — 인자 상한(23바이트, MK_ARG_MAX)을 넘으면 verb 조차
+     * 못 읽으므로 SACK 을 만들 재료가 없다 — 조용히 버려진다. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    reset_gnss_fake();
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "GNSS,012345678901234567890123", 1000);   /* 24 바이트 */
+    CHECK(s.n == 0, "23바이트를 넘는 인자는 조용히 버려진다");
+    CHECK(gnss_sent_calls == 0, "모듈로도 안 나간다");
+}
+
+static void test_gnss_unsupported_without_a_send_callback(void)
+{
+    /* mk_hostlink_attach_gnss 를 부르지 않은 빌드(GNSS IO 가 없는 경로) —
+     * mk_hostlink_attach_config 를 안 불렀을 때 $CFG 가 UNSUPPORTED 인
+     * 것과 같은 결. */
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "GNSS,LOG GPRMC ONTIME 1", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,ERR,UNSUPPORTED"),
+             "send 콜백이 없으면 UNSUPPORTED");
+}
+
+static void test_gnss_send_failure_is_reported_as_busy(void)
+{
+    MkHostlink h; Sink s;
+    setup(&h, &s);
+    reset_gnss_fake();
+    gnss_send_ok = 0;
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, "GNSS,LOG GPRMC ONTIME 1", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,ERR,BUSY"),
+             "전송 실패는 BUSY 로 알린다");
+}
+
+/* ---- $STAT 의 gnss 초기화 진단(규격 §7.4·§4.1.1) ------------------------ */
+
+static void test_stat_gnss_init_fields_default_to_false_without_gnssctl(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"init_sent\":false,\"init_exhausted\":false,"
+                     "\"sentence_seen\":false") != NULL,
+              "gnssctl 이 안 붙어 있으면 전부 거짓");
+    }
+}
+
+static void test_stat_gnss_init_fields_reflect_gnssctl(void)
+{
+    MkGnssCtl gc;
+    MkHostlink h; Sink s;
+
+    setup_cfg(&h, &s);
+    mk_gnssctl_init(&gc);
+    /* 한 번 시도했지만 아직 문장은 못 받은 상태를 흉내 낸다. */
+    mk_gnssctl_tick(&gc, 1, 0, 1000, NULL, NULL);
+    mk_hostlink_attach_gnssctl(&h, &gc);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        /* send 가 NULL 이라 실제로는 못 보냈다(attempts==0) — sent 는
+         * 거짓, 상한도 아직이다. sentence_seen 도 거짓. */
+        CHECK(strstr(s.lines[0],
+                     "\"init_sent\":false,\"init_exhausted\":false,"
+                     "\"sentence_seen\":false") != NULL,
+              "gnssctl 의 지금 상태를 그대로 싣는다");
+    }
+
+    /* 이번엔 실제로 보낸 뒤(가짜 send) 문장까지 받은 상태. */
+    mk_gnssctl_init(&gc);
+    mk_gnssctl_tick(&gc, 1, 0, 1000, fake_gnss_send, NULL);
+    mk_gnssctl_tick(&gc, 1, 1, 1100, fake_gnss_send, NULL);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"init_sent\":true,\"init_exhausted\":false,"
+                     "\"sentence_seen\":true") != NULL,
+              "보내고 받았으면 그대로 반영된다");
+    }
+}
+
 /* ---- Python 시뮬레이터와 대조할 시나리오 ------------------------------ */
 
 /* 🔴 이 대조가 이 계층에서 가장 값지다. GUI 는 시뮬레이터를 상대로 개발되고
@@ -1070,6 +1268,16 @@ int main(int argc, char **argv)
     test_stat_without_an_ads_reports_no_queues();
     test_stat_unsupported_without_a_store();
     test_cfg_unknown_subcommand();
+    test_gnss_requires_config_mode();
+    test_gnss_forwards_text_verbatim_and_appends_line_end();
+    test_gnss_rejects_control_characters();
+    test_gnss_rejects_empty_text();
+    test_gnss_rejects_embedded_comma();
+    test_gnss_text_over_arg_limit_is_silently_dropped();
+    test_gnss_unsupported_without_a_send_callback();
+    test_gnss_send_failure_is_reported_as_busy();
+    test_stat_gnss_init_fields_default_to_false_without_gnssctl();
+    test_stat_gnss_init_fields_reflect_gnssctl();
     test_tick_emits_hb_at_1hz();
     test_tick_does_not_depend_on_mode();
     test_boots_in_active_control_mode();

@@ -94,11 +94,19 @@ typedef struct {
  *    미리 알 수 있다. -1 은 "아직 모른다"(PPS 를 한 번도 못 봤다 · GGA 를
  *    한 번도 못 받았다)는 뜻이고 `null` 로 나간다 — 0 을 지어내지 않는다
  *    (설계 원칙 3·4와 같은 결). */
+/* 🔴 `gnss_init_sent`·`gnss_init_exhausted`·`gnss_sentence_seen` 는 GNSS
+ *    초기화 시퀀스(규격 §4.1.1)를 진단한다. `time_source`가 계속
+ *    device_clock 에 머물 때 — 즉 아무것도 안 올 때 — 이 셋이 "명령을
+ *    보내기는 했는가" / "재시도를 다 썼는가" / "문장을 받은 적은
+ *    있는가"를 가른다. mk_gnssctl 이 안 붙어 있으면 호출 쪽이 전부 0을
+ *    넘긴다. */
 int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *ctl_mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
                     int64_t gnss_pps_age_ms, int32_t gnss_sats,
+                    int gnss_init_sent, int gnss_init_exhausted,
+                    int gnss_sentence_seen,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,

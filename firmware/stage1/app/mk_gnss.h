@@ -57,6 +57,26 @@ typedef struct {
     uint8_t sats;           /* 사용 중인 위성 수 */
 } MkGnssGga;
 
+/* 🔴 모듈로 명령 한 줄을 내보내는 계약(규격 §4.1). 줄바꿈은 구현이
+ *    붙인다 — 여기 오는 text 에는 CR/LF 가 없다. 성공하면 1, 실패(버퍼
+ *    부족 등)면 0.
+ *
+ *    $GNSS 명령 전달(mk_hostlink)과 켤 때 초기화 명령(mk_gnssctl)이 이
+ *    계약 하나를 공유한다 — bsp 구현은 하나(mk_gnss_io_write_line)뿐이다.
+ *    여기 두는 이유는 파싱(수신)과 명령(송신)이 "GNSS 모듈과 말한다"는
+ *    같은 개념의 양면이기 때문이다. */
+typedef int (*MkGnssSend)(void *ctx, const char *text, size_t len);
+
+/* 원시 문장 에코 큐 한 칸(규격 §7.7) — '$' 포함, CR/LF 제외 그대로 담는다.
+ * 체크섬 통과 여부와 무관하게 담는다: "왜 파싱이 안 되는지" 를 보려고
+ * 만든 채널이라 실패한 줄도 값이 있다. */
+#define MK_GNSS_RAW_QUEUE_CAP  4u
+
+typedef struct {
+    char   text[MK_GNSS_LINE_MAX + 2];   /* '$' + line[0..used) + NUL */
+    size_t len;
+} MkGnssRawLine;
+
 /* 파서 상태. 필드가 전부 내부용이라 헤더에 두는 이유는 스택에 두고 쓰기
  * 위해서다(mk_solctl.h 의 MkSolCtl 과 같은 관례). */
 typedef struct MkGnss {
@@ -74,6 +94,19 @@ typedef struct MkGnss {
 
     uint32_t checksum_fail_count;   /* 체크섬이 틀려 버린 문장 수(진단용) */
     uint32_t parse_fail_count;      /* 체크섬은 맞았지만 필드를 못 읽은 수 */
+
+    /* 원시 문장 에코 큐(규격 §7.7). 링. head 는 다음에 쓸 자리,
+     * tail 은 다음에 꺼낼 자리 — mk_gnss_io.c 의 UART 링과 같은 관례다. */
+    MkGnssRawLine raw_q[MK_GNSS_RAW_QUEUE_CAP];
+    size_t        raw_head;
+    size_t        raw_tail;
+
+    /* 🔴 체크섬이 통과한 RMC·GGA 를 한 번이라도 받았는가 — 부팅 이후
+     *    누적이며 절대 내려가지 않는다(mk_gnss_init 에서만 0). "모듈이
+     *    말은 하고 있다" 는 사실 자체를 보는 값이라 RMC 의 상태 필드
+     *    (A/V)와는 무관하다. mk_gnssctl 이 초기화 재시도를 멈출 근거로
+     *    쓰고, $STAT 의 gnss.sentence_seen 이 그대로 싣는다(규격 §7.4). */
+    uint32_t sentences_seen_count;
 } MkGnss;
 
 void mk_gnss_init(MkGnss *g);
@@ -91,6 +124,14 @@ int mk_gnss_take_gga(MkGnss *g, MkGnssGga *out);
 
 uint32_t mk_gnss_checksum_fail_count(const MkGnss *g);
 uint32_t mk_gnss_parse_fail_count(const MkGnss *g);
+
+/* 새 원시 줄이 있으면 out 에 담고(NUL 종료) 1, 없으면 0(규격 §7.7).
+ * out_len 이 NULL 이 아니면 길이(NUL 제외)를 채운다. cap 이 모자라면
+ * 잘라 담는다 — 그래도 NUL 로 끝난 문자열이어야 mk_json_str 이 안전하다. */
+int mk_gnss_take_raw(MkGnss *g, char *out, size_t cap, size_t *out_len);
+
+/* 체크섬이 통과한 RMC·GGA 를 한 번이라도 받았으면 1, 아직이면 0. */
+int mk_gnss_any_sentence_seen(const MkGnss *g);
 
 /* UTC 달력 시각 -> epoch_ms. 윤년(그레고리력 400 규칙 포함)을 직접 계산한다.
  * 범위를 벗어난 입력(month 0/13, day 0/32 등)은 검증하지 않는다 — 호출

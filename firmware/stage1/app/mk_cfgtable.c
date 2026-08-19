@@ -33,12 +33,12 @@ static const char *const I2C_KIND_LABELS[] = {
 };
 
 /* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 1(디바운스) + led 3+3×4
- * + i2c 5×6 + gnss 2(사용·통신속도) */
+ * + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코) */
 #define ITEM_COUNT   (1 + 3 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 5 \
-                      + 2)
+                      + 3)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
 #define GEN_COUNT    (MK_AIN_COUNT * 5 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 5)
@@ -384,6 +384,15 @@ static size_t add_gnss(size_t i)
         .label = "GNSS 통신속도",
         .note = "UM981 기본값 확인 필요" };
     s_items[i].def.u = 115200;
+    i++;
+    /* 🔴 기본이 꺼짐이다(규격 §7.7). RTK 모듈은 초당 수십 줄을 낼 수
+     *    있고 그것을 전부 텔레메트리에 실으면 ain·i2c 가 쓸 대역을
+     *    잠식한다 — 진단할 때만 켠다(mk_telem.c 의 build_gnss_raw_record
+     *    가 gnss.echo 를 보고 큐를 비울지 정한다). */
+    s_items[i] = (MkCfgItem){
+        .key = "gnss.echo", .group = "gnss", .vtype = MK_VT_BOOL,
+        .label = "GNSS 원시 문장 에코",
+        .note = "받은 줄을 그대로 텔레메트리로 올린다 — 진단용, 대역을 먹는다" };
     i++;
     return i;
 }

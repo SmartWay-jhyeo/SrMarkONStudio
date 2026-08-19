@@ -30,6 +30,7 @@
 #include "app/mk_solctl.h"
 #include "app/mk_i2c.h"
 #include "app/mk_gnss.h"
+#include "app/mk_gnssctl.h"
 #include "app/mk_timeax.h"
 #include "bsp/mk_rails.h"
 #include "bsp/mk_ws2812_io.h"
@@ -81,6 +82,7 @@ static MkTelem   s_telem;
 static MkSolCtl  s_sol;
 static MkI2c     s_i2c;
 static MkGnss    s_gnss;
+static MkGnssCtl s_gnssctl;
 static MkTimeAx  s_timeax;
 static int      s_led_on;
 
@@ -361,6 +363,12 @@ int main(void)
     mk_timeax_init(&s_timeax);
     mk_telem_attach_timeax(&s_telem, &s_timeax);
     mk_hostlink_attach_timeax(&link, &s_timeax);
+    /* 🔴 $GNSS(규격 §4.1) 와 원시 문장 에코(규격 §7.7) — 둘 다 UART6 가
+     *    이미 열려 있어야 뜻이 있으므로 mk_gnss_io_init() 뒤에 놓는다. */
+    mk_hostlink_attach_gnss(&link, mk_gnss_io_write, NULL);
+    mk_telem_attach_gnss(&s_telem, &s_gnss);
+    mk_gnssctl_init(&s_gnssctl);
+    mk_hostlink_attach_gnssctl(&link, &s_gnssctl);
 
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;
@@ -438,6 +446,18 @@ int main(void)
             mk_timeax_on_gga(&s_timeax, &gga);
         }
         mk_timeax_tick(&s_timeax, gnss_now_us);
+
+        /* 🔴 켤 때 초기화 명령(규격 §4.1.1) — gnss.enabled 가 켜지면
+         *    LOG 명령을 대신 보내고, 문장을 받으면 멈춘다. 못 찾으면
+         *    꺼진 것으로 본다 — sync_rails() 와 같은 이유(설정표에서
+         *    항목이 사라지는 것은 실수이고, 실수했을 때 계속 재시도하며
+         *    UART 를 갉아먹으면 안 된다). */
+        {
+            MkCfgItem *en = mk_cfg_find(&s_cfg, "gnss.enabled");
+            mk_gnssctl_tick(&s_gnssctl, en != NULL && en->cur.u,
+                            mk_gnss_any_sentence_seen(&s_gnss), now,
+                            mk_gnss_io_write, NULL);
+        }
 
         mk_telem_tick(&s_telem, now, emit, NULL);
 

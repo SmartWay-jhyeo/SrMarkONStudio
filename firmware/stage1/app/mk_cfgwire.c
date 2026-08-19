@@ -161,6 +161,8 @@ int mk_cfgwire_stat(int64_t now_ms,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
                     int64_t gnss_pps_age_ms, int32_t gnss_sats,
+                    int gnss_init_sent, int gnss_init_exhausted,
+                    int gnss_sentence_seen,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
@@ -192,6 +194,12 @@ int mk_cfgwire_stat(int64_t now_ms,
     } else {
         mk_json_null(&j, "sats");
     }
+    /* 🔴 초기화 시퀀스 진단(규격 §4.1.1). 셋 다 "모른다" 가 없는
+     *    불리언이다 — gnssctl 이 안 붙어 있으면 호출 쪽이 전부 거짓을
+     *    넘긴다(mk_hostlink.c on_stat), null 을 쓰지 않는다. */
+    mk_json_bool(&j, "init_sent", gnss_init_sent);
+    mk_json_bool(&j, "init_exhausted", gnss_init_exhausted);
+    mk_json_bool(&j, "sentence_seen", gnss_sentence_seen);
     mk_json_object_end(&j);
 
     /* 🔴 **실제로 핀에 낸 것**을 싣는다. 설정표를 읽으면 안 된다.

@@ -4,6 +4,7 @@
 #include "mk_railctl.h"
 #include "mk_solctl.h"
 #include "mk_timeax.h"
+#include "mk_gnssctl.h"
 #include "mk_json.h"
 
 #include <string.h>
@@ -262,6 +263,62 @@ static void on_mode(MkHostlink *h, const MkCommand *c, int64_t now_ms)
     emit_sack_ok(h, "MODE");
 }
 
+/* `$GNSS,<text>` — GNSS 모듈에 원시 명령 전달(규격 §4.1).
+ *
+ * 🔴 모드 검사가 먼저다 — $CFG,SET 과 같은 이유(on_cfg 위 주석). RUN 에서
+ *    온 요청은 내용이 맞든 틀리든 받지 않는다. */
+static int is_gnss_text_char(char c)
+{
+    unsigned char u = (unsigned char)c;
+    return u >= 0x20u && u <= 0x7Eu;    /* 인쇄 가능 ASCII 만(규격 §4.1) */
+}
+
+static void on_gnss(MkHostlink *h, const MkCommand *c, int64_t now_ms)
+{
+    if (mk_hostlink_mode(h, now_ms) != MK_MODE_CONFIG) {
+        emit_sack_err(h, "GNSS", "MODE");
+        return;
+    }
+
+    /* 🔴 인자가 정확히 하나여야 한다. 콤마가 섞였으면 이미 둘로 쪼개진
+     *    뒤다(mk_parse_line) — 그것을 다시 합쳐 보내지 않는다. 빈
+     *    문자열도 거부한다(규격 §4.1). */
+    if (c->argc != 1 || c->args[0][0] == '\0') {
+        emit_sack_err(h, "GNSS", "RANGE");
+        return;
+    }
+    for (const char *p = c->args[0]; *p != '\0'; p++) {
+        if (!is_gnss_text_char(*p)) {
+            emit_sack_err(h, "GNSS", "RANGE");
+            return;
+        }
+    }
+
+    if (h->gnss_send == NULL) {
+        emit_sack_err(h, "GNSS", "UNSUPPORTED");
+        return;
+    }
+
+    /* 🔴 줄 끝 CR/LF 는 여기서 붙인다 — bsp 의 send 콜백은 받은 바이트를
+     *    그대로 내보내기만 하는 얇은 관이다(mk_gnss.h 의 MkGnssSend 주석).
+     *    그래야 이 로직이 호스트에서 시험된다. 인자는 MK_ARG_MAX(23)
+     *    바이트 이하이므로 +2(CR/LF)가 이 버퍼를 넘지 않는다. */
+    char buf[MK_ARG_MAX + 2];
+    size_t tlen = 0;
+    while (c->args[0][tlen] != '\0') {
+        buf[tlen] = c->args[0][tlen];
+        tlen++;
+    }
+    buf[tlen]     = '\r';
+    buf[tlen + 1] = '\n';
+
+    if (!h->gnss_send(h->gnss_send_ctx, buf, tlen + 2u)) {
+        emit_sack_err(h, "GNSS", "BUSY");
+        return;
+    }
+    emit_sack_ok(h, "GNSS");
+}
+
 /* 규격 §7.4 — `$STAT` 은 stat 레코드 한 줄 뒤에 $SACK 를 보낸다.
  *
  * 🔴 CONFIG 전용이 아니다 (규격 §4). RUN 에서 상태를 못 보면 진단할 수
@@ -284,6 +341,17 @@ void mk_hostlink_attach_sol(MkHostlink *h, struct MkSolCtl *sol)
 void mk_hostlink_attach_timeax(MkHostlink *h, struct MkTimeAx *timeax)
 {
     h->timeax = timeax;
+}
+
+void mk_hostlink_attach_gnss(MkHostlink *h, MkGnssSend send, void *ctx)
+{
+    h->gnss_send = send;
+    h->gnss_send_ctx = ctx;
+}
+
+void mk_hostlink_attach_gnssctl(MkHostlink *h, struct MkGnssCtl *gnssctl)
+{
+    h->gnssctl = gnssctl;
 }
 
 static void on_stat(MkHostlink *h, int64_t now_ms)
@@ -378,16 +446,31 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
                                                     * 없다(uint8_t 0 이 곧 그 뜻이다). */
     }
 
-    /* 🔴 896 은 원래 rails+din+queues 최악 길이(721) + 여유였다(주석
-     *    윗줄 참고). "gnss":{"pps_age_ms":<i64>,"sats":<i32>} 최악
-     *    ~45바이트를 더해도 그 여유 안이다. */
-    char body[896];
+    /* 🔴 GNSS 초기화 진단(규격 §4.1.1·§7.4). gnssctl 이 안 붙어 있으면
+     *    전부 거짓이다 — timeax·rails·sol 이 안 붙었을 때와 같은 결. */
+    int gnss_init_sent = 0;
+    int gnss_init_exhausted = 0;
+    int gnss_sentence_seen = 0;
+    if (h->gnssctl != NULL) {
+        gnss_init_sent      = mk_gnssctl_sent(h->gnssctl);
+        gnss_init_exhausted = mk_gnssctl_exhausted(h->gnssctl);
+        gnss_sentence_seen  = mk_gnssctl_sentence_seen(h->gnssctl);
+    }
+
+    /* 🔴 896 이던 것을 1024 로 올렸다. 원래 rails+din+queues 최악
+     *    길이(721) + 여유였고(주석 윗줄 참고) "gnss":{"pps_age_ms":<i64>,
+     *    "sats":<i32>} 최악 ~45바이트는 그 여유 안이었다. 이번에 더한
+     *    "init_sent":false,"init_exhausted":false,"sentence_seen":false
+     *    가 최악 ~62바이트를 더 먹는다 — 옛 여유(175)에서 45를 빼면 130,
+     *    62를 더해도 남지만 빠듯해서 1024 로 올려 여유를 다시 확보한다. */
+    char body[1024];
     int n = mk_cfgwire_stat(
         now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
         h->ctl_mode == MK_CTL_TEST ? "TEST" : "ACTIVE",
         h->fw, h->board_rev, (uint32_t)now_ms,
         time_source, time_quality, gnss_pps_age_ms, gnss_sats,
+        gnss_init_sent, gnss_init_exhausted, gnss_sentence_seen,
         &rs,
         n_din > 0 ? ds : NULL, n_din,
         n_q > 0 ? qs : NULL, n_q, body, sizeof body);
@@ -478,6 +561,11 @@ void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
 
     if (strcmp(c.verb, "MODE") == 0) {
         on_mode(h, &c, now_ms);
+        return;
+    }
+
+    if (strcmp(c.verb, "GNSS") == 0) {
+        on_gnss(h, &c, now_ms);
         return;
     }
 

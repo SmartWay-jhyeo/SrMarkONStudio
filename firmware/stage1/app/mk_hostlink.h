@@ -17,6 +17,7 @@
 #include "mk_cfgwire.h"
 #include "mk_config.h"
 #include "mk_framing.h"
+#include "mk_gnss.h"   /* MkGnssSend — $GNSS 명령 전달(규격 §4.1)에 쓴다 */
 
 /* 규격 §6.2 */
 #define MK_HB_TIMEOUT_MS   3000
@@ -83,6 +84,18 @@ typedef struct {
      * quality 0 고정이다(1단계와 같다). */
     struct MkTimeAx *timeax;
 
+    /* GNSS 모듈로 원시 명령을 내보내는 콜백(규격 §4.1) — $GNSS 가 이걸로
+     * 보낸다. NULL 이면 $GNSS 가 UNSUPPORTED 다($CFG 가 cfg==NULL 일 때와
+     * 같은 결). 줄 끝 CR/LF 는 on_gnss() 가 붙인 뒤 이 콜백을 부른다 —
+     * 콜백(bsp 구현)은 받은 바이트를 그대로 내보내는 얇은 관이다. */
+    MkGnssSend gnss_send;
+    void      *gnss_send_ctx;
+
+    /* GNSS 초기화 재시도 상태(규격 §4.1.1). 붙어 있으면 $STAT 의
+     * gnss.init_sent·init_exhausted·sentence_seen 이 실제 상태를 싣는다.
+     * 없으면 전부 거짓이다. */
+    struct MkGnssCtl *gnssctl;
+
     /* 제어 모드 (규격 §6.4). `mk_hostlink_tick` 이 CONFIG->RUN 전이를
      * 보고 스스로 ACTIVE 로 되돌린다. */
     MkCtlMode   ctl_mode;
@@ -123,6 +136,15 @@ void mk_hostlink_attach_sol(MkHostlink *h, struct MkSolCtl *sol);
  * "device_clock" 고정이다(1단계와 같은 동작). */
 struct MkTimeAx;
 void mk_hostlink_attach_timeax(MkHostlink *h, struct MkTimeAx *timeax);
+
+/* GNSS 명령 전달 콜백을 붙인다(규격 §4.1). 부르지 않으면 $GNSS 는
+ * UNSUPPORTED 다. */
+void mk_hostlink_attach_gnss(MkHostlink *h, MkGnssSend send, void *ctx);
+
+/* GNSS 초기화 재시도 상태를 붙인다(규격 §4.1.1·§7.4). 부르지 않으면
+ * $STAT 의 gnss.init_sent·init_exhausted·sentence_seen 이 전부 거짓이다. */
+struct MkGnssCtl;
+void mk_hostlink_attach_gnssctl(MkHostlink *h, struct MkGnssCtl *gnssctl);
 
 /* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
  *

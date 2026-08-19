@@ -62,6 +62,17 @@ int mk_gnss_io_pps_take(uint64_t *dev_us);
  * 넘길 "지금" 값이 필요할 때 쓴다. */
 uint64_t mk_gnss_io_now_us(void);
 
+/* 모듈로 바이트를 그대로 내보낸다(규격 §4.1) — MkGnssSend(mk_gnss.h)와
+ * 정확히 같은 시그니처다. `ctx` 는 쓰지 않는다(UART 핸들이 정적이라
+ * 필요 없다). 줄바꿈을 붙이지 않는다 — 그것은 부르는 쪽(app/mk_hostlink.c
+ * 의 on_gnss, app/mk_gnssctl.c)이 한다. 성공하면 1, 실패하면 0.
+ *
+ * 🔴 SWAP 이 이미 mk_gnss_io_init() 에서 걸려 있다(이 파일 상단 주석) —
+ *    PC7 이 전기적으로 TX(MCU→모듈)이므로 HAL_UART_Transmit 이 그대로
+ *    나간다. 짧은 명령(23바이트 이하 + CRLF)이라 블로킹으로 충분하다 —
+ *    mk_uart_write()(호스트 링크)와 같은 판단. */
+int mk_gnss_io_write(void *ctx, const char *data, size_t len);
+
 /* USART6 인터럽트에서 부른다(stm32h7xx_it.c). */
 void mk_gnss_io_uart_isr(void);
 

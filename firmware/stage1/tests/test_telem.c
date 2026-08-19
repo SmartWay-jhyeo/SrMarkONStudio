@@ -8,6 +8,7 @@
 #include "../app/mk_cfgtable.h"
 #include "../app/mk_i2c.h"
 #include "../app/mk_i2c_bh1750.h"
+#include "../app/mk_gnss.h"
 
 static int failures = 0;
 
@@ -918,6 +919,125 @@ static void test_din_time_source_field_cannot_be_masked_off(void)
               "din 도 time_source 를 마스크로 못 끈다");
 }
 
+/* ---- GNSS 원시 문장 에코 (규격 §7.7, gnss.echo) --------------------------- */
+
+static void feed_gnss_line(MkGnss *g, const char *line)
+{
+    for (const char *p = line; *p; p++) { mk_gnss_feed(g, (uint8_t)*p); }
+}
+
+static void test_gnss_raw_is_not_sent_when_echo_is_off(void)
+{
+    /* 🔴 기본이 꺼짐이다(규격 §7.7) — set_u32 로 손대지 않는다. */
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    feed_gnss_line(&G,
+        "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*73\r\n");
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    int gnss_raw = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"gnss_raw\"")) { gnss_raw++; }
+    }
+    CHECK(gnss_raw == 0, "gnss.echo 가 꺼져 있으면 원시 줄이 안 나간다");
+}
+
+static void test_gnss_raw_is_sent_verbatim_when_echo_is_on(void)
+{
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    set_u32("gnss.echo", 1u);
+    feed_gnss_line(&G,
+        "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*73\r\n");
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    int found = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"gnss_raw\"")) {
+            found = 1;
+            CHECK_HAS(LINES[k],
+                "\"line\":\"$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,"
+                "084.4,180826,,,A*73\"",
+                "원문 그대로('$' 포함, CR/LF 제외)");
+        }
+    }
+    CHECK(found, "gnss.echo 를 켜면 나간다");
+}
+
+static void test_gnss_raw_is_sent_even_on_checksum_failure(void)
+{
+    /* 🔴 "왜 파싱이 안 되는지" 를 보려고 만든 채널이다 — 체크섬이 틀려도
+     * mk_gnss 가 원문을 버리지 않으므로(mk_gnss.c push_raw_line) 여기서도
+     * 그대로 나가야 한다. */
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    set_u32("gnss.echo", 1u);
+    feed_gnss_line(&G,
+        "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*74\r\n");
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    int found = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"gnss_raw\"")) { found = 1; }
+    }
+    CHECK(found, "체크섬이 틀려도 진단을 위해 그대로 나간다");
+}
+
+static void test_gnss_raw_time_source_field_cannot_be_masked_off(void)
+{
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    set_u32("gnss.echo", 1u);
+    set_u32("tx.fields", 0u);
+    feed_gnss_line(&G,
+        "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*73\r\n");
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    int found = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"gnss_raw\"")) {
+            found = 1;
+            CHECK_HAS(LINES[k], "\"time_source\":\"device_clock\"",
+                      "gnss_raw 도 time_source 를 마스크로 못 끈다");
+        }
+    }
+    CHECK(found, "레코드가 나갔다");
+}
+
+static void test_gnss_raw_is_not_gated_by_tx_period(void)
+{
+    /* 🔴 din 과 같은 성격 — 사건이 완성되는 대로 나가고 tx.period_ms 를
+     * 기다리지 않는다(규격 §7.7). */
+    setup();
+    set_u32("tx.period_ms", 10000u);
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    set_u32("gnss.echo", 1u);
+    feed_gnss_line(&G,
+        "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*73\r\n");
+
+    mk_telem_tick(&T, 10, sink, NULL);   /* 주기가 한참 남았다 */
+
+    int found = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"gnss_raw\"")) { found = 1; }
+    }
+    CHECK(found, "tx.period_ms 를 기다리지 않고 즉시 나간다");
+}
+
 /* ---- 카탈로그 덤프 ------------------------------------------------------ */
 
 static void emit_samples(void)
@@ -1066,6 +1186,11 @@ int main(int argc, char **argv)
     test_din_t_follows_the_same_timeax_conversion_as_ain();
     test_din_time_source_field_cannot_be_masked_off();
     test_reads_i2c_values_straight_from_the_last_value_cache();
+    test_gnss_raw_is_not_sent_when_echo_is_off();
+    test_gnss_raw_is_sent_verbatim_when_echo_is_on();
+    test_gnss_raw_is_sent_even_on_checksum_failure();
+    test_gnss_raw_time_source_field_cannot_be_masked_off();
+    test_gnss_raw_is_not_gated_by_tx_period();
 
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;

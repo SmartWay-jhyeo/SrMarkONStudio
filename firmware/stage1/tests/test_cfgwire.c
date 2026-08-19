@@ -252,15 +252,17 @@ static void test_stat_shape(void)
 {
     /* 🔴 din 세 항목이 늘면서 400 이 모자라졌다(레코드가 418자) — 잘리면
      *    mk_json 이 ok=0 으로 떨어져 이 시험이 아니라 다른 이유로 실패한
-     *    것처럼 보인다. 넉넉히 512 로 둔다. */
-    char buf[512];
+     *    것처럼 보인다. gnss.init_* 세 필드가 늘면서 512 도 모자라졌다
+     *    (515자) — 넉넉히 600 으로 둔다. */
+    char buf[600];
     setup();
     ITEMS[5].cur.u = 1;                     /* pwr.24v 를 켠 것으로 */
 
     MkQueueStat q[2] = { {0, 3, 9, 0}, {1, 0, 1, 7} };
     MkDinState d[3] = { {18, 0}, {19, 0}, {20, 1} };
     int n = mk_cfgwire_stat(1772200855875LL, "CONFIG", "ACTIVE", "0.1.0", "2.0",
-                            123456u, "device_clock", 0u, 842, 11, &RS, d, 3, q, 2,
+                            123456u, "device_clock", 0u, 842, 11, 1, 0, 1,
+                            &RS, d, 3, q, 2,
                             buf, sizeof buf);
     CHECK(n > 0, "stat 을 만든다");
     CHECK_HAS(buf, "\"type\":\"stat\"", "type");
@@ -268,8 +270,11 @@ static void test_stat_shape(void)
     CHECK_HAS(buf, "\"time_source\":\"device_clock\"", "시간 소스");
     CHECK_HAS(buf, "\"time_quality\":0", "시간 품질");
     CHECK_HAS(buf, "\"uptime_ms\":123456", "uptime");
-    CHECK_HAS(buf, "\"gnss\":{\"pps_age_ms\":842,\"sats\":11}",
-              "gnss 진단은 중첩 객체(규격 §7.4 Phase 3)");
+    CHECK_HAS(buf,
+              "\"gnss\":{\"pps_age_ms\":842,\"sats\":11,"
+              "\"init_sent\":true,\"init_exhausted\":false,"
+              "\"sentence_seen\":true}",
+              "gnss 진단은 중첩 객체(규격 §7.4·§4.1.1)");
     CHECK_HAS(buf, "\"rails\":{\"v24\":true,\"v14v9\":false,\"v5\":true}",
               "rails 는 중첩 객체");
     CHECK_HAS(buf,
@@ -290,11 +295,15 @@ static void test_stat_with_no_queues(void)
     char buf[400];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                            "device_clock", 0u, -1, -1, &RS, NULL, 0, NULL, 0,
+                            "device_clock", 0u, -1, -1, 0, 0, 0,
+                            &RS, NULL, 0, NULL, 0,
                             buf, sizeof buf);
     CHECK(n > 0, "큐가 없어도 만든다");
     CHECK_HAS(buf, "\"queues\":[]", "빈 배열");
-    CHECK_HAS(buf, "\"gnss\":{\"pps_age_ms\":null,\"sats\":null}",
+    CHECK_HAS(buf,
+              "\"gnss\":{\"pps_age_ms\":null,\"sats\":null,"
+              "\"init_sent\":false,\"init_exhausted\":false,"
+              "\"sentence_seen\":false}",
               "GNSS 를 아예 안 붙였으면 -1 이 null 로 나간다 — 0 을 지어내지 않는다");
 }
 
@@ -305,7 +314,8 @@ static void test_stat_with_no_din(void)
     char buf[400];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                            "device_clock", 0u, -1, -1, &RS, NULL, 0, NULL, 0,
+                            "device_clock", 0u, -1, -1, 0, 0, 0,
+                            &RS, NULL, 0, NULL, 0,
                             buf, sizeof buf);
     CHECK(n > 0, "din 이 없어도 만든다");
     CHECK_HAS(buf, "\"din\":[]", "빈 배열");
@@ -315,12 +325,15 @@ static void test_queue_channel_comes_from_the_struct(void)
 {
     /* 🔴 꺼진 채널은 목록에서 빠진다. 그때 배열 첨자를 채널 번호로 쓰면
      *    6번 채널의 유실이 0번 것으로 보고된다. 유실을 찾으려고 보는
-     *    창구가 채널을 헷갈리면 없느니만 못하다. */
-    char buf[400];
+     *    창구가 채널을 헷갈리면 없느니만 못하다.
+     *
+     *    gnss.init_* 세 필드가 늘면서 400 이 빠듯해졌다 — 512 로 둔다. */
+    char buf[512];
     setup();
     MkQueueStat q[2] = { {2, 0, 0, 0}, {6, 0, 0, 41} };
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                    "device_clock", 0u, -1, -1, &RS, NULL, 0, q, 2, buf, sizeof buf);
+                    "device_clock", 0u, -1, -1, 0, 0, 0,
+                    &RS, NULL, 0, q, 2, buf, sizeof buf);
     CHECK_HAS(buf,
               "\"queues\":[{\"ch\":2,\"depth\":0,\"peak\":0,\"drops\":0},"
               "{\"ch\":6,\"depth\":0,\"peak\":0,\"drops\":41}]",
@@ -339,7 +352,7 @@ static void test_missing_rail_reads_as_off(void)
     char buf[400];
     setup();
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock", 0u,
-                    -1, -1, NULL, NULL, 0, NULL, 0, buf, sizeof buf);
+                    -1, -1, 0, 0, 0, NULL, NULL, 0, NULL, 0, buf, sizeof buf);
     CHECK_HAS(buf, "\"rails\":{\"v24\":false,\"v14v9\":false,\"v5\":false}",
               "제어기가 없으면 전부 꺼진 것으로");
 
@@ -347,7 +360,7 @@ static void test_missing_rail_reads_as_off(void)
     MkCfgItem *v5 = mk_cfg_find(&CFG, "pwr.5v");
     if (v5 != NULL) { v5->cur.u = 1; }
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock", 0u,
-                    -1, -1, NULL, NULL, 0, NULL, 0, buf, sizeof buf);
+                    -1, -1, 0, 0, 0, NULL, NULL, 0, NULL, 0, buf, sizeof buf);
     CHECK_HAS(buf, "\"v5\":false",
               "설정이 ON 이어도 아직 안 냈으면 false — 설정표를 안 읽는다");
 }
@@ -357,7 +370,8 @@ static void test_stat_rejects_small_buffer(void)
     char tiny[24];
     setup();
     CHECK(mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock",
-                          0u, -1, -1, &RS, NULL, 0, NULL, 0, tiny, sizeof tiny) < 0,
+                          0u, -1, -1, 0, 0, 0, &RS, NULL, 0, NULL, 0,
+                          tiny, sizeof tiny) < 0,
           "버퍼가 작으면 실패하고 잘린 줄을 내지 않는다");
 }
 
