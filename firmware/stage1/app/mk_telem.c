@@ -246,6 +246,27 @@ static int build_din_record(MkTelem *t, const MkSolOut *o,
     return mk_json_end(&j);
 }
 
+/* 표본 하나를 ain 레코드로 만들어 내보낸다. 큐에서 막 꺼낸 것이든
+ * mk_ads_last() 로 얻은 마지막 값이든 이 한 곳으로 모은다 — 두 경로가
+ * 레코드 조립·자르기 처리를 따로 하면 어느 한쪽만 고치는 실수가 난다.
+ * 성공하면 1(sent 에 더할 값), 잘려서 버렸으면 0. */
+static int emit_ain_sample(MkTelem *t, int ch, const MkSample *s,
+                           MkTelemEmit emit, void *ctx)
+{
+    char body[MK_LINE_MAX + 8];
+    t->seq++;
+    int len = build_record(t, ch, s, body, sizeof body);
+    /* 🔴 잘린 JSON 을 내보내지 않는다. 반쪽짜리 줄은 호스트에서
+     *    파싱 오류가 되고, 그 오류는 링크 문제로 오인된다. */
+    if (len <= 0 || (size_t)len + 2u > sizeof body) {
+        return 0;
+    }
+    body[len] = '\n';
+    body[len + 1] = '\0';
+    emit(ctx, body, (size_t)len + 1u);
+    return 1;
+}
+
 /* ---- 주기 처리 ---------------------------------------------------------- */
 
 void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c)
@@ -298,11 +319,6 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
      *       변수 a 라는 곳에 수집된 값을 계속 넣고, 송신 할 때는 변수 a 를
      *       사용하면 어쨋든 그 안에 있던 값이 날라갈거 아니야"
      *
-     *    ain 은 mk_ads1256.c 의 MkAdsChannel.last (DRDY 마다 덮어씀), i2c 는
-     *    mk_i2c.c 의 last[][] (store_last 마다 덮어씀) 를 그대로 읽는다.
-     *    여기서 큐를 비우지 않는다 — mk_queue 는 $STAT 진단용으로 그대로
-     *    둔다.
-     *
      *    그래서 여기서는 `tx.period_ms` 를 **기다린다.** 주기 전에는 아무
      *    것도 하지 않는다 — 안 그러면 이 값이 뜻을 잃는다. */
     uint32_t period = cfg_u32(t->cfg, "tx.period_ms", 100u);
@@ -316,37 +332,73 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
 
     int sent = 0;
 
-    /* 🔴 채널당 딱 한 줄 — 마지막 값이다. 밀린 것을 나눠 꺼내는 라운드로빈은
-     *    더 이상 필요 없다: 큐를 비우지 않으므로 "한 채널이 밀려 다른
-     *    채널을 굶긴다"는 상황 자체가 없다. `has_last`(mk_ads_last())가
-     *    거짓이면 — 한 번도 표본을 못 받았으면 — 아무것도 안 낸다. 0 을
-     *    지어내지 않는다(설계 원칙 3·4). */
+    /* 🔴 [정정, 2026-08-19] 큐는 "수집 우선, 송신 지연 흡수" 장치다 — 사용자가
+     *    명시적으로 정정했다: "큐를 사용하라는 목적은 타임스탬프를 찍어서
+     *    큐에 넣고 보낼 때는 좀 늦게 보내도 괜찮으니까 센서 수집을 우선으로
+     *    하라는 거였어." 표본을 버리는 자리가 아니다.
+     *
+     *    그래서 여기는 근거가 **둘**이고, 역할이 다르다 — 하나로 줄이지
+     *    않는다(mk_ads1256.h 의 MkAdsChannel.last 주석과 같은 결론):
+     *
+     *      1) 큐(mk_ads_queue) — 진짜 표본들. 있으면 **전부** 나간다.
+     *         각자 자기 획득 시각(DRDY 순간)을 달고 한 줄씩이다 — 늦게
+     *         나가도 시각은 정확해야 한다는 것이 큐가 존재하는 이유다.
+     *      2) 마지막 값(mk_ads_last) — 큐가 **비어 있을 때만** 쓰는
+     *         대역이다. 수집이 송신보다 느린 흔한 경우(기본값 60 SPS
+     *         수집 대 tx.period_ms=100 ms 송신)에 주기를 채우는 유일한
+     *         근거다. 이때도 `t` 는 그 값의 획득 시각 그대로 반복된다 —
+     *         송신 시각으로 덮어쓰지 않는다.
+     *
+     *    이 판 이전엔 큐를 아예 안 비웠다 — 실기기에서 depth=32/drops=218
+     *    로 계속 넘쳤다(마지막 값만 읽고 큐는 방치). 그다음엔 반대로
+     *    갔다 — 큐를 비우되 최신 하나만 쓰고 나머지를 버렸는데, 그러면
+     *    "수집 우선" 이라는 원래 취지와 정반대가 된다. 지금은 큐를
+     *    비우되 **꺼낸 것 전부**를 내보낸다 — 그래야 정상 상태(수집 <
+     *    송신)에서 큐가 항상 비어 `drops` 가 0 을 유지하다가, 슈퍼루프가
+     *    한 틱 안에 못 따라잡을 때만(큐 자체가 찰 만큼 밀릴 때) 오르는
+     *    진짜 신호가 된다.
+     *
+     *    한 채널이 한 틱에 낼 수 있는 줄 수는 MK_TELEM_MAX_LINES 가
+     *    막는다(전체 ain 합산). 상한에 걸려 못 낸 나머지는 큐에 그대로
+     *    남는다 — pop 을 안 부르면 표본이 지워지지 않으므로 다음 틱에
+     *    이어 나간다. 버리는 것이 아니라 미루는 것이다. */
     for (int ch = 0; ch < MK_ADS_CHANNELS && sent < MK_TELEM_MAX_LINES; ch++) {
         if (!mk_ads_channel_enabled(t->ads, ch)) {
             continue;
         }
+
+        MkQueue *q = mk_ads_queue(t->ads, ch);
         MkSample s;
+        int drained = 0;
+        while (sent < MK_TELEM_MAX_LINES && q != NULL && mk_queue_pop(q, &s)) {
+            sent += emit_ain_sample(t, ch, &s, emit, ctx);
+            drained = 1;
+        }
+        if (drained) {
+            continue;               /* 큐에 있던 것은 이미 다 냈다 */
+        }
+
+        /* 큐가 비어 있었다 — has_last 가 거짓이면(한 번도 표본을 못
+         * 받았으면) 아무것도 안 낸다. 0 을 지어내지 않는다(설계 원칙
+         * 3·4). */
         if (!mk_ads_last(t->ads, ch, &s)) {
             continue;
         }
-
-        char body[MK_LINE_MAX + 8];
-        t->seq++;
-        int len = build_record(t, ch, &s, body, sizeof body);
-        /* 🔴 잘린 JSON 을 내보내지 않는다. 반쪽짜리 줄은 호스트에서
-         *    파싱 오류가 되고, 그 오류는 링크 문제로 오인된다. */
-        if (len <= 0 || (size_t)len + 2u > sizeof body) {
-            continue;
-        }
-        body[len] = '\n';
-        body[len + 1] = '\0';
-        emit(ctx, body, (size_t)len + 1u);
-        sent++;
+        sent += emit_ain_sample(t, ch, &s, emit, ctx);
     }
 
-    /* i2c 도 같은 방식 — 포트·슬롯마다 마지막 값이다. 아직 한 번도 값을
-     * 못 받은 슬롯(last_valid 거짓)은 낸다. BH1750·AM2320·MLX90614 는
-     * 물리적으로 느려(180ms~2s) 같은 값이 여러 주기 반복되는 것이 정상이다. */
+    /* i2c 는 포트·슬롯마다 마지막 값(last[][])만 있고 ain 같은 표본 큐가
+     * 없다(2026-08-19 걷어냄, 커밋 ab11ee0). ain 의 "큐 우선, last 는
+     * 큐가 빌 때만" 원칙과 어긋나 보이지만, i2c 구조 자체가 큐가 필요
+     * 없게 돼 있다 — mk_i2c_tick() 은 한 바퀴에 포트를 **하나만** 나아가게
+     * 하고, 그 포트가 낸 값은 즉시 last[][] 의 제 슬롯에 store_last() 로
+     * 쌓인다. 같은 포트·슬롯이 다음 값을 만들려면 그 포트의 상태기계가
+     * WARMUP·eff_period 를 다시 거쳐야 하므로(BH1750·AM2320·MLX90614 모두
+     * 180ms~2s), 같은 슬롯에 "아직 안 내보낸 표본 두 개"가 동시에 쌓일
+     * 여지가 사실상 없다 — last 하나가 항상 "큐에 표본이 정확히 0개 또는
+     * 1개"인 상태와 같다. 그래서 last[][] 를 그대로 읽는 지금 방식이
+     * ain 의 "큐 우선" 원칙의 퇴화한(값이 하나뿐인) 형태다. 아직 한 번도
+     * 값을 못 받은 슬롯(last_valid 거짓)은 안 낸다. */
     int sent_i2c = 0;
     if (t->i2c != NULL) {
         for (unsigned p = 0; p < MK_I2C_COUNT && sent_i2c < MK_TELEM_MAX_LINES; p++) {

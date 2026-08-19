@@ -141,15 +141,29 @@ static void test_raw_to_ma_matches_the_shunt(void)
     CHECK(mk_telem_raw_to_ma(0) == 0.0f, "0 코드는 0 mA — 4 mA 미만은 단선");
 }
 
-/* ---- 주기 (수집·송신 분리 — 사용자 설계 2026-08-19) ---------------------
+/* ---- 주기 (수집·송신 분리 — 사용자 설계 2026-08-19, 정정 2026-08-19) ----
  *
  *   "수집은 수집대로 하고 송신은 내가 원하는 간격에 맞춰서 하는거지.
  *    변수 a 라는 곳에 수집된 값을 계속 넣고, 송신 할 때는 변수 a 를
- *    사용하면 어쨋든 그 안에 있던 값이 날라갈거 아니야"
+ *    사용하면 어쨋든 그 안에 있던 값이 날라갈거 아니야" — 그리고 뒤이은
+ *   정정: "큐를 사용하라는 목적은 타임스탬프를 찍어서 큐에 넣고 보낼 때는
+ *   좀 늦게 보내도 괜찮으니까 센서 수집을 우선으로 하라는 거였어."
  *
- *   set_last() 가 "변수 a 에 값을 넣는" 수집 쪽을 흉내 낸다. mk_telem_tick
- *   은 그 a 를 tx.period_ms 마다 읽기만 한다 — 큐(mk_queue)는 더 이상
- *   보지 않는다. */
+ *   그래서 mk_telem_tick 은 tx.period_ms 마다 **두 곳**을 본다 — 큐가
+ *   우선이고, 마지막 값(set_last() 가 흉내 내는 "변수 a")은 큐가 비어
+ *   있을 때만 쓰는 대역이다:
+ *
+ *     - 큐에 쌓인 표본이 있으면 전부(각자 자기 t) 나간다 — 아래
+ *       push_to_queue() 로 채우는 시험들이 이 경로를 본다.
+ *     - 큐가 비어 있으면 set_last() 로 채운 마지막 값이 그 t 그대로
+ *       반복된다 — mk_ads1256.c 의 실제 수집도 큐 push 와 last 갱신을
+ *       같은 자리에서 함께 하므로, set_last() 만 부르고 큐를 안 채우는
+ *       시험은 "그 채널의 유일한 표본이 이미 큐에서 빠져나간 뒤(=last에만
+ *       남은) 상태"를 정확히 흉내 낸다. */
+static void push_to_queue(int ch, int64_t t_ms, int32_t raw)
+{
+    mk_queue_push(mk_ads_queue(&ADS, ch), t_ms, raw);
+}
 
 static void test_nothing_before_the_period(void)
 {
@@ -291,22 +305,65 @@ static void test_repeats_the_last_value_without_new_acquisition(void)
     }
 }
 
-static void test_only_the_latest_sample_survives_when_acquisition_outpaces_tx(void)
+static void test_queue_drains_fully_each_sample_gets_its_own_line(void)
 {
-    /* 🔴 송신 사이에 여러 번 수집돼도(수집이 송신보다 빠르면) 중간 표본은
-     *    조용히 버려지고 최신 값만 나간다 — 큐가 아니라 "변수 a" 이기
-     *    때문이다. */
+    /* 🔴 [정정, 2026-08-19] 송신 사이에 여러 번 수집됐으면(수집이 송신보다
+     *    빠르면) 큐에 쌓인 표본이 **전부** 나간다 — 각자 자기 획득 시각을
+     *    달고서다. 큐는 수집을 우선하고 송신 지연을 흡수하는 장치이지,
+     *    최신 것만 남기고 나머지를 버리는 곳이 아니다(사용자 정정). */
     setup();
-    set_last(0, 111, 1000);   /* 중간 표본 — 버려져야 한다 */
-    set_last(0, 222, 2000);
-    set_last(0, 1234, 4026531);   /* 이것만 남아야 한다 */
+    push_to_queue(0, 111, 1000);
+    push_to_queue(0, 222, 2000);
+    push_to_queue(0, 1234, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
 
-    CHECK(N == 1, "채널당 한 줄");
-    CHECK_HAS(LINES[0], "\"raw\":4026531", "최신 값만 나간다");
-    CHECK_HAS(LINES[0], "\"t\":1234", "최신 획득 시각");
-    CHECK(strstr(LINES[0], "\"raw\":1000") == NULL, "중간 표본 1000 은 안 보인다");
-    CHECK(strstr(LINES[0], "\"raw\":2000") == NULL, "중간 표본 2000 도 안 보인다");
+    CHECK(N == 3, "쌓인 세 표본이 각각 한 줄씩 나간다");
+    CHECK_HAS(LINES[0], "\"raw\":1000", "가장 오래된 것부터");
+    CHECK_HAS(LINES[0], "\"t\":111", "자기 획득 시각");
+    CHECK_HAS(LINES[1], "\"raw\":2000", "가운데 표본도 나간다 — 버려지지 않는다");
+    CHECK_HAS(LINES[1], "\"t\":222", "자기 획득 시각");
+    CHECK_HAS(LINES[2], "\"raw\":4026531", "가장 최신도 나간다");
+    CHECK_HAS(LINES[2], "\"t\":1234", "자기 획득 시각");
+    CHECK(mk_queue_count(mk_ads_queue(&ADS, 0)) == 0,
+          "송신 후 큐가 비어 있다 — drops 를 진짜 신호로 쓰려면 매 틱 비워야 한다");
+}
+
+static void test_drops_stay_zero_when_send_keeps_up_with_collection(void)
+{
+    /* 🔴 정상 상태(수집 < 송신)를 여러 주기 흉내 낸다 — 한 주기에 둘씩
+     *    수집해도(큐 칸수 8, setup() 참고) 매 주기 끝까지 비우므로 절대
+     *    차지 않는다. 지금(고치기 전) 코드는 큐를 아예 안 비우므로 몇
+     *    주기 안에 8칸을 채우고 drops 가 오른다 — 이 시험은 그래서
+     *    실패해야 정상이다. */
+    setup();
+    int64_t t = 0;
+    for (int period = 0; period < 10; period++) {
+        t += 100;
+        push_to_queue(0, t, 1000 + period);
+        push_to_queue(0, t, 2000 + period);
+        mk_telem_tick(&T, t, sink, NULL);
+    }
+    CHECK(mk_queue_drops(mk_ads_queue(&ADS, 0)) == 0,
+          "송신이 매 주기 큐를 끝까지 비우므로 drops 가 0 으로 유지된다");
+}
+
+static void test_drops_rise_when_send_stalls_long_enough_to_overflow(void)
+{
+    /* 🔴 송신이 오래 멈춘 것을 흉내 낸다 — mk_telem_tick 을 한 번도 안
+     *    부른 채 큐 칸수(8)보다 많이 밀어 넣는다. 진짜로 넘쳤으니 drops 가
+     *    올라야 하고(mk_queue_push 자체의 계약, test_queue.c 와 같다),
+     *    송신이 돌아오면 큐는 비우되 drops 기록(진단)은 남아야 한다. */
+    setup();
+    for (int k = 0; k < 12; k++) {
+        push_to_queue(0, 1000 + k, k);
+    }
+    CHECK(mk_queue_drops(mk_ads_queue(&ADS, 0)) > 0,
+          "밀린 동안 진짜로 넘치면 drops 가 신호를 낸다");
+
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK(mk_queue_count(mk_ads_queue(&ADS, 0)) == 0, "송신이 돌아오면 큐를 비운다");
+    CHECK(mk_queue_drops(mk_ads_queue(&ADS, 0)) > 0,
+          "drops 기록은 비운다고 지워지지 않는다(mk_queue_clear 의 계약)");
 }
 
 static void test_changing_tx_period_ms_changes_the_interval(void)
@@ -376,9 +433,12 @@ static void test_float_digits_is_honoured(void)
 
 static void test_every_active_channel_sends_exactly_one_line_per_period(void)
 {
-    /* 🔴 큐를 비우지 않는 새 설계에서는 "밀린 채널이 나머지를 굶긴다"는
-     *    상황 자체가 없다 — 채널마다 마지막 값 자리가 하나씩이라 매
-     *    주기에 정확히 한 줄씩만 나간다. 세 채널 모두, 딱 한 줄씩. */
+    /* 🔴 [정정, 2026-08-19] 이 시험은 큐를 안 채운다(set_last 만 부른다) —
+     *    그래서 큐는 항상 비어 있고 매 주기 마지막 값 경로 하나만 탄다.
+     *    큐에 표본이 쌓인 경우(수집이 밀린 경우)는 한 채널이 한 틱에 여러
+     *    줄을 낼 수 있다 — 그건 test_queue_drains_fully_each_sample_gets_
+     *    its_own_line() 의 몫이다. 여기서 보는 것은 그 반대쪽, 정상 부하에서
+     *    세 채널 모두 딱 한 줄씩 나가는지다. */
     setup();
     for (int ch = 0; ch < 3; ch++) {
         set_last(ch, 1000 + ch, 4000000);
@@ -400,10 +460,11 @@ static void test_every_active_channel_sends_exactly_one_line_per_period(void)
 
 static void test_all_seven_channels_fit_in_one_tick(void)
 {
-    /* 🔴 예전의 "burst" 개념(밀린 표본을 나눠 쏟는 것)은 없어졌지만, 채널
-     *    전부(7)+포트×양(최대 12)을 합쳐도 MK_TELEM_MAX_LINES(16) 안에
-     *    드는지는 여전히 볼 값어치가 있다 — din 루프가 이 상수를 계속
-     *    쓰기 때문에 값을 낮추면 여기서 먼저 걸린다. */
+    /* 🔴 [정정, 2026-08-19] "밀린 표본을 나눠 쏟는" burst 개념이 되돌아왔다
+     *    (큐 우선 원칙) — 이 시험은 그것과는 다른 경우다: 이 시험은 큐를
+     *    안 채우므로(set_last 만) 채널마다 정확히 한 줄이고, 일곱 채널을
+     *    다 켜도 MK_TELEM_MAX_LINES(16) 안에 드는지를 본다. din 루프가
+     *    이 상수를 그대로 쓰기 때문에 값을 낮추면 여기서 먼저 걸린다. */
     setup();
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
         mk_ads_configure(&ADS, ch, 1, 100, 0);
@@ -753,7 +814,9 @@ int main(int argc, char **argv)
     test_time_source_follows_attached_timeax_grade();
     test_seq_increases_so_the_host_can_find_gaps();
     test_repeats_the_last_value_without_new_acquisition();
-    test_only_the_latest_sample_survives_when_acquisition_outpaces_tx();
+    test_queue_drains_fully_each_sample_gets_its_own_line();
+    test_drops_stay_zero_when_send_keeps_up_with_collection();
+    test_drops_rise_when_send_stalls_long_enough_to_overflow();
     test_changing_tx_period_ms_changes_the_interval();
     test_field_mask_selects();
     test_value_follows_the_spec_formula();

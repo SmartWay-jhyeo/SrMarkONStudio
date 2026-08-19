@@ -156,7 +156,19 @@ typedef struct MkI2c {
      *    슬롯 번호는 mk_i2c_kind_quantities() 가 매기는 순서와 같다(온습도
      *    라면 0=temp, 1=humidity). 포트의 kind·addr 이 바뀌거나 꺼지면
      *    이 슬롯을 비운다 — 옛 종류가 내던 값을 새 종류인 척 계속 내보내지
-     *    않기 위해서다. */
+     *    않기 위해서다.
+     *
+     *    🔴 [정정, 2026-08-19] ain 쪽은 "큐 우선, last 는 큐가 빌 때만"으로
+     *    되돌아갔다(mk_ads1256.h 의 MkAdsChannel.last 주석) — 큐를 쓰는
+     *    목적이 "수집 우선, 송신 지연 흡수"였기 때문이다. 여기 큐를 다시
+     *    두지 않는 이유는 게으름이 아니라 구조다: mk_i2c_tick() 이 한
+     *    바퀴에 포트를 하나만 나아가게 하고, 같은 포트·슬롯이 다음 값을
+     *    내려면 그 포트가 WARMUP·eff_period 를 다시 거쳐야 해서(모든
+     *    드라이버가 180ms~2s), 같은 슬롯에 "아직 안 보낸 표본 둘"이 동시에
+     *    쌓일 여지가 없다 — last 하나가 항상 "큐 안에 0개 또는 1개" 상태와
+     *    같다. 즉 이 자리는 ain 의 큐-우선 원칙이 퇴화한(값이 하나뿐인)
+     *    형태이지, 다른 원칙을 쓰는 것이 아니다. 근거는
+     *    mk_telem.c 의 i2c 배출부 주석에도 있다. */
     MkI2cOut  last[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
     uint8_t   last_valid[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
 } MkI2c;
