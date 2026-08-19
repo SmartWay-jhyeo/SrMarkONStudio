@@ -56,6 +56,7 @@ C_SRC = \
   app/mk_glyph.c \
   app/mk_text.c \
   app/mk_screen.c \
+  bsp/mk_clock.c \
   bsp/mk_lcd_io.c \
   bsp/mk_gnss_io.c \
   bsp/mk_time.c \

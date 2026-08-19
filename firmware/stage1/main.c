@@ -41,6 +41,7 @@
 #include "bsp/mk_lcd_io.h"
 #include "bsp/mk_gnss_io.h"
 #include "bsp/mk_critsec.h"
+#include "bsp/mk_clock.h"
 #include "mk_config.h"
 #include "mk_flash.h"
 #include "mk_hostlink.h"
@@ -59,17 +60,19 @@
  * 921600 이면 11.8% 를 쓰고 카탈로그가 0.1초에 온다.
  * (docs/measurements/2026-08-14_link_budget.md)
  *
- * H723 쪽 여유는 충분하다. APB1 = 64 MHz, USARTDIV = 64e6/921600 = 69.44
- * 이고 BRR 은 정수 69 이므로 실제 927,536 baud — 오차 +0.64% 다. UART
- * 허용 오차(보통 2~3%) 안이다. */
+ * H723 쪽 여유는 충분하다. APB1 = 64 MHz(MK_USART3_KERNEL_HZ),
+ * USARTDIV = 64e6/921600 = 69.44 이고 BRR 은 정수 69 이므로 실제
+ * 927,536 baud — 오차 +0.64% 다. UART 허용 오차(보통 2~3%) 안이다.
+ *
+ * 🔴 이 오차는 클럭에 매여 있다. 클럭을 바꾸면 BRR 이 다른 정수로 떨어져
+ *    오차가 달라지므로, host/tests/test_firmware_clock.py 가 커널 클럭과
+ *    이 상수로 오차를 다시 계산해 2 % 안인지 본다. */
 #define UART_BAUD    921600u
 
 /* 🔴 상태 LED(PD11)와 전원 레일(PD8·PD9·PD10)은 같은 포트에 있다.
  *    그래서 GPIOD 를 만지는 파일을 bsp/mk_rails.c 하나로 묶었다 —
  *    안전 검사(test_firmware_safety.py)가 빠짐없이 돌게 하기 위해서다.
  *    여기서는 mk_rails_led() 를 부르기만 한다. */
-
-static void SystemClock_Config(void);
 
 /* mk_hostlink 가 줄을 내보낼 때 부른다. */
 static void emit(void *ctx, const char *line, size_t len)
@@ -269,7 +272,11 @@ static void sync_leds(MkConfig *cfg, int64_t now_ms)
 int main(void)
 {
     HAL_Init();
-    SystemClock_Config();
+    /* 🔴 HAL_Init() 뒤여야 한다. 크리스털 대기 시한을 HAL_GetTick() 으로
+     *    재는데, SysTick 은 HAL_Init() 이 켠다. 순서가 바뀌면 시한이
+     *    영영 안 지나가고 — 벽돌을 막으려고 넣은 장치가 그 자리에서
+     *    벽돌을 만든다. */
+    mk_clock_init();
 
     /* 🔴 [검토 지적 I3] 큐를 쓰는 어떤 초기화보다도 먼저 등록한다.
      *    mk_queue_push/pop 이 이 훅으로 PRIMASK 임계구역을 얻는다 — 늦게
@@ -530,35 +537,11 @@ int main(void)
 /* 참고 펌웨어(h723_sensor_read)에서 그대로 가져왔다. 이 보드에서 실증된
  * 유일한 클럭 설정이다. HSI 64 MHz, PLL 없음, 모든 분주 1 → APB1 64 MHz.
  * USART3 이 APB1 에 있으므로 115200 은 물론 921600 도 낼 수 있다. */
-static void SystemClock_Config(void)
-{
-    RCC_OscInitTypeDef osc = {0};
-    RCC_ClkInitTypeDef clk = {0};
-
-    HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
-    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-    while (!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {
-    }
-
-    osc.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
-    osc.HSIState            = RCC_HSI_DIV1;          /* HSI = 64 MHz */
-    osc.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    osc.PLL.PLLState        = RCC_PLL_NONE;
-    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
-        for (;;) { }
-    }
-
-    clk.ClockType = RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_HCLK |
-                    RCC_CLOCKTYPE_D1PCLK1 | RCC_CLOCKTYPE_PCLK1 |
-                    RCC_CLOCKTYPE_PCLK2 | RCC_CLOCKTYPE_D3PCLK1;
-    clk.SYSCLKSource   = RCC_SYSCLKSOURCE_HSI;
-    clk.SYSCLKDivider  = RCC_SYSCLK_DIV1;
-    clk.AHBCLKDivider  = RCC_HCLK_DIV1;
-    clk.APB3CLKDivider = RCC_APB3_DIV1;
-    clk.APB1CLKDivider = RCC_APB1_DIV1;
-    clk.APB2CLKDivider = RCC_APB2_DIV1;
-    clk.APB4CLKDivider = RCC_APB4_DIV1;
-    if (HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_1) != HAL_OK) {
-        for (;;) { }
-    }
-}
+/* 🔴 클럭 설정은 bsp/mk_clock.c 로 옮겼다.
+ *
+ *    여기 있던 판은 HSI 를 그대로 쓰고, 실패하면 `for (;;)` 로 섰다.
+ *    HSE 크리스털을 쓰기 시작하면 그 두 성질이 모두 위험해진다 — 발진기가
+ *    안 뜨는 것은 실제로 일어나는 일이고, 거기서 서면 보드가 벽돌이 된다.
+ *
+ *    옮기면서 얻은 것: 클럭 숫자가 mk_clock.h 한 곳에 모였고, 파생 상수
+ *    (프리스케일·분주비·대기 루프)가 거기서 나온다. */

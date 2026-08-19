@@ -95,10 +95,25 @@
   *        This value is used by the RCC HAL module to compute the system frequency
   *        (when HSE is used as system clock source, directly or through the PLL).
   */
+/* 🔴 이 보드의 Y1 은 **25 MHz** 다 (넷리스트: Y1 = 25MHz, HSE_IN ↔ U5.23
+ *    PH0-OSC_IN, HSE_OUT ↔ U5.24 PH1-OSC_OUT, 부하 커패시터 C90·C91).
+ *
+ *    ST 원본의 8 MHz 를 그대로 두면 HAL_RCC_GetSysClockFreq() 가 sys_ck 를
+ *    25/8 배로 틀리게 계산하고, 그 값이 SystemCoreClock → SysTick 재적재로
+ *    간다. 즉 **HAL_GetTick() 이 통째로 틀린다** — 하트비트 3초 타임아웃도
+ *    PPS 나이도 함께 틀리는데, 코드는 아무 오류도 내지 않는다.
+ *
+ *    값의 근거는 bsp/mk_clock.h 한 곳이고, mk_clock.c 가 두 값이 같은지
+ *    _Static_assert 로 못박는다. 여기에 숫자로 적는 이유는 이 헤더가
+ *    HAL 전체보다 먼저 읽히기 때문이다. */
 #if !defined  (HSE_VALUE)
-#define HSE_VALUE    ((uint32_t)8000000) /*!< Value of the External oscillator in Hz */
+#define HSE_VALUE    ((uint32_t)25000000) /*!< Value of the External oscillator in Hz */
 #endif /* HSE_VALUE */
 
+/* 🔴 크리스털이 안 뜰 때 여기서 잘린다. mk_clock.h 의 MK_HSE_TIMEOUT_MS 와
+ *    같아야 한다(mk_clock.c 가 확인한다) — 이것이 "벽돌이 되지 않는다" 의
+ *    실제 구현이다. HAL 은 이 시한을 넘기면 HAL_TIMEOUT 을 돌려주고,
+ *    mk_clock_init() 이 그것을 보고 HSI 로 계속 부팅한다. */
 #if !defined  (HSE_STARTUP_TIMEOUT)
   #define HSE_STARTUP_TIMEOUT    ((uint32_t)100)   /*!< Time out for HSE start up, in ms */
 #endif /* HSE_STARTUP_TIMEOUT */
