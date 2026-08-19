@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import statistics
 from collections import deque
 from dataclasses import dataclass, field, replace
 
@@ -61,6 +62,49 @@ STALE_FAULT_S = 3.0
 #:    화면인데 정작 보고 싶은 텔레메트리가 그 사이에 파묻히면 이 화면의
 #:    존재 이유가 없다. 체크박스로 언제든 다시 켤 수 있다(`qt/stream_view.py`).
 DEFAULT_HIDDEN_TYPES: frozenset[str] = frozenset({"cfg_item", "cfg_field", "cfg_end"})
+
+#: 도착·보드 간격 통계에 쓰는 최근 표본 수(타입·커넥터별로 각각).
+#:
+#: 🔴 **개수 기반**이지 시간 기반이 아니다. `WINDOW_S`(2초)처럼 시간으로
+#:    자르면 느린 채널(예: I2C, 실효 주기가 100ms 를 훌쩍 넘는다 —
+#:    HANDOFF.md §7.2)은 창 안에 표본이 한둘뿐이라 최소·중앙·최대가
+#:    의미가 없다. 개수 창은 채널마다 실제 주기에 맞춰 저절로 시간
+#:    폭이 늘어난다. 20 은 기본 ain 주기(100ms)가 `WINDOW_S` 안에
+#:    채우는 표본 수(~20개)와 같은 근거를 재사용한 것이다.
+#:
+#: 🔴 **성능 전제**: 채널별 창은 고정 길이 `deque` 라 표본이 아무리
+#:    쌓여도 계산이 이 상수를 넘지 않는다 — `ingest()` 가 들어오는 줄마다
+#:    갱신하고, `summary()` 는 이미 계산된 작은 창만 읽는다. 매 프레임
+#:    전체 버퍼(`DISPLAY_MAXLEN`)를 훑지 않는다.
+INTERVAL_SAMPLES = 20
+
+#: seq 누락 구간을 몇 개까지 기억하는가.
+#:
+#: 🔴 링크를 의심할 때 필요한 건 총계가 아니라 "최근에 어디가 비었나"다.
+#:    무한히 쌓으면 오래된 것이 화면을 채워 정작 지금 문제가 되는 구간이
+#:    묻힌다.
+RECENT_GAPS_MAX = 8
+
+#: 초당 줄 수 흐름(스파크라인) 버킷 하나의 길이(초)와 버킷 개수.
+#:
+#: 🔴 `WINDOW_S`(2초)와 같은 값을 재사용한다 — 그 창이 이미 "흔들림 없이
+#:    반응하는 최소 폭"으로 확정된 값이다(머리말 참조). 30개 × 2초 = 60초.
+#:    "30초 전에 잠깐 끊겼는지" 를 보기에 충분한 길이이면서, 문자
+#:    스파크라인 한 줄에 다 들어갈 만큼 짧다.
+RATE_BUCKET_S = WINDOW_S
+RATE_BUCKET_COUNT = 30
+
+#: 스파크라인에 쓰는 문자 — 유니코드 블록 요소 8단계(U+2581~U+2588).
+#:
+#: 🔴 그래프 라이브러리를 새로 들이지 않는다(요구사항). 대시보드의 흐름선
+#:    (`qt/gauge.py`·`qt/sensor_card.py` 의 `QPainter` 기반 트레이스)은
+#:    "센서 값 하나의 시계열"을 그리도록 짜여 있어 좌표축·스케일이 물리량
+#:    기준이다 — "버킷별 줄 수" 라는 다른 종류의 시계열을 억지로 끼워
+#:    맞추려면 그 위젯의 가정을 다시 풀어야 한다. 이 화면은 이미 콘솔
+#:    (텍스트) 중심이라 문자 스파크라인이 시각 언어와도 맞고, `stream.py`
+#:    가 Qt 를 몰라야 하는 제약(계산은 여기, 그리기는 `qt/`)과도 자연히
+#:    맞는다 — 문자열이므로 계산 결과 자체가 이미 "그림"이다.
+_SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
 
 @dataclass(frozen=True)
@@ -232,9 +276,52 @@ class TypeSummary:
 
 
 @dataclass(frozen=True)
+class IntervalStats:
+    """간격(ms) 최소·중앙·최대. 표본이 2개 미만이면 전부 `None` 이다 —
+    "아직 잴 수 없다" 를 0 과 섞으면 안 된다."""
+
+    min_ms: float | None = None
+    median_ms: float | None = None
+    max_ms: float | None = None
+    sample_count: int = 0
+
+
+@dataclass(frozen=True)
+class ChannelIntervals:
+    """타입(·커넥터) 하나의 도착·보드 간격 요약.
+
+    🔴 **이 화면의 핵심 판정.** `arrival` 은 호스트가 받은 시각의 간격,
+       `board` 는 레코드 안 `t`(보드가 찍은 획득 시각)의 간격이다 — 둘을
+       따로 재야 HANDOFF.md §3 의 "표본 간격 202ms" 원인이 링크/호스트
+       (arrival 만 벌어짐)인지 보드(둘 다 벌어짐)인지 갈린다.
+    """
+
+    type: str
+    connector: int | None
+    arrival: IntervalStats
+    board: IntervalStats
+    #: 최근 창 안에서 `t` 가 안 바뀐(반복 전송, board 간격 0) 관찰 횟수.
+    #: 펌웨어가 "마지막 값을 주기마다 다시 보내는" 구조라 값이 같아도
+    #: 새 표본이 아니라 붙들고 있는 값일 수 있다 — 그 사실을 명시한다.
+    repeat_count: int = 0
+
+
+@dataclass(frozen=True)
+class SeqGap:
+    """seq 누락 구간 하나. 개수만이 아니라 **어디서** 빠졌는지를 남긴다."""
+
+    seq_lo: int
+    seq_hi: int
+    count: int
+    arrived_s: float
+
+
+@dataclass(frozen=True)
 class StreamSummary:
-    """상단 요약 전체. 🔴 `types`·`bytes_per_s` 는 창 기반이고, `total_*` ·
-    `seq_missing` 은 누적이다 — 섞어 쓰지 않는다(`StreamState.summary` 머리말)."""
+    """상단 요약 전체. 🔴 `types`·`bytes_per_s`·`intervals`·`rate_sparkline`
+    은 창 기반이고, `total_*`·`seq_missing`은 누적이다 — 섞어 쓰지
+    않는다(`StreamState.summary` 머리말). `recent_gaps` 는 개수 상한
+    (`RECENT_GAPS_MAX`)이 있는 최근 이력이라 그 중간 성격이다."""
 
     types: tuple[TypeSummary, ...] = ()
     bytes_per_s: float = 0.0
@@ -243,6 +330,89 @@ class StreamSummary:
     seq_missing: int = 0
     last_line_at: float | None = None
     since_last_s: float | None = None
+    intervals: tuple[ChannelIntervals, ...] = ()
+    recent_gaps: tuple[SeqGap, ...] = ()
+    rate_sparkline: str = ""
+
+
+def _fmt_stats(s: IntervalStats) -> str:
+    if s.sample_count == 0:
+        return _BLANK
+    return f"{s.min_ms:.0f}~{s.median_ms:.0f}~{s.max_ms:.0f}ms"
+
+
+def format_interval(ci: ChannelIntervals) -> str:
+    """채널 하나의 간격 요약 한 줄 — "최소~중앙~최대" 형식.
+
+    🔴 도착과 보드를 **나란히, 이름표를 달아** 찍는다. 둘이 같으면 보드가
+       늦게 보낸 것이고, 도착만 벌어지면 링크·호스트 지연이다 —
+       사람이 두 숫자를 바로 대조할 수 있어야 그 판단을 할 수 있다.
+    """
+    label = ci.type if ci.connector is None else f"{ci.type}/J{ci.connector}"
+    text = (f"{label:<10} 도착 {_fmt_stats(ci.arrival):<16} "
+            f"보드 {_fmt_stats(ci.board):<16}")
+    if ci.repeat_count:
+        # 🔴 반복 전송(같은 t)이 섞여 있다는 것 자체가 신호다 — 못 보면
+        #    "새 표본이 계속 온다" 로 착각한다(머리말 참조).
+        text += f" 반복{ci.repeat_count}"
+    return text
+
+
+def format_gap(gap: SeqGap, now_s: float) -> str:
+    """seq 누락 구간 한 줄 — "seq 1204~1207 (4개) · 12.3초 전" 형식."""
+    ago = now_s - gap.arrived_s
+    if gap.count == 1:
+        span = f"seq {gap.seq_lo}"
+    else:
+        span = f"seq {gap.seq_lo}~{gap.seq_hi}"
+    return f"{span} ({gap.count}개) · {ago:.1f}초 전"
+
+
+class _ChannelWindow:
+    """타입(·커넥터) 하나의 최근 간격 표본. `StreamState` 내부 전용.
+
+    🔴 고정 길이 `deque` 둘(도착·보드)만 든다 — `observe()` 가 줄 하나당
+       O(1)로 갱신하고, 통계는 그 작은 창에서만 계산한다. `StreamState`
+       가 이 상한을 지키는 이유(성능 전제)와 같다.
+    """
+
+    __slots__ = ("_last_arrived_s", "_last_t", "_arrival_ms", "_t_ms")
+
+    def __init__(self, maxlen: int) -> None:
+        self._last_arrived_s: float | None = None
+        self._last_t: int | None = None
+        self._arrival_ms: deque[float] = deque(maxlen=maxlen)
+        self._t_ms: deque[float] = deque(maxlen=maxlen)
+
+    def observe(self, arrived_s: float, t: int) -> None:
+        """🔴 도착 간격과 보드 간격을 **서로 다른 입력**에서 각각 계산한다
+        — 이것이 흔들리면(예: 보드 간격도 arrived_s 로 잰다) 핵심 판정이
+        무너진다(`test_interval_summary_separates_arrival_jitter_from_board_cadence`
+        가 이걸 되돌림 검사로 잡는다)."""
+        if self._last_arrived_s is not None:
+            self._arrival_ms.append((arrived_s - self._last_arrived_s) * 1000.0)
+        if self._last_t is not None:
+            self._t_ms.append(float(t - self._last_t))
+        self._last_arrived_s = arrived_s
+        self._last_t = t
+
+    def repeat_count(self) -> int:
+        """`t` 간격이 0 인(=같은 `t` 가 반복된) 관찰 수. 창 안에서만 센다."""
+        return sum(1 for d in self._t_ms if d == 0.0)
+
+    @staticmethod
+    def _stats(samples: deque[float]) -> IntervalStats:
+        if not samples:
+            return IntervalStats()
+        xs = sorted(samples)
+        return IntervalStats(min_ms=xs[0], median_ms=statistics.median(xs),
+                              max_ms=xs[-1], sample_count=len(xs))
+
+    def arrival_stats(self) -> IntervalStats:
+        return self._stats(self._arrival_ms)
+
+    def board_stats(self) -> IntervalStats:
+        return self._stats(self._t_ms)
 
 
 class StreamState:
@@ -271,6 +441,25 @@ class StreamState:
         self._frozen: tuple[StreamRow, ...] | None = None
         #: `None` = 전부 보여준다.
         self.filter_types: set[str] | None = None
+        #: `None` = 커넥터로 거르지 않는다. 타입 필터와 AND 로 겹친다.
+        self.filter_connectors: set[int] | None = None
+
+        #: (타입, 커넥터) 별 최근 간격 창. 커넥터가 없는 레코드(cmd 응답
+        #: 등)는 키의 커넥터 자리가 `None` 이다.
+        self._channels: dict[tuple[str, int | None], _ChannelWindow] = {}
+        #: 커넥터별 누적 수신 수 — 필터 체크박스를 무엇으로 채울지 화면이
+        #: 이걸 보고 정한다(`type_counts` 와 같은 역할, 커넥터 버전).
+        self.connector_counts: dict[int, int] = {}
+
+        #: 최근 seq 누락 구간. 개수 상한(`RECENT_GAPS_MAX`)이 있는
+        #: deque 라 오래된 구간은 스스로 밀려난다.
+        self._recent_gaps: deque[SeqGap] = deque(maxlen=RECENT_GAPS_MAX)
+
+        #: 초당 줄 수 흐름(스파크라인) 버킷. `_rate_bucket_start` 는 지금
+        #: 채우고 있는 버킷의 시작 시각 — `None` 이면 아직 아무것도
+        #: 안 왔다.
+        self._rate_buckets: deque[int] = deque(maxlen=RATE_BUCKET_COUNT)
+        self._rate_bucket_start: float | None = None
 
     # -------------------------------------------------------------- 수신
     def ingest(self, lines: list[str], now_s: float) -> None:
@@ -286,8 +475,63 @@ class StreamState:
             self.total_bytes += len(line.encode("utf-8"))
             self.type_counts[row.type] = self.type_counts.get(row.type, 0) + 1
             self.last_line_at = now_s
+            if row.connector is not None:
+                self.connector_counts[row.connector] = (
+                    self.connector_counts.get(row.connector, 0) + 1
+                )
+            if row.t is not None:
+                # 🔴 O(1) 갱신 — 채널당 고정 길이 창만 만진다. 여기가
+                #    "들어올 때 갱신" 쪽이다(성능 전제, 머리말 참조).
+                key = (row.type, row.connector)
+                window = self._channels.get(key)
+                if window is None:
+                    window = _ChannelWindow(INTERVAL_SAMPLES)
+                    self._channels[key] = window
+                window.observe(now_s, row.t)
             if row.seq is not None and is_telemetry({"type": row.type}):
-                self._seq_tracker.observe(row.seq)
+                missing = self._seq_tracker.observe(row.seq)
+                if missing > 0:
+                    # observe() 가 돌려주는 missing 은 (이전 seq, 이번 seq)
+                    # 사이에 비어 있던 개수다 — 그 범위를 그대로 구간으로
+                    # 남긴다. SeqTracker 의 사생활(_last)을 들여다보지
+                    # 않고도 seq_lo/seq_hi 를 셈으로 되짚을 수 있다.
+                    self._recent_gaps.append(SeqGap(
+                        seq_lo=row.seq - missing,
+                        seq_hi=row.seq - 1,
+                        count=missing,
+                        arrived_s=now_s,
+                    ))
+        self._record_rate(now_s, len(lines))
+
+    def _record_rate(self, now_s: float, n: int) -> None:
+        """초당 줄 수 흐름 버킷을 채운다. `ingest()` 호출 하나당 한 번만
+        — 워커 한 틱이 곧 하나의 시각(`now_s`)이라, 그 틱 안의 줄들을
+        낱개 시각으로 쪼개는 것은 없는 정밀도를 지어내는 것이다.
+
+        🔴 조용한 틱(빈 `lines`)도 반드시 부른다 — 안 그러면 "끊긴 30초"
+           가 버킷에 안 새겨져 스파크라인이 끊김을 못 보여준다.
+        """
+        if self._rate_bucket_start is None:
+            if n == 0:
+                # 아직 실제로 온 줄이 하나도 없다 — `summary()` 가 매 틱
+                # `n=0` 으로 부르는 것만으로 버킷을 만들면(=스파크라인이
+                # 생기면) "연결 전"과 "연결됐는데 조용함" 을 구분할 수
+                # 없어진다. 첫 실제 줄이 올 때까지는 아무것도 안 한다.
+                return
+            self._rate_bucket_start = now_s
+            self._rate_buckets.append(0)
+        elapsed = now_s - self._rate_bucket_start
+        if elapsed >= RATE_BUCKET_S:
+            # 버킷을 건너뛴 만큼만 0 으로 채운다. maxlen 을 넘는 만큼은
+            # 어차피 곧바로 밀려나므로 그 이상 반복할 이유가 없다 —
+            # 오래 멈춰 있던 스트림이 다시 살아나도 이 루프가 무한히
+            # 돌지 않는다(성능 전제).
+            missed = int(elapsed // RATE_BUCKET_S)
+            for _ in range(min(missed, RATE_BUCKET_COUNT)):
+                self._rate_buckets.append(0)
+            self._rate_bucket_start += missed * RATE_BUCKET_S
+        if self._rate_buckets:
+            self._rate_buckets[-1] += n
 
     # -------------------------------------------------------------- 표시
     def pause(self) -> None:
@@ -304,13 +548,27 @@ class StreamState:
         """`None` 이면 전부 보여준다."""
         self.filter_types = types
 
+    def set_connector_filter(self, connectors: set[int] | None) -> None:
+        """`None` 이면 커넥터로 거르지 않는다.
+
+        🔴 타입 필터와 별개의 축이다 — `ain` 7채널이 한 덩어리라 J4 만
+           이상할 때 못 보던 것을 이걸로 잡는다. 커넥터가 없는 레코드
+           (`row.connector is None`, cmd 응답 등)는 필터가 걸리면 함께
+           숨는다 — 특정 커넥터를 지목한 것은 그 채널만 보겠다는 뜻이라,
+           커넥터 정보가 아예 없는 줄까지 끼워 주면 격리가 흐려진다.
+        """
+        self.filter_connectors = connectors
+
     def visible_rows(self) -> tuple[StreamRow, ...]:
-        """지금 화면에 그릴 줄들 — 일시정지·필터가 적용된 결과."""
-        base = (self._frozen if (self.paused and self._frozen is not None)
+        """지금 화면에 그릴 줄들 — 일시정지·필터(타입 AND 커넥터)가
+        적용된 결과."""
+        rows = (self._frozen if (self.paused and self._frozen is not None)
                 else tuple(self._rows))
-        if self.filter_types is None:
-            return base
-        return tuple(r for r in base if r.type in self.filter_types)
+        if self.filter_types is not None:
+            rows = tuple(r for r in rows if r.type in self.filter_types)
+        if self.filter_connectors is not None:
+            rows = tuple(r for r in rows if r.connector in self.filter_connectors)
+        return rows
 
     # -------------------------------------------------------------- 요약
     def summary(self, now_s: float) -> StreamSummary:
@@ -322,6 +580,14 @@ class StreamState:
            `_rows` 가 상한을 넘겨 오래된 표본이 밀려나도 줄면 안 되는
            수치라서 따로 들고 있다(`type_counts`·`total_lines` 등).
         """
+        # 🔴 새 줄이 없는 틱에도 부른다(`n=0`) — 그래야 "조용해진 지 얼마나
+        #    됐는가" 가 스파크라인에 반영된다. `ingest()` 가 이미 매 틱
+        #    부르므로 보통은 아무 효과가 없지만(같은 now_s), summary() 를
+        #    ingest() 보다 나중 시각으로 부르는 호출자(시험 등)도 버킷이
+        #    실제 경과 시간을 따라가야 한다. 비용은 버킷 상한(30)에 묶여
+        #    있어 행 버퍼 크기와 무관하다(성능 전제).
+        self._record_rate(now_s, 0)
+
         window_start = now_s - self._window_s
         windowed = [r for r in self._rows if r.arrived_s >= window_start]
 
@@ -355,6 +621,41 @@ class StreamState:
             seq_missing=self._seq_tracker.missing_total,
             last_line_at=self.last_line_at,
             since_last_s=since_last,
+            intervals=self._interval_summaries(),
+            recent_gaps=tuple(self._recent_gaps),
+            rate_sparkline=self._rate_sparkline(),
+        )
+
+    def _interval_summaries(self) -> tuple[ChannelIntervals, ...]:
+        """🔴 `self._channels` 만 읽는다 — 채널 수(수십 개 이하)에 비례할
+        뿐 수신 줄 수(`_rows`)와 무관하다. 채널마다 안의 창도
+        `INTERVAL_SAMPLES` 로 고정이라 이 함수 전체가 항상 상수에 가까운
+        비용이다(성능 전제)."""
+        out = [
+            ChannelIntervals(
+                type=t, connector=conn,
+                arrival=window.arrival_stats(),
+                board=window.board_stats(),
+                repeat_count=window.repeat_count(),
+            )
+            for (t, conn), window in self._channels.items()
+        ]
+        # 정렬 기준을 고정해 둔다 — 화면이 매 프레임 순서를 다시 정해
+        # 항목이 눈에서 튀는 것을 막는다.
+        out.sort(key=lambda c: (c.type, c.connector if c.connector is not None else -1))
+        return tuple(out)
+
+    def _rate_sparkline(self) -> str:
+        """최근 `RATE_BUCKET_COUNT`×`RATE_BUCKET_S` 초의 줄 수 흐름을 문자
+        하나당 버킷 하나로 그린다. 🔴 버킷 개수가 고정이라(deque maxlen)
+        이 계산도 상수 비용이다."""
+        if not self._rate_buckets:
+            return ""
+        peak = max(self._rate_buckets) or 1
+        top = len(_SPARK_CHARS) - 1
+        return "".join(
+            _SPARK_CHARS[min(top, round(count / peak * top))]
+            for count in self._rate_buckets
         )
 
     # -------------------------------------------------------------- 저장

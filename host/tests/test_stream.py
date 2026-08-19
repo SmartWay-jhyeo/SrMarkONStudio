@@ -7,8 +7,14 @@
 from host.core.framing import build_command
 from host.gui.stream import (
     DEFAULT_HIDDEN_TYPES,
+    INTERVAL_SAMPLES,
+    RATE_BUCKET_COUNT,
+    RATE_BUCKET_S,
+    RECENT_GAPS_MAX,
     StreamState,
+    format_gap,
     format_header,
+    format_interval,
     format_row,
     staleness_level,
 )
@@ -311,3 +317,229 @@ def test_format_header_names_the_columns():
 
 def test_default_hidden_types_are_exactly_the_catalog_record_types():
     assert DEFAULT_HIDDEN_TYPES == frozenset({"cfg_item", "cfg_field", "cfg_end"})
+
+
+# ------------------------------------------------------------ 도착 간격 분포
+#
+# 🔴 HANDOFF.md §3 미해결 문제 — "워커 한 바퀴 200ms: 보드는 100ms로
+#    보내는데 화면의 표본 간격이 202ms다." 이 원인이 링크/호스트인지
+#    보드인지 가르는 것이 이 기능의 존재 이유다. 그래서 **도착 간격**
+#    (host 가 받은 시각의 차)과 **보드 간격**(레코드의 `t` 값의 차)을
+#    반드시 따로 재야 한다 — 되돌림 검사로 못박는다.
+
+def test_interval_summary_separates_arrival_jitter_from_board_cadence():
+    """🔴 되돌림 검사 — 둘을 같은 값으로 계산하면(예: board 간격도 도착
+    시각으로 잰다) 이 시험이 깨진다. 보드는 정확히 100ms 마다 `t` 를
+    찍었는데(단조 증가), 호스트 수신은 들쭉날쭉하게(80~260ms) 흔들리는
+    상황을 흉내낸다 — 실제로 의심되는 상황과 같다."""
+    s = StreamState()
+    arrivals = [0.0, 0.08, 0.34, 0.42, 0.68]      # 들쭉날쭉한 도착
+    for i, arrived in enumerate(arrivals):
+        s.ingest([_ain_line(i, connector_id=4)], now_s=arrived)
+
+    ci = next(c for c in s.summary(now_s=1.0).intervals
+              if c.type == "ain" and c.connector == 4)
+
+    # 보드 간격: t 가 seq*100 이므로 항상 정확히 100ms.
+    assert ci.board.min_ms == 100.0
+    assert ci.board.max_ms == 100.0
+    assert ci.board.median_ms == 100.0
+
+    # 도착 간격: 80,260,80,260ms — 흔들린다. 최대가 보드 간격보다 크다.
+    assert ci.arrival.max_ms > ci.board.max_ms
+    assert ci.arrival.min_ms < ci.board.min_ms
+    assert ci.arrival.sample_count == 4
+
+
+def test_interval_summary_is_grouped_per_type_and_connector():
+    """🔴 "가능하면 커넥터별" — J4 만 이상해도 다른 채널에 묻히면 안 된다."""
+    s = StreamState()
+    for i in range(3):
+        s.ingest([_ain_line(i, connector_id=4)], now_s=i * 0.1)
+        s.ingest([_ain_line(i, connector_id=5)], now_s=i * 0.1)
+
+    intervals = s.summary(now_s=1.0).intervals
+    keys = {(c.type, c.connector) for c in intervals}
+    assert ("ain", 4) in keys
+    assert ("ain", 5) in keys
+
+
+def test_repeated_t_is_counted_and_visible():
+    """🔴 펌웨어가 "마지막 값을 주기마다 다시 보내는" 구조로 바뀌었다 —
+    같은 `t` 가 반복되면 새 표본이 아니라 붙들고 있는 값이라는 사실이
+    보여야 한다."""
+    s = StreamState()
+    # t 가 0,0,0,100 처럼 세 번 반복되다 한 번 전진한다.
+    lines = [
+        '{"schema_ver":3,"seq":0,"t":1000,"type":"ain","connector_id":4,'
+        '"raw":1,"ma":1.0,"value":1.0,"unit":"bar","status":0}',
+        '{"schema_ver":3,"seq":1,"t":1000,"type":"ain","connector_id":4,'
+        '"raw":1,"ma":1.0,"value":1.0,"unit":"bar","status":0}',
+        '{"schema_ver":3,"seq":2,"t":1000,"type":"ain","connector_id":4,'
+        '"raw":1,"ma":1.0,"value":1.0,"unit":"bar","status":0}',
+        '{"schema_ver":3,"seq":3,"t":1100,"type":"ain","connector_id":4,'
+        '"raw":1,"ma":1.0,"value":1.0,"unit":"bar","status":0}',
+    ]
+    for i, line in enumerate(lines):
+        s.ingest([line], now_s=i * 0.1)
+
+    ci = next(c for c in s.summary(now_s=1.0).intervals
+              if c.type == "ain" and c.connector == 4)
+    assert ci.repeat_count == 2                # t 가 안 바뀐 관찰 두 번
+    assert ci.board.min_ms == 0.0               # 반복은 간격 0 으로 실린다
+
+
+def test_interval_stats_are_empty_before_two_samples():
+    """표본이 하나뿐이면 간격을 잴 수 없다 — None 이어야지 0 이 아니다."""
+    s = StreamState()
+    s.ingest([_ain_line(0, connector_id=4)], now_s=0.0)
+    ci = next(c for c in s.summary(now_s=1.0).intervals
+              if c.type == "ain" and c.connector == 4)
+    assert ci.arrival.sample_count == 0
+    assert ci.arrival.median_ms is None
+    assert ci.board.median_ms is None
+
+
+def test_interval_window_is_bounded_by_sample_count_not_full_buffer():
+    """🔴 성능 전제 — 창이 개수 기반(`INTERVAL_SAMPLES`)이라 표본이 아무리
+    쌓여도 최근 것만 본다. 매 프레임 전체 버퍼를 다시 훑지 않는다는 것의
+    관찰 가능한 결과다."""
+    s = StreamState()
+    for i in range(INTERVAL_SAMPLES * 5):
+        s.ingest([_ain_line(i, connector_id=4)], now_s=i * 0.1)
+    ci = next(c for c in s.summary(now_s=1000.0).intervals
+              if c.type == "ain" and c.connector == 4)
+    assert ci.arrival.sample_count == INTERVAL_SAMPLES
+
+
+def test_format_interval_shows_type_connector_and_both_cadences():
+    s = StreamState()
+    for i in range(3):
+        s.ingest([_ain_line(i, connector_id=4)], now_s=i * 0.1)
+    ci = next(c for c in s.summary(now_s=1.0).intervals
+              if c.type == "ain" and c.connector == 4)
+    text = format_interval(ci)
+    assert "ain" in text
+    assert "4" in text
+
+
+# --------------------------------------------------------------- seq 누락 위치
+#
+# 지금까지는 개수만 알았다. "어느 구간에서 몇 개가 빠졌는지" 최근 몇 건을
+# 남긴다 — 링크를 의심할 때 필요한 건 총계가 아니라 위치다.
+
+def test_seq_gap_records_the_missing_range():
+    s = StreamState()
+    s.ingest([_ain_line(1)], now_s=0.0)
+    s.ingest([_ain_line(5)], now_s=0.5)             # 2,3,4 누락
+    gaps = s.summary(now_s=1.0).recent_gaps
+    assert len(gaps) == 1
+    assert gaps[0].seq_lo == 2
+    assert gaps[0].seq_hi == 4
+    assert gaps[0].count == 3
+    assert gaps[0].arrived_s == 0.5
+
+
+def test_seq_gaps_accumulate_across_multiple_holes():
+    s = StreamState()
+    s.ingest([_ain_line(1)], now_s=0.0)
+    s.ingest([_ain_line(3)], now_s=0.1)              # 2 누락
+    s.ingest([_ain_line(6)], now_s=0.2)              # 4,5 누락
+    gaps = s.summary(now_s=1.0).recent_gaps
+    assert [(g.seq_lo, g.seq_hi) for g in gaps] == [(2, 2), (4, 5)]
+
+
+def test_seq_gaps_are_bounded_to_the_most_recent():
+    s = StreamState()
+    seq = 0
+    s.ingest([_ain_line(seq)], now_s=0.0)
+    for i in range(RECENT_GAPS_MAX + 5):
+        seq += 2                                     # 매번 하나씩 누락
+        s.ingest([_ain_line(seq)], now_s=i * 0.1)
+    gaps = s.summary(now_s=100.0).recent_gaps
+    assert len(gaps) == RECENT_GAPS_MAX
+    # 가장 최근 것이 마지막에 남는다.
+    assert gaps[-1].seq_hi == seq - 1
+
+
+def test_no_gap_recorded_when_no_seq_is_missing():
+    s = StreamState()
+    s.ingest([_ain_line(1)], now_s=0.0)
+    s.ingest([_ain_line(2)], now_s=0.1)
+    assert s.summary(now_s=1.0).recent_gaps == ()
+
+
+def test_format_gap_shows_range_count_and_age():
+    s = StreamState()
+    s.ingest([_ain_line(1)], now_s=0.0)
+    s.ingest([_ain_line(5)], now_s=10.0)             # 2,3,4 누락
+    gap = s.summary(now_s=10.0).recent_gaps[0]
+    text = format_gap(gap, now_s=22.3)
+    assert "2" in text and "4" in text
+    assert "3개" in text                              # 개수
+    assert "12.3" in text                             # 경과 초
+
+
+# ------------------------------------------------------------- 초당 줄 수 흐름
+
+def test_rate_sparkline_reflects_recent_traffic_history():
+    """🔴 그래프 라이브러리를 새로 안 쓴다 — 문자 스파크라인이다."""
+    s = StreamState()
+    # 첫 버킷(0~2초)에 몰아서 보내고, 이후로는 조용하다.
+    for i in range(20):
+        s.ingest([_ain_line(i)], now_s=0.0)
+    spark = s.summary(now_s=RATE_BUCKET_S * (RATE_BUCKET_COUNT - 1)).rate_sparkline
+    assert isinstance(spark, str)
+    assert len(spark) >= 1
+    # 트래픽이 있던 첫 문자가 조용해진 마지막 문자보다 "높이" 가 크다.
+    assert spark[0] != spark[-1]
+
+
+def test_rate_sparkline_is_empty_before_anything_arrives():
+    assert StreamState().summary(now_s=0.0).rate_sparkline == ""
+
+
+def test_rate_sparkline_length_is_bounded():
+    s = StreamState()
+    for i in range(200):
+        s.ingest([_ain_line(i)], now_s=i * 0.5)      # 100초 분량
+    spark = s.summary(now_s=100.0).rate_sparkline
+    assert len(spark) <= RATE_BUCKET_COUNT
+
+
+# ----------------------------------------------------------------- 커넥터 필터
+
+def test_connector_filter_isolates_one_connector():
+    s = StreamState()
+    s.ingest([_ain_line(1, connector_id=4), _ain_line(2, connector_id=5)],
+             now_s=0.0)
+    s.set_connector_filter({4})
+    connectors = {r.connector for r in s.visible_rows()}
+    assert connectors == {4}
+
+
+def test_connector_filter_none_shows_everything():
+    s = StreamState()
+    s.ingest([_ain_line(1, connector_id=4), _ain_line(2, connector_id=5)],
+             now_s=0.0)
+    s.set_connector_filter({4})
+    s.set_connector_filter(None)
+    assert len(s.visible_rows()) == 2
+
+
+def test_connector_filter_combines_with_type_filter():
+    s = StreamState()
+    s.ingest([_ain_line(1, connector_id=4), _i2c_line(2)], now_s=0.0)
+    s.set_filter({"ain"})
+    s.set_connector_filter({4})
+    rows = s.visible_rows()
+    assert len(rows) == 1
+    assert rows[0].type == "ain" and rows[0].connector == 4
+
+
+def test_connector_counts_track_cumulative_arrivals_per_connector():
+    s = StreamState()
+    s.ingest([_ain_line(1, connector_id=4), _ain_line(2, connector_id=4),
+              _ain_line(3, connector_id=5)], now_s=0.0)
+    assert s.connector_counts[4] == 2
+    assert s.connector_counts[5] == 1
