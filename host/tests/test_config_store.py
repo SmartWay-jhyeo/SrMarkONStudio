@@ -439,7 +439,7 @@ def test_sol_debounce_ms_replaces_the_removed_outputs():
     assert item.out is False           # 출력이 아니다 — TEST 이탈에 안 걸린다
 
 
-def test_catalog_item_count_is_one_hundred_and_one():
+def test_catalog_item_count_is_one_hundred_and_two():
     """94 + 2 (`tx.fields` 하나가 `tx.fields_ain`·`tx.fields_i2c`·
     `tx.fields_din` 셋으로 나뉘며 순증가, 2026-08-19 개정 §7.2·§7.5·§7.6)
     + 1 (`lcd.enabled`, LCD 1차 작업 2026-08-19)
@@ -447,13 +447,16 @@ def test_catalog_item_count_is_one_hundred_and_one():
     + 3 (`lcd.spi_khz`·`lcd.verify_ms`·`lcd.redraw_ms`, LCD 회복 작업
          2026-08-19 — 실기기에서 "노이즈 타면 픽셀이 다 깨진다" 가 나왔고
          원인이 아직 무작위라, 클럭·되읽기 주기·전면 갱신 주기를 사용자가
-         현장에서 돌려 볼 수 있어야 했다) = 101.
+         현장에서 돌려 볼 수 있어야 했다)
+    + 1 (`link.baud`, 호스트 링크 속도 2026-08-20 — 채널당 10 ms 를 내려면
+         921600 으로는 대역이 모자라는데, 지금은 굽지 않고 바꿀 방법이
+         없었다. 규격 §4.2) = 102.
 
     이 수가 흔들리면 십중팔구 항목을 늘리거나 줄인 것이다 — 실수인지
     의도인지 이 시험이 먼저 묻는다.
     """
     store = default_store()
-    assert len(store.items) == 101
+    assert len(store.items) == 102
 
 
 # ---- LCD 회복 (2026-08-19, 실기기 증상) --------------------------------------

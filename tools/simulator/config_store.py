@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from host.core.errors import ConfigError, Reason
+from host.core.limits import DEFAULT_BAUD, LINK_BAUD_CHOICES
 from host.core.records import SCHEMA_VER
 
 #: NDJSON 필드 마스크 비트 정의 (규격 §7.2)
@@ -637,6 +638,27 @@ def default_store(path: Path | None = None) -> ConfigStore:
             "gnss.echo", "gnss", "bool", False, False,
             label="GNSS 원시 문장 에코",
             note="받은 줄을 그대로 텔레메트리로 올린다 — 진단용, 대역을 먹는다",
+        ),
+
+        # ── 호스트 링크 (USART3 → F103 → USB VCP, 규격 §4.2) ───────────
+        #
+        # 🔴 이 항목만 다른 절차를 탄다 — 바꾸는 순간 이 대화가 끊긴다.
+        #    보드는 응답을 옛 속도로 먼저 내보내고, 그 뒤 10초 안에 호스트가
+        #    새 속도로 확인($BAUD,CONFIRM)을 보내지 않으면 스스로 되돌아간다.
+        #    시뮬레이터에는 진짜 UART 가 없으므로 device_sim 이 그 **절차**만
+        #    흉내 낸다(속도 자체는 아무 데도 닿지 않는다).
+        #
+        # 🔴 `out` 이 아니다. TEST 를 벗어날 때 기본값으로 되돌리면 링크
+        #    속도가 사용자 몰래 바뀌어 대화가 끊긴다 — `out` 의 뜻이 여기서는
+        #    정반대로 작용한다.
+        #
+        # 🔴 값·라벨·note·choices 가 펌웨어(firmware/stage1/app/mk_cfgtable.c
+        #    의 add_link())와 한 글자도 다르면 안 된다 — crosscheck_
+        #    cfgtable.py 가 대조한다.
+        SimConfigItem(
+            "link.baud", "link", "enum", DEFAULT_BAUD, DEFAULT_BAUD,
+            choices=LINK_BAUD_CHOICES, unit="bps", label="호스트 링크 속도",
+            note="바꾸면 링크가 끊긴다 — 10초 안에 확인 못 하면 되돌아간다",
         ),
 
         # ── LCD 화면 (J25, 데이터시트 §5.9) ────────────────────────────

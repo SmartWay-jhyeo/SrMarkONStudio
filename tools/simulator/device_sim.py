@@ -12,7 +12,12 @@ import math
 
 from host.core.errors import ConfigError, ProtocolError, Reason
 from host.core.framing import build_command, parse_line
-from host.core.limits import MAX_GNSS_TEXT_BYTES
+from host.core.limits import (
+    DEFAULT_BAUD,
+    LINK_BAUD_CONFIRM_MS,
+    LINK_BAUD_KEY,
+    MAX_GNSS_TEXT_BYTES,
+)
 from host.core.records import SCHEMA_VER
 from tools.simulator.config_store import I2C_PORTS, I2C_QUANTITIES, ConfigStore
 from tools.simulator.telemetry import (
@@ -163,6 +168,32 @@ class DeviceSim:
         #: "보드가 모듈로 내보냈다"를 흉내 낼 자리는 이것뿐이다 — 진단·시험용.
         self._last_gnss_cmd: str | None = None
 
+        # ── 링크 속도 (규격 §4.2) ────────────────────────────────────────
+        #
+        # 🔴 여기에는 진짜 UART 가 없다. 그래서 흉내 내는 것은 속도가 아니라
+        #    **절차**다 — 응답을 먼저 내보내고, 그 다음 바퀴에 바꾸고, 시한
+        #    안에 확인이 없으면 되돌아간다. 호스트(BoardService·GUI)가
+        #    시험해야 하는 것이 바로 그 절차이고, 그것은 보드 없이도
+        #    시험할 수 있어야 한다.
+        #
+        #    펌웨어 쪽 같은 상태기계는 firmware/stage1/app/mk_linkbaud.c 다.
+        #: "idle" | "armed"(요청은 받았고 아직 안 바꿈) | "pending"(확인 대기)
+        self._link_state = "idle"
+        # 🔴 항목이 없을 수도 있다. 시험들이 몇 항목짜리 저장소로 DeviceSim
+        #    을 만들고(설정 검증만 보는 시험들), 그때 여기서 죽으면 링크
+        #    속도와 아무 상관 없는 시험이 무더기로 깨진다. 없으면 기본값을
+        #    들고 `_link_tick()` 이 아무 일도 안 한다 — 펌웨어가 linkbaud 를
+        #    안 붙였을 때와 같은 자리다.
+        _link_item = store.items.get(LINK_BAUD_KEY)
+        self._link_active = (int(_link_item.current) if _link_item is not None
+                             else DEFAULT_BAUD)
+        self._link_confirmed = self._link_active
+        self._link_pending: int | None = None
+        self._link_deadline_ms: int | None = None
+        self._link_applied = 0
+        self._link_confirmed_count = 0
+        self._link_reverted = 0
+
     # ------------------------------------------------------------------ 모드
     @property
     def mode(self) -> str:
@@ -232,6 +263,74 @@ class DeviceSim:
         self._last_gnss_cmd = text
         return [self._sack("GNSS", "OK")]
 
+    # ------------------------------------------------------------ 링크 속도
+    def _on_baud(self, args: tuple[str, ...]) -> list[str]:
+        """`$BAUD,CONFIRM,<baud>` — 링크 속도 확인 (규격 §4.2.3).
+
+        🔴 **CONFIG 전용이 아니다.** 호스트는 포트를 닫았다 새 속도로 다시
+        여는 동안 `$HB` 를 못 보내고, 그것이 3000 ms 를 넘으면 보드는 RUN 으로
+        떨어진다(§6.2). CONFIG 전용으로 두면 포트를 여는 데 오래 걸린 것만으로
+        확인이 거부되고, 그 거부가 곧 우리가 막으려던 되돌림을 부른다.
+        """
+        if len(args) < 1 or args[0].upper() != "CONFIRM":
+            # 오타든 미구현이든 호스트가 할 일은 같다 (규격 §5).
+            return [self._sack("BAUD", "ERR", Reason.UNSUPPORTED)]
+        if len(args) < 2 or not args[1].isdigit():
+            return [self._sack("BAUD", "ERR", Reason.RANGE)]
+
+        if self._link_state != "pending":
+            return [self._sack("BAUD", "ERR", Reason.MODE)]
+        if int(args[1]) != self._link_pending:
+            # 🔴 시한을 늘려 주지 않는다. 틀린 확인은 확인이 아니다.
+            return [self._sack("BAUD", "ERR", Reason.RANGE)]
+
+        self._link_confirmed = self._link_pending
+        self._link_pending = None
+        self._link_deadline_ms = None
+        self._link_state = "idle"
+        self._link_confirmed_count += 1
+        return [self._sack("BAUD", "OK")]
+
+    def _link_tick(self, now_ms: int) -> None:
+        """요청을 반영하고, 시한이 지났으면 되돌린다 (규격 §4.2).
+
+        🔴 `feed()` 가 아니라 `tick()` 에서 한다. 그 자리가 곧 규격 §4.2.2
+        규칙 1 이다 — `$SACK,CFG,OK` 가 **옛 속도로** 다 나간 뒤에 속도가
+        바뀌어야 한다. 펌웨어도 같은 이유로 슈퍼루프에서만 바꾼다.
+        """
+        item = self.store.items.get(LINK_BAUD_KEY)
+        if item is None:
+            return
+
+        # 설정표가 바뀌었으면 요청으로 본다 ($CFG,SET 이 current 만 건드렸다).
+        if self._link_state == "idle" and int(item.current) != self._link_active:
+            self._link_state = "armed"
+            self._link_pending = int(item.current)
+
+        if self._link_state == "armed":
+            self._link_active = self._link_pending
+            self._link_state = "pending"
+            self._link_deadline_ms = now_ms + LINK_BAUD_CONFIRM_MS
+            self._link_applied += 1
+
+        if self._link_state == "pending" and now_ms >= self._link_deadline_ms:
+            # 🔴 사람이 아무것도 안 해도 링크가 살아난다 — 이 절차의 존재 이유.
+            self._link_active = self._link_confirmed
+            self._link_pending = None
+            self._link_deadline_ms = None
+            self._link_state = "idle"
+            self._link_reverted += 1
+
+        # 🔴 설정표를 전선의 사실에 맞춘다. 안 하면 다음 바퀴가 그 차이를
+        #    새 요청으로 오해해 영원히 되돌림을 되풀이한다.
+        item.current = self._link_active
+
+    @property
+    def link_baud(self) -> int:
+        """지금 전선에 서 있다고 **주장하는** 속도. 시뮬레이터에는 진짜
+        UART 가 없으므로 호스트 시험이 이것을 들여다본다."""
+        return self._link_active
+
     def _leave_test_if_needed(self, going_to: str) -> None:
         """TEST 를 벗어나면 출력을 안전 상태로 되돌린다 (규격 §6.4)."""
         if self._ctl_mode == CtlMode.TEST and going_to != CtlMode.TEST:
@@ -263,6 +362,7 @@ class DeviceSim:
             "CFG": self._on_cfg,
             "MODE": self._on_mode,
             "GNSS": self._on_gnss,
+            "BAUD": self._on_baud,
         }.get(cmd.verb)
 
         if handler is None:
@@ -356,6 +456,26 @@ class DeviceSim:
                     for ch in range(AIN_CHANNELS)
                     if self.store.get(f"ain{ch}.enabled")
                 ],
+                # 🔴 호스트 링크 속도 (규격 §4.2·§7.4).
+                #
+                #    `baud` 와 `confirmed` 가 다르면 아직 확인되지 않은
+                #    상태이고, 그때 `$CFG,SAVE` 는 ERR,BUSY 다. 호스트는 이
+                #    두 값이 같은지로 "지금 저장해도 되는가" 를 판단한다.
+                #
+                #    [단순화, 시뮬레이터] 여기에는 진짜 UART 가 없다. 그래도
+                #    `null` 이 아니라 값을 낸다 — clock·lcd 와 다른 판단이다.
+                #    저쪽은 "이 장치에 없는 하드웨어" 지만 이것은 **절차의
+                #    상태**이고, 절차 자체는 여기서도 진짜로 돌기 때문이다.
+                #    호스트가 시험해야 하는 것이 바로 그 절차다.
+                link={"baud": self._link_active,
+                      "confirmed": self._link_confirmed,
+                      "pending": self._link_pending,
+                      "remaining_ms": (
+                          None if self._link_deadline_ms is None
+                          else max(0, self._link_deadline_ms - self._now_ms)),
+                      "applied": self._link_applied,
+                      "confirmed_count": self._link_confirmed_count,
+                      "reverted": self._link_reverted},
                 # 🔴 화면 회복 계수기 (규격 §7.4). 실기기에서 "노이즈 타면
                 #    픽셀이 다 깨지는데?" 가 나온 뒤 넣은 창구다 — 몇 번
                 #    깨졌고 몇 번 되살렸는지를 모르면 그 문제가 해결됐는지
@@ -402,6 +522,14 @@ class DeviceSim:
                 return [self._sack("CFG", "OK")]
 
             if sub == "SAVE":
+                # 🔴 확정되지 않은 링크 속도는 Flash 에 가지 않는다
+                #    (규격 §4.2.2 규칙 5).
+                #
+                #    이 규칙이 없으면 "부팅하자마자 아무도 말을 못 거는
+                #    보드" 가 만들어진다. 다른 잘못된 설정은 다시 고칠 수
+                #    있지만 그것은 못 고친다 — 굽기로만 풀린다.
+                if self._link_state != "idle":
+                    return [self._sack("CFG", "ERR", Reason.BUSY)]
                 # 🔴 TEST 에서는 출력 항목을 건너뛴다 (규격 §6.4). 벤치에서
                 #    배선을 보려고 밸브를 한 번 열어 본 것이 플래시에 남아
                 #    다음 부팅에 되살아나면 안 된다.
@@ -547,6 +675,12 @@ class DeviceSim:
         if now_ms - self._last_hb_tx_ms >= HB_EMIT_PERIOD_MS:
             self._last_hb_tx_ms = now_ms
             out.append(build_command("HB").rstrip("\r\n"))
+
+        # 🔴 링크 속도(규격 §4.2). **자리가 곧 안전장치다** — 여기는 이번
+        #    바퀴에 나갈 응답과 하트비트가 전부 만들어진 뒤다. 위로 올리면
+        #    응답 한가운데서 속도가 바뀌는 것을 흉내 내게 되고, 그러면
+        #    호스트 시험이 지켜야 할 순서를 오히려 거꾸로 가르친다.
+        self._link_tick(now_ms)
 
         # 🔴 수집은 송신 주기와 무관하게 매번 돈다 — "변수 a 에 계속 넣는다"
         #    (사용자 설계 2026-08-19). 각자의 채널·포트 주기로 게이트한다.
