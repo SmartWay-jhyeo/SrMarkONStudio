@@ -583,3 +583,84 @@ def test_active_mode_keeps_outputs_when_the_host_leaves():
     sim.feed(build_command("CFG", "SET", "pwr.24v", "true"))
     sim.tick(HB_TIMEOUT_MS + 1)
     assert sim.store.get("pwr.24v") is True
+
+
+# --------------------------------------------------- $GNSS (규격 §4.1, Phase 3)
+
+
+def test_gnss_command_requires_config_mode():
+    """규격 §4.1 — $GNSS 는 CONFIG 전용이다."""
+    sim = _sim()                                   # RUN
+    ack = _sack(sim.feed(build_command("GNSS", "LOG GPRMC ONTIME 1")))
+    assert ack.args == ("GNSS", "ERR", Reason.MODE)
+
+
+def test_gnss_command_accepted_in_config_mode():
+    sim = _config_sim()
+    ack = _sack(sim.feed(build_command("GNSS", "LOG GPRMC ONTIME 1")))
+    assert ack.args == ("GNSS", "OK")
+
+
+def test_gnss_command_rejects_empty_text():
+    sim = _config_sim()
+    ack = _sack(sim.feed(build_command("GNSS")))
+    assert ack.args == ("GNSS", "ERR", Reason.RANGE)
+
+
+def test_gnss_command_rejects_embedded_comma():
+    """콤마가 있으면 인자가 둘로 쪼개진다 — 정확히 하나가 아니다."""
+    sim = _config_sim()
+    ack = _sack(sim.feed(build_command("GNSS", "LOG", "GPRMC")))
+    assert ack.args == ("GNSS", "ERR", Reason.RANGE)
+
+
+def test_gnss_command_rejects_control_characters():
+    """🔴 콤마가 아닌 제어문자(탭)는 build_command 로는 못 만든다
+    (host.core.framing 이 거부한다) — 원시 줄로 직접 넣어야 이 경로를
+    시험할 수 있다. 체크섬은 손으로 맞췄다."""
+    sim = _config_sim()
+    ack = _sack(sim.feed("$GNSS,LOG\tA*29\r\n"))
+    assert ack.args == ("GNSS", "ERR", Reason.RANGE)
+
+
+def test_gnss_command_over_arg_limit_is_rejected():
+    """규격 §3.1/§4.1 — 인자 상한은 23바이트다.
+
+    🔴 `build_command` 는 이미 보내기 전에 막는다(host.core.framing) — 이
+    시험은 그 관문을 `build_line` 으로 우회해 시뮬레이터 자신이 길이를
+    검사하는지 본다. C 펌웨어는 고정 버퍼라 이 경우 파싱 단계에서 조용히
+    버려지지만(verb 조차 못 읽어 SACK 를 만들 재료가 없다), 파이썬
+    문자열에는 그런 하드웨어적 한계가 없으므로 시뮬레이터가 스스로
+    거부해야 한다 — 조용히 받아들이면 안 된다."""
+    from host.core.framing import build_line
+
+    sim = _config_sim()
+    ack = _sack(sim.feed(build_line("GNSS," + "0" * 24)))
+    assert ack.args == ("GNSS", "ERR", Reason.RANGE)
+
+
+# ------------------------------------------ $STAT 의 gnss 초기화 진단(§4.1.1)
+
+
+def test_stat_gnss_init_fields_default_to_false():
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert rec["gnss"]["init_sent"] is False
+    assert rec["gnss"]["init_exhausted"] is False
+    assert rec["gnss"]["sentence_seen"] is False
+
+
+def test_stat_gnss_init_fields_reflect_enabling():
+    """🔴 [단순화, 시뮬레이터] 실기기는 재시도·타임아웃이 있지만(규격
+    §4.1.1) 시뮬레이터에는 진짜 모듈이 없다 — `gnss.enabled` 가 켜지면
+    "보내고 즉시 받았다"로 흉내 낸다. `init_exhausted` 는 항상 거짓이다."""
+    sim = _config_sim()
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    sim.tick(0)
+    rec = parse_record(
+        next(ln for ln in sim.feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert rec["gnss"]["init_sent"] is True
+    assert rec["gnss"]["init_exhausted"] is False
+    assert rec["gnss"]["sentence_seen"] is True

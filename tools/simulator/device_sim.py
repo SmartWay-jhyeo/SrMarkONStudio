@@ -12,6 +12,7 @@ import math
 
 from host.core.errors import ConfigError, ProtocolError, Reason
 from host.core.framing import build_command, parse_line
+from host.core.limits import MAX_ARG_BYTES
 from host.core.records import SCHEMA_VER
 from tools.simulator.config_store import I2C_PORTS, I2C_QUANTITIES, ConfigStore
 from tools.simulator.telemetry import (
@@ -90,6 +91,11 @@ _CONFIG_ONLY = frozenset({"SET", "SAVE", "RESET"})
 #: 깨진 줄에서 건져낸 verb 에 허용되는 문자. 실제 verb 는 전부 대문자다.
 _ALLOWED_VERB_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
+#: $GNSS 로 보낼 수 있는 텍스트에 허용되는 문자(규격 §4.1) — 인쇄 가능
+#: ASCII 뿐이다. 제어문자·개행이 섞여 들어오면 GNSS 모듈이 이상하게
+#: 반응할 수 있다. 콤마는 이미 args 분리 단계에서 걸러진다(len(args)!=1).
+_GNSS_TEXT_CHARS = frozenset(chr(c) for c in range(0x20, 0x7F))
+
 
 class DeviceSim:
     def __init__(self, store: ConfigStore, *, fw: str = "0.1.0",
@@ -151,6 +157,9 @@ class DeviceSim:
         # 🔴 부팅 기본값은 ACTIVE 다 (규격 §6.4). 보드는 혼자서도 제 일을
         #    해야 하고, 테스트는 사람이 명시적으로 들어가는 상태다.
         self._ctl_mode = CtlMode.ACTIVE
+        #: $GNSS(규격 §4.1)로 마지막에 받아들인 텍스트. 실제 모듈이 없으므로
+        #: "보드가 모듈로 내보냈다"를 흉내 낼 자리는 이것뿐이다 — 진단·시험용.
+        self._last_gnss_cmd: str | None = None
 
     # ------------------------------------------------------------------ 모드
     @property
@@ -186,6 +195,35 @@ class DeviceSim:
             self._ctl_mode = want
         return [self._sack("MODE", "OK")]
 
+    def _on_gnss(self, args: tuple[str, ...]) -> list[str]:
+        """`$GNSS,<text>` — GNSS 모듈에 원시 명령 전달(규격 §4.1).
+
+        🔴 CONFIG 전용이다 — 모듈의 동작을 바꾸는 설정 변경과 같은 결.
+        모드 검사를 내용 검사보다 먼저 한다(§4.1 이 §5.2 의 관례를 그대로
+        따른다 — mk_hostlink.c 의 on_gnss 와 같은 순서).
+        """
+        if self.mode != Mode.CONFIG:
+            return [self._sack("GNSS", "ERR", Reason.MODE)]
+
+        # 🔴 인자가 정확히 하나여야 한다 — 콤마가 섞였으면 이미 둘로
+        #    쪼개진 뒤다(parse_line). 빈 문자열도 거부한다.
+        if len(args) != 1 or not args[0]:
+            return [self._sack("GNSS", "ERR", Reason.RANGE)]
+
+        text = args[0]
+        # 🔴 `build_command` 는 보내기 전에 이미 이 길이를 막지만
+        #    (host.core.limits.MAX_ARG_BYTES), 파이썬 문자열에는 C 의
+        #    고정 버퍼 같은 물리적 한계가 없다 — 여기서도 확인한다.
+        if len(text.encode("utf-8")) > MAX_ARG_BYTES:
+            return [self._sack("GNSS", "ERR", Reason.RANGE)]
+        if any(c not in _GNSS_TEXT_CHARS for c in text):
+            return [self._sack("GNSS", "ERR", Reason.RANGE)]
+
+        # 🔴 실제 모듈이 없으므로 "그대로 내보냈다"를 검증할 하드웨어가
+        #    없다 — 마지막 값을 붙들어 시험·진단에 쓴다.
+        self._last_gnss_cmd = text
+        return [self._sack("GNSS", "OK")]
+
     def _leave_test_if_needed(self, going_to: str) -> None:
         """TEST 를 벗어나면 출력을 안전 상태로 되돌린다 (규격 §6.4)."""
         if self._ctl_mode == CtlMode.TEST and going_to != CtlMode.TEST:
@@ -216,6 +254,7 @@ class DeviceSim:
             "STAT": self._on_stat,
             "CFG": self._on_cfg,
             "MODE": self._on_mode,
+            "GNSS": self._on_gnss,
         }.get(cmd.verb)
 
         if handler is None:
@@ -259,7 +298,16 @@ class DeviceSim:
                 time_quality=time_quality,
                 # 🔴 펌웨어(mk_cfgwire_stat)와 같은 모양 — 중첩 객체,
                 #    모를 때는 null(0 을 지어내지 않는다).
-                gnss={"pps_age_ms": pps_age_ms, "sats": sats},
+                #
+                #    init_sent·init_exhausted·sentence_seen 은 GNSS 초기화
+                #    시퀀스 진단이다(규격 §4.1.1·§7.4). [단순화, 시뮬레이터]
+                #    실기기는 재시도·타임아웃이 있지만(mk_gnssctl.c) 여기엔
+                #    진짜 모듈이 없으므로 "켜지면 즉시 보내고 즉시 받았다"로
+                #    흉내 낸다 — init_exhausted 는 항상 거짓이다.
+                gnss={"pps_age_ms": pps_age_ms, "sats": sats,
+                      "init_sent": bool(self.store.get("gnss.enabled")),
+                      "init_exhausted": False,
+                      "sentence_seen": bool(self.store.get("gnss.enabled"))},
                 uptime_ms=self._now_ms - self._boot_ms,
                 rails={
                     "v24": self.store.get("pwr.24v"),

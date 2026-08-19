@@ -579,6 +579,16 @@ def default_store(path: Path | None = None) -> ConfigStore:
             choices=GNSS_BAUD_CHOICES, unit="bps", label="GNSS 통신속도",
             note="UM981 기본값 확인 필요",
         ),
+        # 🔴 기본이 꺼짐이다(규격 §7.7). RTK 모듈은 초당 수십 줄을 낼 수
+        #    있고 그것을 전부 텔레메트리에 실으면 ain·i2c 가 쓸 대역을
+        #    잠식한다 — 진단할 때만 켠다. 값·라벨·note 가 펌웨어
+        #    (firmware/stage1/app/mk_cfgtable.c 의 add_gnss())와 한 글자도
+        #    다르면 안 된다 — crosscheck_cfgtable.py 가 대조한다.
+        SimConfigItem(
+            "gnss.echo", "gnss", "bool", False, False,
+            label="GNSS 원시 문장 에코",
+            note="받은 줄을 그대로 텔레메트리로 올린다 — 진단용, 대역을 먹는다",
+        ),
 
         # ── WS2812 LED 체인 (데이터시트 §5.8) ──────────────────────
         SimConfigItem(
