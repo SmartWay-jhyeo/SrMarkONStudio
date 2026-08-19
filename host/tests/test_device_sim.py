@@ -4,6 +4,7 @@ from host.core.records import parse_record
 from tools.simulator.config_store import default_store
 from host.core.errors import Reason
 from tools.simulator.device_sim import (
+    GNSS_DEMO_WARMUP_MS,
     HB_TIMEOUT_MS,
     CtlMode,
     DeviceSim,
@@ -700,3 +701,59 @@ def test_stat_gnss_init_fields_reflect_enabling():
     assert rec["gnss"]["init_sent"] is True
     assert rec["gnss"]["init_exhausted"] is False
     assert rec["gnss"]["sentence_seen"] is True
+
+
+# ------------------------ $STAT 의 pps_raw_* vs pps_age_ms (규격 §7.4) ----
+#
+# 🔴 실기기(UM981, 실내·fix 없음)에서 PPS 는 1초 간격으로 계속 들어오는데
+#    RMC 가 전부 무효(V)라 짝지어지지 않아 pps_age_ms 가 계속 null 이었다
+#    — 배선·캡처는 정상인데 화면은 "PPS 가 안 온다"로 보였다. 펌웨어와
+#    같은 구분을 시뮬레이터도 내야 GUI 가 시뮬레이터에서만 맞는 상황을
+#    막는다(CLAUDE.md — "설정 항목은 보드에만" 원칙과 같은 결로, 여기서는
+#    "시간축 진단은 펌웨어·시뮬레이터 둘 다").
+
+
+def test_stat_gnss_pps_raw_fields_null_when_disabled():
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert rec["gnss"]["pps_raw_age_ms"] is None
+    assert rec["gnss"]["pps_raw_count"] == 0
+    assert rec["gnss"]["pps_unpaired_reason"] is None
+
+
+def test_stat_gnss_pps_raw_fields_during_warmup_report_no_pps():
+    """🔴 [단순화, 시뮬레이터] 워밍업 동안은 RMC 는 오는데(등급 gnss_nmea)
+    아직 원시 PPS 캡처가 없다고 흉내 낸다 — pps_unpaired_reason 이
+    "no_pps" 인 것은 실기기의 MK_TIMEAX_PPS_UNPAIRED_NO_PPS 와 같은 뜻이다
+    (mk_timeax.c: 유효한 RMC 는 왔지만 짝지을 원시 PPS 가 없다)."""
+    sim = _config_sim()
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    sim.tick(0)
+    rec = parse_record(
+        next(ln for ln in sim.feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert rec["time_source"] == "gnss_nmea"
+    assert rec["gnss"]["pps_age_ms"] is None
+    assert rec["gnss"]["pps_raw_age_ms"] is None
+    assert rec["gnss"]["pps_raw_count"] == 0
+    assert rec["gnss"]["pps_unpaired_reason"] == "no_pps"
+
+
+def test_stat_gnss_pps_raw_fields_present_when_locked():
+    """🔴 되돌림 검사를 겸한다 — pps_age_ms 와 pps_raw_age_ms 를 다시 하나로
+    합치면 이 시험과 워밍업 시험 중 하나는 반드시 깨진다(워밍업에서는
+    전자가 null 인데 후자는 아니어야 하고, 여기서는 둘 다 값이 있어야
+    한다)."""
+    sim = _config_sim()
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    sim.tick(0)                              # 여기서 워밍업 시작점(anchor)이 잡힌다
+    sim.tick(GNSS_DEMO_WARMUP_MS + 500)       # 워밍업을 넘겼다 — 잠긴다
+    rec = parse_record(
+        next(ln for ln in sim.feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert rec["time_source"] == "gnss_pps"
+    assert rec["gnss"]["pps_age_ms"] is not None
+    assert rec["gnss"]["pps_raw_age_ms"] == rec["gnss"]["pps_age_ms"]
+    assert rec["gnss"]["pps_raw_count"] >= 1
+    assert rec["gnss"]["pps_unpaired_reason"] is None

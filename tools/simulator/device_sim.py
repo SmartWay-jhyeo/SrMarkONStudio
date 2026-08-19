@@ -294,7 +294,10 @@ class DeviceSim:
         # 부팅 후 경과 ms 다. 텔레메트리는 필드 마스크로 time_source 를
         # 실어 보낼 수 있지만 명령 응답에는 그 자리가 없다. $STAT 이
         # 그 답을 주는 곳이다 — 호스트는 연결 직후 한 번 물어보면 된다.
-        time_source, time_quality, pps_age_ms, sats = self._gnss_time_state(self._now_ms)
+        (time_source, time_quality, pps_age_ms, sats,
+         pps_raw_age_ms, pps_raw_count, pps_unpaired_reason) = (
+            self._gnss_time_state(self._now_ms)
+        )
         return [
             self._json(
                 type="stat",
@@ -307,12 +310,22 @@ class DeviceSim:
                 # 🔴 펌웨어(mk_cfgwire_stat)와 같은 모양 — 중첩 객체,
                 #    모를 때는 null(0 을 지어내지 않는다).
                 #
+                #    pps_raw_age_ms·pps_raw_count·pps_unpaired_reason
+                #    [신규, 2026-08-19] 은 pps_age_ms 와 다른 것을 잰다 —
+                #    "펄스가 오는가"(원시)와 "그 펄스를 시간축이 받아들였는가"
+                #    (짝지어 채택된 pps_age_ms)를 가른다. 근거는
+                #    _gnss_time_state() 의 docstring(실기기 관측, 규격 §7.4).
+                #
                 #    init_sent·init_exhausted·sentence_seen 은 GNSS 초기화
                 #    시퀀스 진단이다(규격 §4.1.1·§7.4). [단순화, 시뮬레이터]
                 #    실기기는 재시도·타임아웃이 있지만(mk_gnssctl.c) 여기엔
                 #    진짜 모듈이 없으므로 "켜지면 즉시 보내고 즉시 받았다"로
                 #    흉내 낸다 — init_exhausted 는 항상 거짓이다.
-                gnss={"pps_age_ms": pps_age_ms, "sats": sats,
+                gnss={"pps_age_ms": pps_age_ms,
+                      "pps_raw_age_ms": pps_raw_age_ms,
+                      "pps_raw_count": pps_raw_count,
+                      "pps_unpaired_reason": pps_unpaired_reason,
+                      "sats": sats,
                       "init_sent": bool(self.store.get("gnss.enabled")),
                       "init_exhausted": False,
                       "sentence_seen": bool(self.store.get("gnss.enabled"))},
@@ -380,26 +393,46 @@ class DeviceSim:
         return [self._sack("CFG", "ERR", Reason.UNKNOWN_KEY)]
 
     # --------------------------------------------------------------- 주기 처리
-    def _gnss_time_state(self, now_ms: int) -> tuple[str, int, int | None, int | None]:
+    def _gnss_time_state(
+        self, now_ms: int
+    ) -> tuple[str, int, int | None, int | None, int | None, int, str | None]:
         """GNSS/PPS 시간축 등급을 흉내 낸다(Phase 3).
 
-        반환: (time_source, time_quality, pps_age_ms, sats). pps_age_ms·
-        sats 는 모를 때 None이다(0을 지어내지 않는다 — 설계 원칙 3·4).
+        반환: (time_source, time_quality, pps_age_ms, sats,
+        pps_raw_age_ms, pps_raw_count, pps_unpaired_reason). pps_age_ms·
+        sats·pps_raw_age_ms 는 모를 때 None이다(0을 지어내지 않는다 —
+        설계 원칙 3·4).
+
+        🔴 [신규, 2026-08-19] `pps_raw_age_ms`·`pps_raw_count`·
+           `pps_unpaired_reason` 은 `pps_age_ms` 와 다른 것을 잰다 — 실기기
+           관측(mk_timeax.h 헤더 주석: UM981, 실내·fix 없음)에서 PPS 는
+           1초 간격으로 계속 들어오는데 RMC 가 전부 무효(V)라 한 번도
+           짝지어지지 않아 `pps_age_ms` 가 계속 null 이었다. "펄스가
+           오는가"(원시)와 "그 펄스를 시간축이 받아들였는가"(짝지어 채택된
+           `pps_age_ms`)를 가른다(규격 §7.4). 펌웨어와 같은 구분을 여기서도
+           내야 GUI 가 시뮬레이터에서만 맞는 상황을 막는다.
 
         🔴 `GNSS_DEMO_WARMUP_MS` 주석 참고 — 시뮬레이터임이 값에서도
            드러나야 한다는 지시에 따라 고정된 진행만 흉내 낸다."""
         if not self.store.get("gnss.enabled"):
-            return "device_clock", 0, None, None
+            return "device_clock", 0, None, None, None, 0, None
 
         since = self._gnss_enabled_at_ms
         if since is None or now_ms - since < GNSS_DEMO_WARMUP_MS:
-            # 켜는 중 — NMEA 문장은 오는데 아직 PPS 짝을 못 지은 상태로
-            # 흉내 낸다.
-            return "gnss_nmea", 1, None, 4
+            # 켜는 중 — NMEA 문장은 오는데(등급 gnss_nmea) 아직 원시 PPS
+            # 캡처가 없다고 흉내 낸다. 실기기의 MK_TIMEAX_PPS_UNPAIRED_
+            # NO_PPS 와 같은 뜻 — 유효한 RMC 는 왔지만 짝지을 원시 PPS 가
+            # 없다.
+            return "gnss_nmea", 1, None, 4, None, 0, "no_pps"
 
-        # 🔴 1 Hz PPS 톱니를 흉내 낸다 — 실제 지터가 아니다.
+        # 🔴 1 Hz PPS 톱니를 흉내 낸다 — 실제 지터가 아니다. 잠긴 뒤에는
+        #    매번 짝짓기가 성공한다고 흉내 내므로(진짜 무효 RMC 개념이
+        #    시뮬레이터에는 없다) 원시 나이는 채택된 나이와 같은 값이고,
+        #    카운트는 잠긴 뒤 지난 초 수만큼 늘어난다.
         pps_age_ms = now_ms % 1000
-        return "gnss_pps", 2, pps_age_ms, 9
+        locked_at = since + GNSS_DEMO_WARMUP_MS
+        pps_raw_count = (now_ms - locked_at) // 1000 + 1
+        return "gnss_pps", 2, pps_age_ms, 9, pps_age_ms, pps_raw_count, None
 
     def _convert_t(self, t_ms: int, time_source: str) -> int:
         """획득 시각(t_ms, 부팅 후 경과 ms)을 등급에 따라 바꾼다.
@@ -555,7 +588,7 @@ class DeviceSim:
 
     def _emit_telemetry(self, now_ms: int) -> list[str]:
         lines: list[str] = []
-        time_source, time_quality, _age, _sats = self._gnss_time_state(now_ms)
+        time_source, time_quality, *_ = self._gnss_time_state(now_ms)
         for ch in range(AIN_CHANNELS):
             # 🔴 [2026-08-19] "지금 값을 만든다"가 아니라 "마지막 값을
             #    읽는다"다 — 새 수집이 없었으면 같은 raw·t_ms 가 그대로
@@ -601,7 +634,7 @@ class DeviceSim:
         §7.6)를 시뮬레이터도 지킨다.
         """
         lines: list[str] = []
-        time_source, time_quality, _age, _sats = self._gnss_time_state(now_ms)
+        time_source, time_quality, *_ = self._gnss_time_state(now_ms)
         slot_period = DIN_DEMO_PERIOD_MS // len(DIN_CONNECTORS)
         for idx, cid in enumerate(DIN_CONNECTORS):
             phase_ms = idx * slot_period
@@ -626,7 +659,7 @@ class DeviceSim:
         `_last_i2c_t` 에 자리가 없으므로 조용히 건너뛴다(설계 원칙 3).
         """
         lines: list[str] = []
-        time_source, time_quality, _age, _sats = self._gnss_time_state(now_ms)
+        time_source, time_quality, *_ = self._gnss_time_state(now_ms)
         for cid in I2C_PORTS:
             if cid not in self._last_i2c_t:
                 continue
