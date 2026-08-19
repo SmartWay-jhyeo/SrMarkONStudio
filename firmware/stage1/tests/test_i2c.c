@@ -8,6 +8,7 @@
 #include "../app/mk_i2c.h"
 #include "../app/mk_cfgtable.h"
 #include "../app/mk_i2c_bh1750.h"
+#include "../app/mk_i2c_mlx90614.h"
 
 static int failures = 0;
 
@@ -160,37 +161,37 @@ static void test_one_port_per_tick(void)
  *    완전히 비우고 나온 레코드 수를 세어, 400ms/주기 200ms 에서 나와야
  *    하는 트리거 횟수(2 — t=0 즉시 한 번 + t=200 에 한 번)를 못박는다.
  *
- * 🔴 [검토 지적 C1] 종류가 IR_TEMP(양 하나) 라 트리거당 레코드도 하나다.
- *    온습도(양 둘)는 트리거당 두 줄이 나가야 한다는 사실은 아래
- *    test_unsupported_kind_with_two_quantities_emits_two_lines 가 따로
- *    본다. */
+ * 🔴 [MLX90614 추가] 예전에는 여기서 IR_TEMP 를 "드라이버 없음"의
+ *    본보기로 썼다. 이제 IR_TEMP 에 MLX90614 드라이버가 생겼으므로,
+ *    카탈로그에서 아직 드라이버가 없는 종류 WATER_TEMP(방수 온도)로
+ *    바꾼다. */
 static void test_unsupported_kind_reports_status_three(void)
 {
     setup();
     enable_lux_port(10u, 0x23u, 200u);
     MkCfgItem *k = mk_cfg_find(&CFG, "i2c10.kind");
-    /* 1차에는 조도(BH1750)만 드라이버가 있다 — IR_TEMP 는 카탈로그엔
-     * 있지만 드라이버가 없으므로 여전히 FAULT 경로를 탄다. */
-    k->cur.u = (uint32_t)MK_I2C_KIND_IR_TEMP;
+    /* WATER_TEMP 는 카탈로그엔 있지만 아직 드라이버가 없으므로 여전히
+     * FAULT(status=3) 경로를 탄다. */
+    k->cur.u = (uint32_t)MK_I2C_KIND_WATER_TEMP;
 
     int n_records = 0;
     int all_status_three = 1;
-    int all_quantity_temp_object = 1;
+    int all_quantity_temp = 1;
     MkI2cOut out;
     for (int64_t t = 0; t < 400; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
         while (mk_i2c_take(&I2C, &out) == 1) {
             n_records++;
             if (out.status != 3u) { all_status_three = 0; }
-            if (out.quantity == NULL || strcmp(out.quantity, "temp_object") != 0) {
-                all_quantity_temp_object = 0;
+            if (out.quantity == NULL || strcmp(out.quantity, "temp") != 0) {
+                all_quantity_temp = 0;
             }
         }
     }
 
     CHECK(n_records == 2, "지원 안 하는 종류는 주기마다 한 번만 알린다 (400ms/200ms=2)");
     CHECK(all_status_three, "status=3");
-    CHECK(all_quantity_temp_object,
+    CHECK(all_quantity_temp,
           "quantity 가 실린다 — 없으면 host/gui/screen.py 가 레코드를 버린다 (C1)");
     CHECK(BUS.n == 0, "지원 안 하면 버스를 두드리지 않는다");
     CHECK(I2C.dropped == 0u, "매 바퀴 다 비웠으면 버릴 것이 없다");
@@ -283,7 +284,9 @@ static void test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer(void)
 static void test_unsupported_kind_retry_has_a_floor_even_at_min_period(void)
 {
     setup();
-    enable_port_kind(10u, (uint32_t)MK_I2C_KIND_IR_TEMP, 0x50u, 10u);  /* period_ms = 카탈로그 하한 */
+    /* IR_TEMP(MLX90614) 는 이제 드라이버가 있다 — 미지원 종류는
+     * WATER_TEMP 로 시험한다. */
+    enable_port_kind(10u, (uint32_t)MK_I2C_KIND_WATER_TEMP, 0x50u, 10u);  /* period_ms = 카탈로그 하한 */
 
     int n_events = 0;
     MkI2cOut out;
@@ -430,6 +433,142 @@ static void test_bh1750_start_stops_if_power_on_fails(void)
 
     CHECK(rc == -1, "실패를 그대로 돌려준다");
     CHECK(BUS.n == 1, "두 번째 명령을 보내지 않는다");
+}
+
+/* ---- MLX90614 드라이버 ----------------------------------------------------
+ *
+ * 🔴 예제 값은 전부 docs/datasheet/MLX90614.pdf 원문에서 가져왔다 —
+ *    Figure 6(p.20, PEC=0x30)과 4.1.8.2 절의 예제(p.30, 0x3AF7→28.75°C)다.
+ *    시험이 손으로 CRC 를 다시 계산하지 않는다 — Python 으로 미리
+ *    검증해 둔 상수를 그대로 못 박는다(주석에 계산 방법을 남긴다).
+ */
+
+/* 🔴 MLX90614 전용 가짜 버스. 공용 fake_xfer 는 rx 를 1,2,3... 으로만
+ *    채워 PEC 가 맞는 응답을 표현할 수 없다 — 이 칩만 따로 둔다
+ *    (test_telem.c 의 fake_xfer_ok/fake_xfer_nak 와 같은 관례). */
+typedef struct {
+    int     n;
+    size_t  ntx[4];
+    size_t  nrx[4];
+    uint8_t first_tx[4];
+    uint8_t resp[3];             /* LSB, MSB, PEC — read() 가 돌려줄 3바이트 */
+    int     ret;
+} MlxBus;
+
+static MlxBus MLX;
+
+static int mlx_fake_xfer(void *ctx, uint8_t bus, uint8_t addr,
+                         const uint8_t *tx, size_t ntx, uint8_t *rx, size_t nrx)
+{
+    (void)bus; (void)addr;
+    MlxBus *b = (MlxBus *)ctx;
+    if (b->n < 4) {
+        b->ntx[b->n] = ntx;
+        b->nrx[b->n] = nrx;
+        b->first_tx[b->n] = ntx ? tx[0] : 0u;
+        b->n++;
+    }
+    if (b->ret == 0) {
+        for (size_t k = 0; k < nrx && k < sizeof b->resp; k++) { rx[k] = b->resp[k]; }
+    }
+    return b->ret;
+}
+
+/* PEC 함수 자체를 데이터시트 Figure 6 예제로 직접 검증한다: SA=0x5A,
+ * RAM 0x07(=cmd), result=0x3AD2(LSB=0xD2, MSB=0x3A), PEC=0x30. */
+static void test_mlx90614_pec_matches_the_datasheet_example(void)
+{
+    uint8_t pec = mk_mlx90614_pec(0x5Au, 0x07u, 0xD2u, 0x3Au);
+    CHECK(pec == 0x30u, "PEC(SA=0x5A,cmd=0x07,LSB=0xD2,MSB=0x3A) == 0x30 (Figure 6)");
+}
+
+/* 환산 상수를 시험이 손으로 다시 적지 않는다 — 구현 함수를 직접 빌려
+ * 쓰고, 기대값은 데이터시트 p.30 의 예제로 못 박는다. */
+static void test_mlx90614_conversion_matches_the_datasheet_examples(void)
+{
+    float t1 = mk_mlx90614_temp_c(0x27ADu);
+    CHECK(t1 > -70.02f && t1 < -70.00f, "0x27AD → -70.01°C (p.30 예제 1)");
+
+    float t2 = mk_mlx90614_temp_c(0x3AF7u);
+    CHECK(t2 > 28.74f && t2 < 28.76f, "0x3AF7 → 28.75°C (p.30 예제 3)");
+
+    float t3 = mk_mlx90614_temp_c(0x7FFFu);
+    CHECK(t3 > 382.18f && t3 < 382.20f, "0x7FFF → 382.19°C (최댓값, p.30 예제 5)");
+}
+
+/* read() 가 명령을 정확히 내고(cmd=0x07, ntx=1,nrx=3) PEC 가 맞는 값을
+ * 받아들이는지. 데이터시트 p.30 예제 3(0x3AF7=28.75°C)을 그대로 쓴다 —
+ * PEC 는 위에서 미리 python 으로 검증한 0xDF. */
+static void test_mlx90614_read_accepts_a_pec_valid_frame(void)
+{
+    memset(&MLX, 0, sizeof MLX);
+    MLX.resp[0] = 0xF7u; MLX.resp[1] = 0x3Au; MLX.resp[2] = 0xDFu;   /* LSB,MSB,PEC */
+    MkI2cIo io = { mlx_fake_xfer, &MLX };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_MLX90614.read(&io, 3u, 0x5Au, v, &n);
+
+    CHECK(rc == 0, "PEC 가 맞으면 읽기가 성공한다");
+    CHECK(n == 1 && strcmp(v[0].quantity, "temp_object") == 0, "quantity 는 temp_object");
+    CHECK(n == 1 && v[0].value > 28.74f && v[0].value < 28.76f, "28.75°C 로 환산된다");
+    CHECK(MLX.n == 1 && MLX.ntx[0] == 1u && MLX.nrx[0] == 3u,
+          "명령 1바이트 쓰고 repeated start 로 3바이트 읽는다");
+    CHECK(MLX.n == 1 && MLX.first_tx[0] == 0x07u, "명령은 RAM 0x07(Tobj1)");
+}
+
+/* 🔴 PEC 를 반드시 본다 — 한 바이트만 틀려도 거부해야 한다. */
+static void test_mlx90614_rejects_a_bad_pec(void)
+{
+    memset(&MLX, 0, sizeof MLX);
+    MLX.resp[0] = 0xF7u; MLX.resp[1] = 0x3Au; MLX.resp[2] = 0xDEu;   /* PEC 한 비트 틀림 */
+    MkI2cIo io = { mlx_fake_xfer, &MLX };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_MLX90614.read(&io, 3u, 0x5Au, v, &n);
+
+    CHECK(rc == -2, "PEC 가 어긋나면 데이터 오류(-2)다");
+    CHECK(n == 0, "값을 내보내지 않는다");
+}
+
+/* 🔴 [되돌림 검사용 표적] bit15(오류 플래그)가 서면 값을 내보내지 않는다
+ *    — p.19·p.30 "0x8XXX → flag error". raw=0x8000(LSB=0x00,MSB=0x80),
+ *    PEC 는 이 데이터에 맞게 다시 계산한 0x8F(python 으로 미리 확인). */
+static void test_mlx90614_rejects_the_error_flag(void)
+{
+    memset(&MLX, 0, sizeof MLX);
+    MLX.resp[0] = 0x00u; MLX.resp[1] = 0x80u; MLX.resp[2] = 0x8Fu;
+    MkI2cIo io = { mlx_fake_xfer, &MLX };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_MLX90614.read(&io, 3u, 0x5Au, v, &n);
+
+    CHECK(rc == -2, "오류 플래그(bit15)가 서면 데이터 오류(-2)다");
+    CHECK(n == 0, "값을 내보내지 않는다");
+}
+
+/* start() 가 없고, 기본값(주소·warmup)이 데이터시트와 같은지. */
+static void test_mlx90614_needs_no_start_and_has_the_right_defaults(void)
+{
+    CHECK(MK_I2C_MLX90614.start == NULL,
+          "전원 인가 직후 기본이 이미 연속 측정이라(p.10) 시작 명령이 없다");
+    CHECK(MK_I2C_MLX90614.default_addr == 0x5Au, "기본 주소 0x5A (p.20, 0x5B 아니다)");
+    CHECK(MK_I2C_MLX90614.warmup_ms == 250u, "Tvalid=250ms (p.8 Table 5, After POR)");
+}
+
+static void test_mlx90614_quantity_matches_the_kind_table(void)
+{
+    const char *q[MK_I2C_VALUES_MAX];
+    int nq = mk_i2c_kind_quantities((uint8_t)MK_I2C_KIND_IR_TEMP, q);
+    CHECK(nq == 1 && strcmp(q[0], "temp_object") == 0, "적외 온도 종류 표는 temp_object 하나");
+
+    memset(&MLX, 0, sizeof MLX);
+    MLX.resp[0] = 0xF7u; MLX.resp[1] = 0x3Au; MLX.resp[2] = 0xDFu;
+    MkI2cIo io = { mlx_fake_xfer, &MLX };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    MK_I2C_MLX90614.read(&io, 3u, 0x5Au, v, &n);
+    CHECK(n == 1 && nq == 1 && strcmp(v[0].quantity, q[0]) == 0,
+          "MLX90614 가 내는 quantity 가 종류 표와 같다 (temp_object)");
 }
 
 /* ---- I3 — 설계 §11 이 요구한 상태기계 시험 다섯 --------------------------
@@ -636,6 +775,22 @@ int main(int argc, char **argv)
     test_bh1750_quantity_matches_the_kind_table();
     printf("-- BH1750 전원 순서 --\n"); test_bh1750_start_powers_on_before_selecting_the_mode();
     printf("-- BH1750 전원 실패 --\n"); test_bh1750_start_stops_if_power_on_fails();
+
+    printf("-- MLX90614 PEC(데이터시트 예제) --\n");
+    test_mlx90614_pec_matches_the_datasheet_example();
+    printf("-- MLX90614 환산(데이터시트 예제) --\n");
+    test_mlx90614_conversion_matches_the_datasheet_examples();
+    printf("-- MLX90614 읽기(PEC 정상) --\n");
+    test_mlx90614_read_accepts_a_pec_valid_frame();
+    printf("-- MLX90614 PEC 불일치 거부 --\n");
+    test_mlx90614_rejects_a_bad_pec();
+    printf("-- MLX90614 오류 플래그 거부 --\n");
+    test_mlx90614_rejects_the_error_flag();
+    printf("-- MLX90614 start 없음·기본값 --\n");
+    test_mlx90614_needs_no_start_and_has_the_right_defaults();
+    printf("-- MLX90614 quantity 일치 --\n");
+    test_mlx90614_quantity_matches_the_kind_table();
+
     printf("-- [I3] 변환 대기 --\n");   test_does_not_read_during_warmup();
     printf("-- [I3] 실효 주기 --\n");   test_effective_period_is_the_longer_of_period_and_warmup();
     printf("-- [I3] start 한 번 --\n"); test_start_is_called_once_when_turned_on();

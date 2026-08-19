@@ -46,6 +46,7 @@ C_SRC = \
   app/mk_i2c.c \
   app/mk_i2c_drivers.c \
   app/mk_i2c_bh1750.c \
+  app/mk_i2c_mlx90614.c \
   bsp/mk_time.c \
   bsp/mk_critsec.c \
   bsp/mk_rails.c \
