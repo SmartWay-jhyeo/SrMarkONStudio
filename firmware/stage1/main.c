@@ -29,10 +29,13 @@
 #include "app/mk_ws2812.h"
 #include "app/mk_solctl.h"
 #include "app/mk_i2c.h"
+#include "app/mk_gnss.h"
+#include "app/mk_timeax.h"
 #include "bsp/mk_rails.h"
 #include "bsp/mk_ws2812_io.h"
 #include "bsp/mk_sol.h"
 #include "bsp/mk_i2c_io.h"
+#include "bsp/mk_gnss_io.h"
 #include "bsp/mk_critsec.h"
 #include "mk_config.h"
 #include "mk_flash.h"
@@ -77,6 +80,8 @@ static MkRailCtl s_rails;
 static MkTelem   s_telem;
 static MkSolCtl  s_sol;
 static MkI2c     s_i2c;
+static MkGnss    s_gnss;
+static MkTimeAx  s_timeax;
 static int      s_led_on;
 
 /* 채널별 표본 저장소.
@@ -340,6 +345,23 @@ int main(void)
     mk_hostlink_attach_rails(&link, &s_rails);
     mk_hostlink_attach_sol(&link, &s_sol);
 
+    /* 🔴 GNSS/PPS 시간축(Phase 3). 하드웨어(UART6·TIM8)는 늘 켠다 — J16 에
+     *    아무것도 안 꽂혀 있으면 바이트도 펄스도 안 오므로 그냥
+     *    device_clock 에 머문다(설계 원칙 3, mk_i2c_io_init() 이 포트마다
+     *    kind=없음 이어도 버스를 여는 것과 같은 결). `gnss.enabled` 는
+     *    지금은 화면에 보여 줄 사용자 의도 표시일 뿐, 이 초기화를 막지
+     *    않는다 — 카탈로그 기본값이 꺼짐이라도 모듈을 실제로 꽂아
+     *    확인할 길이 남아 있어야 한다. */
+    {
+        MkCfgItem *baud_item = mk_cfg_find(&s_cfg, "gnss.baud");
+        uint32_t gnss_baud = baud_item ? baud_item->cur.u : 115200u;
+        mk_gnss_io_init(gnss_baud);
+    }
+    mk_gnss_init(&s_gnss);
+    mk_timeax_init(&s_timeax);
+    mk_telem_attach_timeax(&s_telem, &s_timeax);
+    mk_hostlink_attach_timeax(&link, &s_timeax);
+
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;
 
@@ -383,6 +405,40 @@ int main(void)
         mk_i2c_tick(&s_i2c, &s_cfg, now);
 
         mk_ads_tick(&s_ads, now);
+
+        /* 🔴 GNSS/PPS(Phase 3). 순서가 뜻이 있다 —
+         *
+         *    1) UART 링을 통째로 비운다. 한 바퀴에 한 바이트만 먹이면
+         *       NMEA 문장이 몰려올 때(1Hz 로 여러 문장이 뭉텅이로 옴)
+         *       뒤로 밀린다.
+         *    2) PPS 캡처를 timeax 에 알린다 — RMC 보다 먼저 해야 그
+         *       사이 도착한 RMC 가 즉시 이 펄스와 짝지어질 수 있다
+         *       (mk_timeax.h 의 짝짓기 규칙 — 펄스가 먼저, 문장이 뒤).
+         *    3) 파싱된 RMC/GGA 를 timeax 에 먹인다.
+         *    4) tick() 으로 신선도를 재본다 — 새 데이터가 없어도 매
+         *       바퀴 불러야 등급이 스스로 내려간다. */
+        uint8_t gnss_byte;
+        while (mk_gnss_io_read_byte(&gnss_byte)) {
+            mk_gnss_feed(&s_gnss, gnss_byte);
+        }
+
+        uint64_t gnss_now_us = mk_gnss_io_now_us();
+
+        uint64_t pps_us;
+        while (mk_gnss_io_pps_take(&pps_us)) {
+            mk_timeax_on_pps(&s_timeax, pps_us);
+        }
+
+        MkGnssRmc rmc;
+        while (mk_gnss_take_rmc(&s_gnss, &rmc)) {
+            mk_timeax_on_rmc(&s_timeax, &rmc, gnss_now_us);
+        }
+        MkGnssGga gga;
+        while (mk_gnss_take_gga(&s_gnss, &gga)) {
+            mk_timeax_on_gga(&s_timeax, &gga);
+        }
+        mk_timeax_tick(&s_timeax, gnss_now_us);
+
         mk_telem_tick(&s_telem, now, emit, NULL);
 
         /* 살아 있음 표시. 모드에 따라 주기를 바꿔 눈으로 구분한다.

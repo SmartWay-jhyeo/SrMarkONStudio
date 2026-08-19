@@ -11,6 +11,7 @@
 #include "stm32h7xx_hal.h"
 
 #include "mk_ads_io.h"
+#include "mk_gnss_io.h"
 #include "mk_sol.h"
 #include "mk_uart.h"
 #include "mk_ws2812_io.h"
@@ -83,4 +84,24 @@ void DMA1_Stream1_IRQHandler(void)   /* SPI4 TX */
 void DMA1_Stream2_IRQHandler(void)   /* TIM3_CH2 — WS2812 */
 {
     mk_ws2812_io_dma_isr();
+}
+
+/* 🔴 GNSS UART(Phase 3). SWAP 을 걸어 PC6/PC7 을 넷 이름(GNSS_TX/RX)과
+ *    맞춘 것은 bsp/mk_gnss_io.c 상단 주석 참고. */
+void USART6_IRQHandler(void)
+{
+    mk_gnss_io_uart_isr();
+}
+
+/* 🔴 PPS 입력 캡처(Phase 3, TIM8 CH3 = PC8). 오버플로(Update)와
+ *    Capture/Compare 가 서로 다른 벡터다 — mk_gnss_io.c 의
+ *    update_pending 보정이 이 둘의 순서 경합을 다룬다. */
+void TIM8_UP_TIM13_IRQHandler(void)
+{
+    mk_gnss_io_tim_up_isr();
+}
+
+void TIM8_CC_IRQHandler(void)
+{
+    mk_gnss_io_tim_cc_isr();
 }
