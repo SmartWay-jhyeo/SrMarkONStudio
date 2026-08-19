@@ -16,6 +16,7 @@ import time
 from host.core.errors import ProtocolError
 from host.core.limits import DEFAULT_BAUD
 from host.service.board_service import BoardService, LoopbackTransport, SerialTransport
+from host.storage.query import DEFAULT_MAX_AGE_MS, find_nearest, query_range
 from tools.simulator.config_store import default_store
 from tools.simulator.device_sim import DeviceSim
 
@@ -46,6 +47,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_mon = sub.add_parser("monitor", help="텔레메트리 수신")
     p_mon.add_argument("--seconds", type=float, default=5.0)
+
+    p_query = sub.add_parser(
+        "query", help="저장된 레코드를 시각 범위(epoch_ms, 양끝 포함)로 조회"
+    )
+    p_query.add_argument("--data-dir", required=True, help="RecordStore 가 쓴 디렉터리")
+    p_query.add_argument("--start", type=int, required=True, help="epoch_ms")
+    p_query.add_argument("--end", type=int, required=True, help="epoch_ms")
+    p_query.add_argument("--type", dest="type", default=None, help="ain/i2c/din/stat/...")
+    p_query.add_argument("--connector-id", type=int, default=None)
+    p_query.add_argument("--quantity", default=None, help="i2c 전용 (lux/temp/...)")
+
+    p_near = sub.add_parser(
+        "nearest", help="주어진 시각(epoch_ms)에 가장 가까운 레코드 조회"
+    )
+    p_near.add_argument("--data-dir", required=True)
+    p_near.add_argument("--t", type=int, required=True, help="epoch_ms")
+    p_near.add_argument("--type", dest="type", default=None)
+    p_near.add_argument("--connector-id", type=int, default=None)
+    p_near.add_argument("--quantity", default=None)
+    p_near.add_argument(
+        "--max-age-ms", type=int, default=DEFAULT_MAX_AGE_MS,
+        help=f"이보다 오래된 값은 stale 로 표시 (기본 {DEFAULT_MAX_AGE_MS})",
+    )
 
     return parser
 
@@ -133,8 +157,56 @@ def cmd_monitor(svc: BoardService, seconds: float) -> int:
     return 0
 
 
+def cmd_query(data_dir, start: int, end: int, *, type, connector_id, quantity) -> int:  # noqa: A002
+    """저장소에서 시각 범위를 조회해 한 줄씩 찍는다. 보드가 필요 없다."""
+    rows = query_range(
+        data_dir, start, end, type=type, connector_id=connector_id, quantity=quantity
+    )
+    for row in rows:
+        print(row)
+    print(f"\n{len(rows)}건")
+    return 0
+
+
+def cmd_nearest(data_dir, t: int, *, type, connector_id, quantity,  # noqa: A002
+                 max_age_ms: int) -> int:
+    """저장소에서 t 에 가장 가까운 레코드를 찾아 찍는다.
+
+    🔴 stale(너무 묵음)이면 값을 찾았어도 종료 코드를 1 로 돌려준다 —
+    카메라 프레임 보정 같은 자동화 스크립트가 "값은 있었다"와 "쓸 만큼
+    가까운 값이었다"를 종료 코드만으로 구분할 수 있어야 한다.
+    """
+    result = find_nearest(
+        data_dir, t, type=type, connector_id=connector_id, quantity=quantity,
+        max_age_ms=max_age_ms,
+    )
+    # 🔴 em dash(—) 등을 쓰지 않는다. Windows 콘솔이 cp949(한글) 코드페이지면
+    # 이모지·특수 유니코드 기호에서 UnicodeEncodeError 로 죽는다 — 실제로
+    # 겪었다. 순수 ASCII 로만 구두점을 쓴다.
+    if not result.found:
+        print("찾지 못함: 그 근처에 레코드가 없다")
+        return 1
+    print(result.record)
+    print(f"차이 {result.age_ms}ms" + (" (너무 묵었다 - stale)" if result.stale else ""))
+    return 1 if result.stale else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    # query·nearest 는 보드를 안 본다 — 서비스를 만들기 전에 갈라진다.
+    if args.command == "query":
+        return cmd_query(
+            args.data_dir, args.start, args.end,
+            type=args.type, connector_id=args.connector_id, quantity=args.quantity,
+        )
+    if args.command == "nearest":
+        return cmd_nearest(
+            args.data_dir, args.t,
+            type=args.type, connector_id=args.connector_id, quantity=args.quantity,
+            max_age_ms=args.max_age_ms,
+        )
+
     svc = make_service(args.port, args.baud)
     try:
         if args.command == "list":
