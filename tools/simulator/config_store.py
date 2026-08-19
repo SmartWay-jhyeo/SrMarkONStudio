@@ -101,6 +101,16 @@ DRATE_CHOICES = (2, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1000, 2000, 3750, 7500)
 #: 한다 — crosscheck_cfgtable.py 가 대조한다.
 GNSS_BAUD_CHOICES = (4800, 9600, 19200, 38400, 57600, 115200, 230400)
 
+#: LCD SPI 클럭으로 고를 수 있는 값(kHz).
+#:
+#: 🔴 분주비로 실제로 낼 수 있는 값만 넣는다. SPI2 커널 클럭이 64 MHz 이고
+#:    (per_ck = hsi_ker_ck) HAL 의 분주비는 2 의 거듭제곱이다:
+#:    64/32 · 64/16 · 64/8 · 64/4. 64/2 = 32 MHz 는 ILI9488 의 쓰기 상한
+#:    20 MHz(twc MIN 50 ns, p.332 §17.4.3)를 넘으므로 목록에 없다.
+#:    firmware/stage1/app/mk_cfgtable.c 의 LCD_SPI_KHZ_CHOICES 와 같아야
+#:    한다 — crosscheck_cfgtable.py 가 대조한다.
+LCD_SPI_KHZ_CHOICES = (2000, 4000, 8000, 16000)
+
 _TRUE_WORDS = ("true", "1", "on", "yes")
 _FALSE_WORDS = ("false", "0", "off", "no")
 _INT_TYPES = ("u8", "u16", "u32")
@@ -653,6 +663,36 @@ def default_store(path: Path | None = None) -> ConfigStore:
             minimum=50, maximum=10000, unit="ms", label="화면 갱신 주기",
             note="값이 바뀐 칸만 다시 그린다 — 짧게 잡아도 화면이 조용하면 "
                  "전송이 없다",
+        ),
+
+        # ── 회복 (2026-08-19, 실기기 증상) ────────────────────────────
+        #
+        # 🔴 사용자: "LCD는 가끔 리셋을 해줘야겠다. 노이즈 타면 픽셀이 다
+        #    깨지는데?" — 깨진 뒤 저절로 안 돌아온다. 부분 갱신은 값이
+        #    바뀐 칸만 다시 그리므로 어긋난 그림이 그대로 남는다.
+        #
+        #    증상이 **무작위**라(24V 스위칭과 무관, 케이블 접촉도 아님)
+        #    원인을 아직 모른다. 그래서 셋 다 설정 항목이다 — 사용자가
+        #    현장에서 돌려 볼 수 있어야 한다.
+        #
+        # 🔴 값·라벨·note·범위·choices 가 펌웨어(mk_cfgtable.c 의 add_lcd())
+        #    와 한 글자도 다르면 안 된다 — crosscheck_cfgtable.py 가 대조한다.
+        SimConfigItem(
+            "lcd.spi_khz", "lcd", "enum", 8000, 8000,
+            choices=LCD_SPI_KHZ_CHOICES, unit="kHz", label="화면 SPI 클럭",
+            note="픽셀이 무작위로 깨지면 낮춘다 — 사라지면 신호 무결성 문제다",
+        ),
+        SimConfigItem(
+            "lcd.verify_ms", "lcd", "u16", 5000, 5000,
+            minimum=0, maximum=60000, unit="ms",
+            label="화면 레지스터 대조 주기",
+            note="0 이면 안 한다 — 값이 다르면 화면을 초기화부터 다시 세운다",
+        ),
+        SimConfigItem(
+            "lcd.redraw_ms", "lcd", "u32", 60000, 60000,
+            minimum=0, maximum=3600000, unit="ms",
+            label="화면 전면 갱신 주기",
+            note="값이 안 바뀌어도 통째로 다시 그린다 — 0 이면 안 한다",
         ),
 
         # ── WS2812 LED 체인 (데이터시트 §5.8) ──────────────────────

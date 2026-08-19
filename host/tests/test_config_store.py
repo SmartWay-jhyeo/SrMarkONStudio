@@ -439,14 +439,67 @@ def test_sol_debounce_ms_replaces_the_removed_outputs():
     assert item.out is False           # 출력이 아니다 — TEST 이탈에 안 걸린다
 
 
-def test_catalog_item_count_is_ninety_eight():
+def test_catalog_item_count_is_one_hundred_and_one():
     """94 + 2 (`tx.fields` 하나가 `tx.fields_ain`·`tx.fields_i2c`·
     `tx.fields_din` 셋으로 나뉘며 순증가, 2026-08-19 개정 §7.2·§7.5·§7.6)
     + 1 (`lcd.enabled`, LCD 1차 작업 2026-08-19)
-    + 1 (`lcd.period_ms`, LCD 2차 작업 2026-08-19) = 98.
+    + 1 (`lcd.period_ms`, LCD 2차 작업 2026-08-19)
+    + 3 (`lcd.spi_khz`·`lcd.verify_ms`·`lcd.redraw_ms`, LCD 회복 작업
+         2026-08-19 — 실기기에서 "노이즈 타면 픽셀이 다 깨진다" 가 나왔고
+         원인이 아직 무작위라, 클럭·되읽기 주기·전면 갱신 주기를 사용자가
+         현장에서 돌려 볼 수 있어야 했다) = 101.
 
     이 수가 흔들리면 십중팔구 항목을 늘리거나 줄인 것이다 — 실수인지
     의도인지 이 시험이 먼저 묻는다.
     """
     store = default_store()
-    assert len(store.items) == 98
+    assert len(store.items) == 101
+
+
+# ---- LCD 회복 (2026-08-19, 실기기 증상) --------------------------------------
+#
+# 🔴 사용자: "LCD는 가끔 리셋을 해줘야겠다. 노이즈 타면 픽셀이 다 깨지는데?"
+#    그리고 "무작위로 깨지는 느낌이야" — 24V 스위칭·케이블 접촉과 무관하다.
+#    원인을 아직 모르므로 클럭·되읽기 주기·전면 갱신 주기를 전부 설정 항목으로
+#    뺐다. 사용자가 현장에서 돌려 보고 증상이 사라지는 조합을 찾는 것이
+#    지금으로서는 유일한 진단 수단이다.
+
+
+def test_lcd_spi_clock_is_selectable_and_defaults_to_eight_megahertz():
+    """🔴 기본이 8 MHz 다 (사용자 결정 2026-08-19: "8mhz로 낮춰서 해보자").
+
+    남은 유력 후보가 "핀 헤더 + 점퍼선에 16 MHz 가 빠른 것" 이라, 낮춰서
+    증상이 사라지면 그것 자체가 신호 무결성 문제라는 진단이 된다.
+
+    고를 수 있는 값은 분주비로 실제로 낼 수 있는 것뿐이다 — SPI2 커널
+    클럭 64 MHz 를 2 의 거듭제곱으로 나눈 값이고, 32 MHz(64/2)는 ILI9488 의
+    쓰기 상한 20 MHz 를 넘어 목록에 없다.
+    """
+    store = default_store()
+    item = store.items["lcd.spi_khz"]
+    assert item.vtype == "enum"
+    assert item.default == 8000
+    assert item.choices == (2000, 4000, 8000, 16000)
+    assert item.unit == "kHz"
+
+
+def test_lcd_recovery_periods_can_be_turned_off():
+    """🔴 회복 장치를 **끌 수 있어야** 한다.
+
+    끌 수 없는 회복은 그것 자체가 새로운 방해 요인이다 — 되읽기가 못 미더운
+    판에서는 되읽기를, 전면 갱신이 눈에 거슬리는 현장에서는 전면 갱신을
+    사용자가 멈출 수 있어야 한다. 그래서 둘 다 하한이 0(= 안 함)이다.
+    """
+    store = default_store()
+
+    verify = store.items["lcd.verify_ms"]
+    assert verify.vtype == "u16"
+    assert verify.minimum == 0
+    assert verify.default == 5000
+
+    redraw = store.items["lcd.redraw_ms"]
+    # u32 다 — u16 은 65.5초에서 끝나는데, 증상이 드물면 분 단위로 늘려야 한다.
+    assert redraw.vtype == "u32"
+    assert redraw.minimum == 0
+    assert redraw.maximum == 3600000
+    assert redraw.default == 60000

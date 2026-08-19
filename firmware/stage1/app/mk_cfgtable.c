@@ -27,6 +27,18 @@
  * 🔴 값이 둘인 종류는 온습도뿐이다. 나머지는 전부 하나다.
  *    시뮬레이터(tools/simulator/config_store.py)의 I2C_KINDS 와 같아야
  *    하고, crosscheck_cfgtable.py 가 그것을 대조한다. */
+/* LCD SPI 클럭으로 고를 수 있는 값(kHz).
+ *
+ * 🔴 분주비로 실제로 낼 수 있는 값만 넣는다. SPI2 커널 클럭이 64 MHz 이고
+ *    (per_ck = hsi_ker_ck — bsp/mk_lcd_io.c spi_init 의 사연) HAL 의
+ *    분주비는 2 의 거듭제곱이다: 64/4·64/8·64/16·64/32. 64/2 = 32 MHz 는
+ *    ILI9488 의 쓰기 상한 20 MHz(twc MIN 50 ns, p.332 §17.4.3)를 넘으므로
+ *    목록에 없다.
+ *
+ * 🔴 시뮬레이터(tools/simulator/config_store.py 의 LCD_SPI_KHZ_CHOICES)와
+ *    같아야 하고, crosscheck_cfgtable.py 가 그것을 대조한다. */
+static const uint32_t LCD_SPI_KHZ_CHOICES[] = { 2000u, 4000u, 8000u, 16000u };
+
 static const uint32_t I2C_KIND_CHOICES[] = { 0u, 1u, 2u, 3u, 4u };
 static const char *const I2C_KIND_LABELS[] = {
     "없음", "조도", "온습도", "적외 온도", "방수 온도"
@@ -34,13 +46,13 @@ static const char *const I2C_KIND_LABELS[] = {
 
 /* dev 1 + tx 5(마스크 3 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
  * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
- * + lcd 2(사용·갱신 주기) */
+ * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기) */
 #define ITEM_COUNT   (1 + 5 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 5 \
                       + 3 \
-                      + 2)
+                      + 5)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
 #define GEN_COUNT    (MK_AIN_COUNT * 5 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 5)
@@ -482,6 +494,83 @@ static size_t add_lcd(size_t i)
         .note = "값이 바뀐 칸만 다시 그린다 — 짧게 잡아도 화면이 조용하면 "
                 "전송이 없다" };
     s_items[i].def.u = 250;
+    i++;
+
+    /* ── 회복 (2026-08-19, 실기기 증상) ──────────────────────────────
+     *
+     * 🔴 사용자: "LCD는 가끔 리셋을 해줘야겠다. 노이즈 타면 픽셀이 다
+     *    깨지는데?" — 깨진 뒤 저절로 안 돌아온다. 부분 갱신은 값이 바뀐
+     *    칸만 다시 그리므로 어긋난 그림이 그대로 남는다.
+     *
+     *    증상은 **무작위**다(사용자 확인). 24V 스위칭과 무관하고 케이블을
+     *    만질 때도 아니다. 그래서 아래 셋을 전부 설정 항목으로 뺀다 —
+     *    원인을 모르는 동안에는 사용자가 현장에서 돌려 볼 수 있어야 한다. */
+
+    /* 🔴 SPI 클럭. **기본을 8 MHz 로 둔다** (사용자 결정 2026-08-19:
+     *    "8mhz로 낮춰서 해보자").
+     *
+     *    남은 유력 후보가 "핀 헤더 + 점퍼선에 16 MHz 가 빠른 것" 이라,
+     *    낮춰서 증상이 사라지면 그것 자체가 신호 무결성 문제라는 진단이
+     *    된다. 지금은 갱신 속도보다 안정성이 값지다.
+     *
+     *    분주비로 낼 수 있는 값만 고를 수 있게 enum 이다. SPI2 커널 클럭은
+     *    per_ck = hsi_ker_ck = **64 MHz** 이고(bsp/mk_lcd_io.c 의 spi_init
+     *    — 이 펌웨어는 PLL 을 안 켜므로 기본 소스 pll1_q_ck 를 쓸 수 없다),
+     *    HAL 의 분주비는 2 의 거듭제곱뿐이다:
+     *
+     *        64 / 4  = 16 MHz    쓰기 상한 20 MHz 안 (twc MIN 50 ns,
+     *                            ILI9488.pdf p.332 §17.4.3)
+     *        64 / 8  =  8 MHz    ← 기본
+     *        64 / 16 =  4 MHz
+     *        64 / 32 =  2 MHz
+     *
+     *    64 / 2 = 32 MHz 는 상한을 넘으므로 목록에 없다.
+     *
+     *    갱신 시간이 그대로 두 배가 된다: 전면 460,800 바이트가 16 MHz 에서
+     *    약 230 ms, 8 MHz 에서 약 461 ms. 🔴 그래도 **한 바퀴에 한 행**이라
+     *    수집에는 영향이 없다. 부분 갱신 한 칸(258 x 16 x 3 = 12,384 B)은
+     *    8 MHz 에서 약 12 ms 라 사람 눈에는 그대로다. */
+    s_items[i] = (MkCfgItem){
+        .key = "lcd.spi_khz", .group = "lcd", .vtype = MK_VT_ENUM,
+        .choices = LCD_SPI_KHZ_CHOICES,
+        .n_choices = (uint8_t)(sizeof LCD_SPI_KHZ_CHOICES
+                               / sizeof LCD_SPI_KHZ_CHOICES[0]),
+        .unit = "kHz", .label = "화면 SPI 클럭",
+        .note = "픽셀이 무작위로 깨지면 낮춘다 — 사라지면 신호 무결성 문제다" };
+    s_items[i].def.u = 8000;
+    i++;
+
+    /* 🔴 되읽기 대조 주기. 패널에서 MADCTL·COLMOD 를 되읽어 우리가 넣은
+     *    값과 맞춰 본다 (0Bh p.157 §5.2.7 · 0Ch p.159 §5.2.8). 다르면
+     *    명령이 깨진 것이라 초기화부터 다시 하고, 같으면 GRAM 동기만
+     *    어긋난 것이다 — 이 구분이 원인을 가리는 유일한 창구다.
+     *
+     *    0 = 안 함. MISO 가 안 물린 판에서도 첫 대조가 스스로 그것을
+     *    알아채 검사를 끄지만(app/mk_lcd.c finish_verify), 사용자가 손으로
+     *    끌 수 있어야 한다. */
+    s_items[i] = (MkCfgItem){
+        .key = "lcd.verify_ms", .group = "lcd", .vtype = MK_VT_U16,
+        .min = 0, .max = 60000, .has_min = 1, .has_max = 1, .unit = "ms",
+        .label = "화면 레지스터 대조 주기",
+        .note = "0 이면 안 한다 — 값이 다르면 화면을 초기화부터 다시 세운다" };
+    s_items[i].def.u = 5000;
+    i++;
+
+    /* 🔴 주기적 전면 다시 그리기. 되읽기가 못 잡는 종류의 어긋남(GRAM
+     *    쓰기 포인터가 밀린 경우)을 덮는 마지막 그물이다. 바탕까지 다시
+     *    칠하므로 칸 바깥에 밀려 찍힌 화소도 지워진다.
+     *
+     *    u32 다. 60초로는 모자랄 수 있고(증상이 드물면 길게), u16 은
+     *    65.5초에서 끝난다. 기본 60초는 8 MHz 에서 약 461 ms 를 쓰므로
+     *    듀티가 0.8% 다 — 한 바퀴에 한 행이라 수집에는 영향이 없다.
+     *
+     *    0 = 안 함. */
+    s_items[i] = (MkCfgItem){
+        .key = "lcd.redraw_ms", .group = "lcd", .vtype = MK_VT_U32,
+        .min = 0, .max = 3600000, .has_min = 1, .has_max = 1, .unit = "ms",
+        .label = "화면 전면 갱신 주기",
+        .note = "값이 안 바뀌어도 통째로 다시 그린다 — 0 이면 안 한다" };
+    s_items[i].def.u = 60000;
     i++;
     return i;
 }
