@@ -2,7 +2,7 @@
 CC ?= gcc
 CFLAGS = -std=c11 -Wall -Wextra -Werror -O1 -g
 
-TESTS = test_framing test_json test_hostlink test_config test_cfgwire test_crc test_sol test_cfgtable test_i2c test_lcd
+TESTS = test_framing test_json test_hostlink test_config test_cfgwire test_crc test_sol test_cfgtable test_i2c test_lcd test_screen
 
 all: $(TESTS)
 	./test_framing
@@ -15,6 +15,7 @@ all: $(TESTS)
 	./test_cfgtable
 	./test_i2c
 	./test_lcd
+	./test_screen
 
 test_framing: test_framing.c ../app/mk_framing.c
 	$(CC) $(CFLAGS) -o $@ $^
@@ -44,6 +45,9 @@ test_i2c: test_i2c.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh175
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_lcd: test_lcd.c ../app/mk_lcd.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh1750.c ../app/mk_i2c_am2320.c ../app/mk_i2c_mlx90614.c ../app/mk_ws2812.c ../app/mk_solctl.c ../app/mk_queue.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+test_screen: test_screen.c ../app/mk_screen.c ../app/mk_glyph.c ../app/mk_font5x7.c ../app/mk_text.c ../app/mk_lcd.c ../app/mk_telem.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c ../app/mk_ads1256.c ../app/mk_queue.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh1750.c ../app/mk_i2c_am2320.c ../app/mk_i2c_mlx90614.c ../app/mk_ws2812.c ../app/mk_solctl.c ../app/mk_timeax.c ../app/mk_gnss.c ../app/mk_railctl.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 clean:

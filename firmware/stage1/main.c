@@ -30,6 +30,7 @@
 #include "app/mk_solctl.h"
 #include "app/mk_i2c.h"
 #include "app/mk_lcd.h"
+#include "app/mk_screen.h"
 #include "app/mk_gnss.h"
 #include "app/mk_gnssctl.h"
 #include "app/mk_timeax.h"
@@ -87,6 +88,7 @@ static MkGnss    s_gnss;
 static MkGnssCtl s_gnssctl;
 static MkTimeAx  s_timeax;
 static MkLcd     s_lcd;
+static MkScreen  s_screen;
 static int      s_led_on;
 
 /* 채널별 표본 저장소.
@@ -384,6 +386,19 @@ int main(void)
     mk_gnssctl_init(&s_gnssctl);
     mk_hostlink_attach_gnssctl(&link, &s_gnssctl);
 
+    /* 🔴 화면 내용. **모든 출처가 선 뒤에** 붙인다 — mk_screen 은 포인터만
+     *    들고 매 갱신 주기에 그때의 값을 읽으므로, 아직 초기화 안 된
+     *    구조체를 붙이면 첫 주기에 쓰레기를 그린다.
+     *
+     * 🔴 새 큐를 만들지 않는다 (사용자 설계 2026-08-19). 화면은 마지막
+     *    값만 보면 되고, 그것은 이미 수집기들이 들고 있다. 큐를 하나 더
+     *    두면 표본이 두 벌 생겨 어느 쪽이 진짜인지 흐려진다. */
+    {
+        MkScreenSources src = { &s_cfg, &s_ads, &s_i2c, &s_sol,
+                                &s_timeax, &s_rails };
+        mk_screen_init(&s_screen, &src);
+    }
+
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;
 
@@ -432,6 +447,15 @@ int main(void)
          *    있으면 즉시 돌아온다 — 한 장(460,800바이트)을 다 그리는 동안
          *    수집이 서지 않는 것이 이 구조의 요지다 (app/mk_lcd.h). */
         mk_lcd_tick(&s_lcd, &s_cfg, now);
+
+        /* 🔴 화면 내용도 매 바퀴 민다. 값을 다시 읽는 것은 `lcd.period_ms`
+         *    마다(기본 250 ms)이고, 그때도 **바뀐 칸만** 다시 그린다 —
+         *    값이 그대로면 SPI 로 한 바이트도 안 나간다.
+         *
+         *    순서가 뜻이 있다: mk_lcd_tick() 이 먼저 한 걸음 나아가야 그
+         *    바퀴에 화면이 놀게 되고(mk_lcd_idle), 다음 칸을 맡길 수 있다.
+         *    반대로 두면 언제나 한 바퀴씩 늦는다. */
+        mk_screen_tick(&s_screen, &s_lcd, now);
 
         /* 🔴 GNSS/PPS(Phase 3). 순서가 뜻이 있다 —
          *
