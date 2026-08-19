@@ -46,6 +46,19 @@ static void set_u32(const char *key, uint32_t v)
     if (it) { it->cur.u = v; }
 }
 
+/* 🔴 [2026-08-19] 수집과 송신을 뗀 뒤(사용자 설계) mk_telem 은 더 이상
+ *    mk_queue 를 비우지 않는다 — MkAdsChannel.last 만 읽는다. 큐(mk_queue_
+ *    push)는 이제 이 파일의 시험 목적("송신이 무엇을 보는가")과 무관하다.
+ *    ADS 는 불투명 구조체가 아니므로(test_ads1256.c 도 이렇게 한다) 시험이
+ *    "수집이 방금 끝났다"를 흉내 내려면 이 자리를 직접 채운다 — mk_i2c 의
+ *    시험이 MkI2c.out[]/last[][] 를 직접 채우는 것과 같은 방식이다. */
+static void set_last(int ch, int64_t t_ms, int32_t raw)
+{
+    ADS.ch[ch].last.t_ms = t_ms;
+    ADS.ch[ch].last.raw = raw;
+    ADS.ch[ch].has_last = 1u;
+}
+
 static void setup(void)
 {
     N = 0;
@@ -128,21 +141,49 @@ static void test_raw_to_ma_matches_the_shunt(void)
     CHECK(mk_telem_raw_to_ma(0) == 0.0f, "0 코드는 0 mA — 4 mA 미만은 단선");
 }
 
-/* ---- 주기 --------------------------------------------------------------- */
+/* ---- 주기 (수집·송신 분리 — 사용자 설계 2026-08-19) ---------------------
+ *
+ *   "수집은 수집대로 하고 송신은 내가 원하는 간격에 맞춰서 하는거지.
+ *    변수 a 라는 곳에 수집된 값을 계속 넣고, 송신 할 때는 변수 a 를
+ *    사용하면 어쨋든 그 안에 있던 값이 날라갈거 아니야"
+ *
+ *   set_last() 가 "변수 a 에 값을 넣는" 수집 쪽을 흉내 낸다. mk_telem_tick
+ *   은 그 a 를 tx.period_ms 마다 읽기만 한다 — 큐(mk_queue)는 더 이상
+ *   보지 않는다. */
 
 static void test_nothing_before_the_period(void)
 {
-    /* 🔴 큐에 있는 것을 즉시 쏟으면 `tx.period_ms` 가 뜻을 잃는다. */
+    /* 🔴 값이 있어도 주기 전에는 안 보낸다 — 안 그러면 `tx.period_ms` 가
+     *    뜻을 잃는다. */
     setup();
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 4000000);
+    set_last(0, 1000, 4000000);
     CHECK(mk_telem_tick(&T, 50, sink, NULL) == 0, "주기 전에는 안 보낸다");
     CHECK(mk_telem_tick(&T, 100, sink, NULL) == 1, "주기가 되면 보낸다");
 }
 
-static void test_empty_queue_sends_nothing(void)
+static void test_no_data_sends_nothing(void)
 {
+    /* 🔴 채널이 켜져 있어도 한 번도 수집되지 않았으면(set_last 를 안
+     *    불렀으면) 0 을 지어내지 않는다 — 설계 원칙 3·4. */
     setup();
-    CHECK(mk_telem_tick(&T, 100, sink, NULL) == 0, "빈 큐면 아무것도 안 나간다");
+    CHECK(mk_telem_tick(&T, 100, sink, NULL) == 0, "값이 없으면 아무것도 안 나간다");
+}
+
+static void test_channel_with_no_data_is_never_sent_even_over_many_periods(void)
+{
+    /* 🔴 채널 3개 중 하나(ch1)는 끝까지 값을 못 받는다 — 다른 채널이
+     *    여러 주기를 도는 동안에도 그 채널만은 한 줄도 나가면 안 된다. */
+    setup();
+    set_last(0, 1000, 4000000);
+    /* ch1 은 절대 set_last() 를 안 부른다. */
+    for (int64_t t = 100; t <= 500; t += 100) {
+        mk_telem_tick(&T, t, sink, NULL);
+    }
+    for (int k = 0; k < N; k++) {
+        CHECK(strstr(LINES[k], "\"connector_id\":4") == NULL,
+              "ch1(J4)은 값이 없어 한 번도 안 나간다");
+    }
+    CHECK(N > 0, "그래도 ch0(J3)은 나간다 — 시험 자체가 헛돌지 않았다");
 }
 
 /* ---- 레코드 ------------------------------------------------------------- */
@@ -150,7 +191,7 @@ static void test_empty_queue_sends_nothing(void)
 static void test_record_shape(void)
 {
     setup();
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1772200855875LL, 4026531);
+    set_last(0, 1772200855875LL, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
 
     CHECK(N == 1, "한 줄");
@@ -165,16 +206,68 @@ static void test_record_shape(void)
 
 static void test_seq_increases_so_the_host_can_find_gaps(void)
 {
-    /* 규격 §7.1 — 호스트가 누락을 검출하는 유일한 근거다. */
+    /* 규격 §7.1 — 호스트가 누락을 검출하는 유일한 근거다. 채널 셋이 한
+     * 주기에 함께 나가면서 seq 가 1씩 오르는지 본다. */
     setup();
-    for (int k = 0; k < 3; k++) {
-        mk_queue_push(mk_ads_queue(&ADS, 0), 1000 + k, 4000000);
-    }
+    set_last(0, 1000, 4000000);
+    set_last(1, 1000, 4000000);
+    set_last(2, 1000, 4000000);
     mk_telem_tick(&T, 100, sink, NULL);
-    CHECK(N == 3, "쌓인 것을 비운다");
+    CHECK(N == 3, "세 채널이 함께 나간다");
     CHECK_HAS(LINES[0], "\"seq\":1", "seq 1");
     CHECK_HAS(LINES[1], "\"seq\":2", "seq 2");
     CHECK_HAS(LINES[2], "\"seq\":3", "seq 3");
+}
+
+static void test_repeats_the_last_value_without_new_acquisition(void)
+{
+    /* 🔴 이 시험이 이번 변경의 핵심이다. 수집이 없어도 주기마다 마지막
+     *    값이 반복해서 나가고, `t` 는 **획득 시각 그대로**다(송신 시각으로
+     *    바뀌면 안 된다) — 그래야 호스트가 "이 값이 몇 ms 묵었나"를 잰다. */
+    setup();
+    set_last(0, 1234, 4026531);           /* 딱 한 번만 수집됐다고 하자 */
+    mk_telem_tick(&T, 100, sink, NULL);   /* 1회차 */
+    mk_telem_tick(&T, 200, sink, NULL);   /* 2회차 — 새 수집 없음 */
+    mk_telem_tick(&T, 300, sink, NULL);   /* 3회차 — 새 수집 없음 */
+
+    CHECK(N == 3, "세 번 다 나간다 — 같은 값이라도 반복한다");
+    for (int k = 0; k < N; k++) {
+        CHECK_HAS(LINES[k], "\"raw\":4026531", "값이 그대로 반복된다");
+        CHECK_HAS(LINES[k], "\"t\":1234",
+                  "t 는 송신 시각(100·200·300)이 아니라 획득 시각(1234) 그대로다");
+    }
+}
+
+static void test_only_the_latest_sample_survives_when_acquisition_outpaces_tx(void)
+{
+    /* 🔴 송신 사이에 여러 번 수집돼도(수집이 송신보다 빠르면) 중간 표본은
+     *    조용히 버려지고 최신 값만 나간다 — 큐가 아니라 "변수 a" 이기
+     *    때문이다. */
+    setup();
+    set_last(0, 111, 1000);   /* 중간 표본 — 버려져야 한다 */
+    set_last(0, 222, 2000);
+    set_last(0, 1234, 4026531);   /* 이것만 남아야 한다 */
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK(N == 1, "채널당 한 줄");
+    CHECK_HAS(LINES[0], "\"raw\":4026531", "최신 값만 나간다");
+    CHECK_HAS(LINES[0], "\"t\":1234", "최신 획득 시각");
+    CHECK(strstr(LINES[0], "\"raw\":1000") == NULL, "중간 표본 1000 은 안 보인다");
+    CHECK(strstr(LINES[0], "\"raw\":2000") == NULL, "중간 표본 2000 도 안 보인다");
+}
+
+static void test_changing_tx_period_ms_changes_the_interval(void)
+{
+    /* 🔴 되돌림 관점의 반대쪽 — tx.period_ms 를 바꾸면 송신 간격이
+     *    그대로 따라 바뀌는지 본다. */
+    setup();
+    set_u32("tx.period_ms", 50u);
+    set_last(0, 1000, 4000000);
+
+    CHECK(mk_telem_tick(&T, 40, sink, NULL) == 0, "50ms 미만이면 안 보낸다");
+    CHECK(mk_telem_tick(&T, 50, sink, NULL) == 1, "50ms 가 되면 보낸다");
+    CHECK(mk_telem_tick(&T, 90, sink, NULL) == 0, "다음 50ms(=100) 전에는 또 안 보낸다");
+    CHECK(mk_telem_tick(&T, 100, sink, NULL) == 1, "100ms 에 다시 보낸다");
 }
 
 static void test_field_mask_selects(void)
@@ -190,7 +283,7 @@ static void test_field_mask_selects(void)
     }
     set_u32("tx.fields", only_ma);
 
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 4026531);
+    set_last(0, 1000, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
 
     CHECK_HAS(LINES[0], "\"ma\":", "켠 필드는 실린다");
@@ -210,7 +303,7 @@ static void test_value_follows_the_spec_formula(void)
     z->cur.f = 4.0f;
     s->cur.f = 9.375f;
 
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 4026531);
+    set_last(0, 1000, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
     CHECK_HAS(LINES[0], "\"value\":150.0", "20 mA 가 150 bar 로");
 }
@@ -219,7 +312,7 @@ static void test_float_digits_is_honoured(void)
 {
     setup();
     set_u32("tx.float_digits", 2u);
-    mk_queue_push(mk_ads_queue(&ADS, 0), 1000, 4026531);
+    set_last(0, 1000, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
     CHECK(strstr(LINES[0], "\"ma\":20.00,") != NULL
           || strstr(LINES[0], "\"ma\":20.0,") != NULL,
@@ -228,15 +321,14 @@ static void test_float_digits_is_honoured(void)
 
 /* ---- 격리 --------------------------------------------------------------- */
 
-static void test_channels_take_turns(void)
+static void test_every_active_channel_sends_exactly_one_line_per_period(void)
 {
-    /* 🔴 큐가 채널마다 따로인 이유가 격리인데 송신이 그것을 깨면 안 된다.
-     *    0 번부터 매번 훑으면 앞 채널이 밀려 있을 때 뒤가 영영 못 나간다. */
+    /* 🔴 큐를 비우지 않는 새 설계에서는 "밀린 채널이 나머지를 굶긴다"는
+     *    상황 자체가 없다 — 채널마다 마지막 값 자리가 하나씩이라 매
+     *    주기에 정확히 한 줄씩만 나간다. 세 채널 모두, 딱 한 줄씩. */
     setup();
     for (int ch = 0; ch < 3; ch++) {
-        for (int k = 0; k < 8; k++) {
-            mk_queue_push(mk_ads_queue(&ADS, ch), 1000 + k, 4000000);
-        }
+        set_last(ch, 1000 + ch, 4000000);
     }
     mk_telem_tick(&T, 100, sink, NULL);
 
@@ -248,32 +340,44 @@ static void test_channels_take_turns(void)
             if (strstr(LINES[i], want)) { seen[ch]++; }
         }
     }
-    CHECK(seen[0] > 0 && seen[1] > 0 && seen[2] > 0,
-          "한 바퀴에 세 채널이 모두 나간다");
+    CHECK(N == 3, "채널마다 정확히 한 줄 — 셋이니 셋");
+    CHECK(seen[0] == 1 && seen[1] == 1 && seen[2] == 1,
+          "한 바퀴에 세 채널이 모두, 각각 한 번씩 나간다");
 }
 
-static void test_burst_is_capped(void)
+static void test_all_seven_channels_fit_in_one_tick(void)
 {
-    /* 🔴 밀린 것을 한 번에 다 쏟으면 UART 가 막히고, 그동안 하트비트가
-     *    밀려 보드가 RUN 으로 떨어진다 — 링크가 나쁠 때 정확히 터진다. */
+    /* 🔴 예전의 "burst" 개념(밀린 표본을 나눠 쏟는 것)은 없어졌지만, 채널
+     *    전부(7)+포트×양(최대 12)을 합쳐도 MK_TELEM_MAX_LINES(16) 안에
+     *    드는지는 여전히 볼 값어치가 있다 — din 루프가 이 상수를 계속
+     *    쓰기 때문에 값을 낮추면 여기서 먼저 걸린다. */
     setup();
-    for (int ch = 0; ch < 4; ch++) {
-        for (int k = 0; k < 8; k++) {
-            mk_queue_push(mk_ads_queue(&ADS, ch), 1000 + k, 4000000);
-        }
+    for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
+        mk_ads_configure(&ADS, ch, 1, 100, 0);
+        set_last(ch, 1000 + ch, 4000000);
     }
     int sent = mk_telem_tick(&T, 100, sink, NULL);
-    CHECK(sent <= MK_TELEM_MAX_LINES, "한 번에 보내는 양에 상한이 있다");
-    CHECK(sent > 0, "그래도 보내기는 한다");
+    CHECK(sent == MK_ADS_CHANNELS, "일곱 채널 모두 한 번에 나간다");
+    CHECK(sent <= MK_TELEM_MAX_LINES, "그래도 상한 안에 든다");
 }
 
 static void test_disabled_channel_is_silent(void)
 {
-    /* 설계 원칙 3 — 센서 미연결은 정상 상태다. 꺼진 채널을 싣지 않는다. */
+    /* 설계 원칙 3 — 센서 미연결은 정상 상태다. 꺼진 채널을 싣지 않는다.
+     * 값이 있어도(set_last) 꺼져 있으면 안 나간다 — 다른(켜진) 채널과
+     * 함께 두어, "값이 없어서"가 아니라 "꺼져 있어서" 안 나가는 것임을
+     * 분명히 한다. */
     setup();
     mk_ads_configure(&ADS, 1, 0, 100, 0);
-    mk_queue_push(mk_ads_queue(&ADS, 1), 1000, 4000000);
-    CHECK(mk_telem_tick(&T, 100, sink, NULL) == 0, "꺼진 채널은 안 나간다");
+    set_last(0, 500, 4000000);   /* 켜진 채널 — 이건 나가야 한다 */
+    set_last(1, 1000, 4000000);  /* 꺼진 채널 — 값이 있어도 안 나가야 한다 */
+
+    int sent = mk_telem_tick(&T, 100, sink, NULL);
+    CHECK(sent == 1, "켜진 채널 하나만 나간다");
+    for (int k = 0; k < N; k++) {
+        CHECK(strstr(LINES[k], "\"connector_id\":4") == NULL,
+              "꺼진 채널(J4)은 값이 있어도 안 나간다");
+    }
 }
 
 /* ---- I2C --------------------------------------------------------------- */
@@ -288,11 +392,11 @@ static void test_i2c_records_share_the_sequence_with_ain(void)
     mk_i2c_init(&I2C, &io);
     mk_telem_attach_i2c(&T, &I2C);
     enable_lux_port_in(&CFG, 10u);
-    /* 🔴 브리프 원문에는 없었지만 ADS 큐가 비어 있으면 ain 이 한 줄도 안
+    /* 🔴 브리프 원문에는 없었지만 ain 쪽에 마지막 값이 없으면 한 줄도 안
      *    나가 "두 종류가 함께 나간다" 를 어떤 구현으로도 통과시킬 수 없다
      *    (실제로 이 줄 없이 돌려 FAIL 을 확인했다 — task-6-report.md 참고).
      *    seq 공유를 보는 시험이므로 ain 쪽에도 한 건은 있어야 한다. */
-    mk_queue_push(mk_ads_queue(&ADS, 0), 500, 4000000);
+    set_last(0, 500, 4000000);
 
     for (int64_t t = 0; t <= 400; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
@@ -313,23 +417,26 @@ static void test_i2c_records_share_the_sequence_with_ain(void)
     CHECK(monotonic, "seq 가 종류를 가리지 않고 1씩 오른다");
 }
 
-/* 🔴 값이 없으면 null 이다. 마지막 값을 다시 실으면 화면이 살아 있는
- *    센서처럼 보인다 (규격 §7.5).
+/* 🔴 값이 없으면 null 이다. 그리고 [2026-08-19] 그 null 도 **마지막 값**이라
+ *    tx.period_ms 마다 반복해서 나간다 — 죽은 센서가 죽었다는 사실을 계속
+ *    말하는 것이지, 예전처럼 "재시도가 실제로 일어난 순간에만" 알리는 게
+ *    아니다(규격 §7.5).
  *
  * 🔴 [검토 지적 C2 — 이름을 고쳤다] enable_lux_port_in 은 드라이버가
  *    있는 LUX 를 켜고 fake_xfer_nak 는 **첫 xfer(Power On)부터** 실패
  *    시키므로, 실제로 타는 것은 READY 의 read 실패가 아니라 START 의
- *    시작 실패 경로다 — 예전 이름(test_failed_read_emits_null_not_
- *    the_last_value)이 그것을 숨겼다.
+ *    시작 실패 경로다.
  *
- *    예전 판은 각 줄의 **내용**만 보고 몇 줄이 왔는지는 안 셌다. 그래서
- *    시작 실패에 주기 가드가 없어(안 꽂힌 포트 하나가 슈퍼루프 두
- *    바퀴마다 레코드를 만드는 결함, 실측 링크의 약 2/3) 이 시험을
- *    그대로 통과시켰다. 이제 줄 수를 못 박는다 —
- *    enable_lux_port_in 이 고정하는 period_ms=200 에서 0~400ms 를
- *    10ms 간격으로 돌리면 t=10(첫 시도 실패)과 t=210(첫 재시도) 두
- *    번만 나가야 한다(t=410 은 범위 밖). */
-static void test_start_failure_is_rate_limited_and_emits_null(void)
+ *    enable_lux_port_in 이 고정하는 period_ms=200(i2c 재시도 간격)과
+ *    tx.period_ms=100(기본값, 송신 간격)이 이제 서로 다른 일을 한다 —
+ *    재시도는 실패를 새로 확인하는 주기, 송신은 마지막 값을 내보내는
+ *    주기다. 0~400ms 를 10ms 간격으로 돌리면:
+ *      t=10   첫 시도 실패 → last_valid 가 된다
+ *      t=100,200,300,400  송신 주기마다 그때까지의 마지막 값을 낸다(4번)
+ *      t=210  두 번째 재시도(여전히 실패) → t=300 송신부터 갱신된 값
+ *    즉 송신 횟수(4)는 tx.period_ms 가 정하고, 그 안의 값은 i2c 재시도가
+ *    정한다 — 두 주기가 분리됐다는 것 자체가 이 시험의 요지다. */
+static void test_failure_repeats_at_the_tx_period_not_the_retry_period(void)
 {
     setup();
     static MkI2c I2C;
@@ -355,24 +462,18 @@ static void test_start_failure_is_rate_limited_and_emits_null(void)
               "unit 을 싣지 않는다 (규격 §7.5)");
     }
     CHECK(found, "실패해도 레코드가 나간다");
-    CHECK(n_i2c == 2,
-          "주기 가드가 있어 400ms/period_ms=200 에 두 번만 나간다 (C2 — "
-          "가드 없이 매 두 바퀴 재시도하면 이보다 훨씬 많이 나간다)");
+    CHECK(n_i2c == 4,
+          "송신은 tx.period_ms(100) 를 따른다 — 400ms 에 네 번(100·200·300·400), "
+          "i2c 재시도(200ms)와는 별개다");
 }
 
-/* 🔴 [검토 지적 — 근거가 틀렸다] "while → if 로 바꿔도 시험이 안 깨진다" 는
- *    공백을 처음에는 "test_i2c.c 의 시험들이 그 경로를 이미 덮는다" 는
- *    근거로 넘겼는데, 사실이 아니었다 — test_one_port_per_tick 은 여섯
- *    포트를 전부 지원 종류로 켜서 매 바퀴 touched=1 로 조기 반환하는
- *    경로만 돌고, 지원 안 하는 종류 시험은 포트 하나만 켜서 n_out 이
- *    2 가 되는 상황을 만들지 않는다. 저장소 전체에 "한 바퀴에 out 이
- *    둘 쌓인 채로 mk_telem_tick 이 한 번만 불린다" 를 보는 시험이
- *    없었다.
- *
- *    mk_i2c_tick·상태기계는 건드리지 않는다 — out 버퍼를 직접 채워
- *    mk_telem_tick 의 배출 계약(mk_i2c.h: "매 바퀴 뒤 0 이 나올 때까지
- *    비운다")만 좁혀서 본다. emit_i2c() 가 이미 쓰는 방식이다. */
-static void test_tick_drains_every_pending_i2c_record_in_one_call(void)
+/* 🔴 [2026-08-19] mk_telem 은 더 이상 out[]/mk_i2c_take() 를 드레인하지
+ *    않는다 — last[][] 만 읽는다. 그래서 out[] 을 직접 채우던 예전
+ *    시험은 last[][] 를 직접 채우는 방식으로 바꾼다(포트 2(=J12),
+ *    슬롯 0·1 — 온습도 자리). mk_i2c.c 의 push_out() 이 실제로 두 자리를
+ *    같이 채우는 것은 tests/test_i2c.c 의 몫이고, 여기서는 mk_telem 이
+ *    last[][] 를 정확히 읽어 레코드로 만드는지만 본다. */
+static void test_reads_i2c_values_straight_from_the_last_value_cache(void)
 {
     setup();
     static MkI2c I2C;
@@ -380,13 +481,14 @@ static void test_tick_drains_every_pending_i2c_record_in_one_call(void)
     mk_i2c_init(&I2C, &io);
     mk_telem_attach_i2c(&T, &I2C);
 
-    I2C.out[0] = (MkI2cOut){ .connector_id = 12u, .quantity = "temp",
-                             .value = 20.0f, .have_value = 1,
-                             .status = 0u, .t_ms = 1000 };
-    I2C.out[1] = (MkI2cOut){ .connector_id = 12u, .quantity = "humidity",
-                             .value = 55.0f, .have_value = 1,
-                             .status = 0u, .t_ms = 1000 };
-    I2C.n_out = 2;
+    I2C.last[2][0] = (MkI2cOut){ .connector_id = 12u, .quantity = "temp",
+                                 .value = 20.0f, .have_value = 1,
+                                 .status = 0u, .t_ms = 1000 };
+    I2C.last_valid[2][0] = 1u;
+    I2C.last[2][1] = (MkI2cOut){ .connector_id = 12u, .quantity = "humidity",
+                                 .value = 55.0f, .have_value = 1,
+                                 .status = 0u, .t_ms = 1000 };
+    I2C.last_valid[2][1] = 1u;
 
     mk_telem_tick(&T, 100, sink, NULL);   /* 딱 한 번 */
 
@@ -410,7 +512,7 @@ static void test_din_records_share_the_sequence_with_ain(void)
     static MkSolCtl SOL;
     mk_solctl_init(&SOL, NULL, NULL);   /* 레벨 폴링 없음 — out 을 직접 채운다 */
     mk_telem_attach_sol(&T, &SOL);
-    mk_queue_push(mk_ads_queue(&ADS, 0), 500, 4000000);   /* ain 쪽에도 한 건 */
+    set_last(0, 500, 4000000);   /* ain 쪽에도 한 건 */
 
     SOL.out[0] = (MkSolOut){ .connector_id = 18u, .state = 1u, .t_ms = 1000 };
     SOL.n_out = 1;
@@ -480,20 +582,28 @@ static void test_din_is_not_gated_by_tx_period(void)
 static void emit_samples(void)
 {
     setup();
-    /* 4 · 12 · 20 mA 에 해당하는 코드 */
-    /* 4 mA · 12 mA · 20 mA 에 해당하는 코드 (만재 2xVREF). */
+    /* 4 · 12 · 20 mA 에 해당하는 코드 (만재 2xVREF). 셋을 서로 다른
+     * 송신 주기에 하나씩 "수집"해 세 줄을 얻는다 — 수집·송신이 갈린
+     * 뒤로는(2026-08-19) 한 주기에는 채널당 마지막 값 한 줄뿐이다. */
     static const int32_t CODES[] = { 805306, 2415918, 4026531 };
+    int64_t t = 100;
     for (size_t k = 0; k < sizeof CODES / sizeof *CODES; k++) {
-        mk_queue_push(mk_ads_queue(&ADS, 0), 1000 + (int)k, CODES[k]);
+        set_last(0, 1000 + (int64_t)k, CODES[k]);
+        mk_telem_tick(&T, t, sink, NULL);
+        t += 100;
     }
-    mk_telem_tick(&T, 100, sink, NULL);
     for (int i = 0; i < N; i++) {
         fputs(LINES[i], stdout);
     }
 }
 
-/* crosscheck_i2c.py 가 대조하는 세 벡터. 상태기계를 거치지 않고 out 큐에
- * 직접 채워 레코드 조립(build_i2c_record)만 시뮬레이터와 맞춘다. */
+/* crosscheck_i2c.py 가 대조하는 세 벡터. 상태기계를 거치지 않고 last[][] 에
+ * 직접 채워 레코드 조립(build_i2c_record)만 시뮬레이터와 맞춘다 —
+ * [2026-08-19] mk_telem 은 이제 out[] 이 아니라 last[][] 를 읽는다.
+ *
+ * 🔴 crosscheck_i2c.py 는 정확히 세 줄, seq 1·2·3 을 기대한다. 마지막 값은
+ *    한 번 서면 계속 반복되므로(hold-and-send), 매번 last_valid 를 전부
+ *    지우고 그 벡터 하나만 세워야 딱 한 줄만 나간다. */
 static void emit_i2c(void)
 {
     setup();
@@ -502,25 +612,28 @@ static void emit_i2c(void)
     mk_i2c_init(&I2C, &io);
     mk_telem_attach_i2c(&T, &I2C);
 
-    /* 1) 정상값 */
-    I2C.out[0] = (MkI2cOut){ .connector_id = 10u, .quantity = "lux",
-                             .value = 401.5f, .have_value = 1,
-                             .status = 0u, .t_ms = 1000 };
-    I2C.n_out = 1;
+    /* 1) 정상값 — 커넥터 10 = 포트 0 */
+    memset(I2C.last_valid, 0, sizeof I2C.last_valid);
+    I2C.last[0][0] = (MkI2cOut){ .connector_id = 10u, .quantity = "lux",
+                                 .value = 401.5f, .have_value = 1,
+                                 .status = 0u, .t_ms = 1000 };
+    I2C.last_valid[0][0] = 1u;
     mk_telem_tick(&T, 100, sink, NULL);
 
-    /* 2) 응답 없음 */
-    I2C.out[0] = (MkI2cOut){ .connector_id = 11u, .quantity = "",
-                             .value = 0.0f, .have_value = 0,
-                             .status = 1u, .t_ms = 2000 };
-    I2C.n_out = 1;
+    /* 2) 응답 없음 — 커넥터 11 = 포트 1 */
+    memset(I2C.last_valid, 0, sizeof I2C.last_valid);
+    I2C.last[1][0] = (MkI2cOut){ .connector_id = 11u, .quantity = "",
+                                 .value = 0.0f, .have_value = 0,
+                                 .status = 1u, .t_ms = 2000 };
+    I2C.last_valid[1][0] = 1u;
     mk_telem_tick(&T, 300, sink, NULL);
 
-    /* 3) 지원 안 하는 종류 */
-    I2C.out[0] = (MkI2cOut){ .connector_id = 12u, .quantity = "",
-                             .value = 0.0f, .have_value = 0,
-                             .status = 3u, .t_ms = 3000 };
-    I2C.n_out = 1;
+    /* 3) 지원 안 하는 종류 — 커넥터 12 = 포트 2 */
+    memset(I2C.last_valid, 0, sizeof I2C.last_valid);
+    I2C.last[2][0] = (MkI2cOut){ .connector_id = 12u, .quantity = "",
+                                 .value = 0.0f, .have_value = 0,
+                                 .status = 3u, .t_ms = 3000 };
+    I2C.last_valid[2][0] = 1u;
     mk_telem_tick(&T, 500, sink, NULL);
 
     for (int i = 0; i < N; i++) {
@@ -580,21 +693,25 @@ int main(int argc, char **argv)
     printf("mk_telem\n");
     test_raw_to_ma_matches_the_shunt();
     test_nothing_before_the_period();
-    test_empty_queue_sends_nothing();
+    test_no_data_sends_nothing();
+    test_channel_with_no_data_is_never_sent_even_over_many_periods();
     test_record_shape();
     test_seq_increases_so_the_host_can_find_gaps();
+    test_repeats_the_last_value_without_new_acquisition();
+    test_only_the_latest_sample_survives_when_acquisition_outpaces_tx();
+    test_changing_tx_period_ms_changes_the_interval();
     test_field_mask_selects();
     test_value_follows_the_spec_formula();
     test_float_digits_is_honoured();
-    test_channels_take_turns();
-    test_burst_is_capped();
+    test_every_active_channel_sends_exactly_one_line_per_period();
+    test_all_seven_channels_fit_in_one_tick();
     test_disabled_channel_is_silent();
     test_i2c_records_share_the_sequence_with_ain();
-    test_start_failure_is_rate_limited_and_emits_null();
+    test_failure_repeats_at_the_tx_period_not_the_retry_period();
     test_din_records_share_the_sequence_with_ain();
     test_din_record_shape();
     test_din_is_not_gated_by_tx_period();
-    test_tick_drains_every_pending_i2c_record_in_one_call();
+    test_reads_i2c_values_straight_from_the_last_value_cache();
 
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;

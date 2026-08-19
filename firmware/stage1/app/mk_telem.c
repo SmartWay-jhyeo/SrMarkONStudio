@@ -249,48 +249,14 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
         return 0;
     }
 
-    /* 🔴 tx.period_ms 를 기다리지 않는다. I2C 는 포트마다 자기 주기가
-     *    있고(i2cN.period_ms), 읽은 즉시 내보내는 것이 그 주기를 지키는
-     *    유일한 방법이다. 여기서 큐를 또 두면 주기가 둘이 되어 느린 쪽이
-     *    빠른 쪽을 덮어쓴다.
-     *
-     * 🔴 mk_i2c_tick() 을 부른 매 바퀴 뒤 mk_i2c_take() 가 0 을 돌려줄 때까지
-     *    비우는 것이 mk_i2c.h 의 계약이다 — while 로 끝까지 꺼낸다. 한 번만
-     *    꺼내면 남은 것이 다음 mk_i2c_tick() 의 push_out 자리를 막아
-     *    dropped 로 조용히 사라진다.
-     *
-     * 🔴 `sent_i2c < MK_TELEM_MAX_LINES` 가 이 계약과 원리적으로는 충돌한다
-     *    — 상한에 걸리면 while 이 다 비우기 전에 멈춘다. 지금은 안전하다:
-     *    mk_i2c.h 의 out 버퍼가 MK_I2C_OUT_MAX(= MK_I2C_COUNT ×
-     *    MK_I2C_VALUES_MAX = 6×2 = 12)칸이라 한 바퀴에 쌓이는 레코드가
-     *    MK_TELEM_MAX_LINES(16)에 못 미친다(검토 지적 I1 — 미지원 종류는
-     *    버스를 안 건드려 한 바퀴에 포트 여섯이 동시에 몰릴 수 있다).
-     *    MK_I2C_COUNT 나 MK_I2C_VALUES_MAX 가 더 커지면 이 가정이 깨질 수
-     *    있다 — 그때는 여기를 다시 본다. */
-    int sent_i2c = 0;
-    if (t->i2c != NULL) {
-        MkI2cOut o;
-        while (sent_i2c < MK_TELEM_MAX_LINES && mk_i2c_take(t->i2c, &o)) {
-            char body[MK_LINE_MAX + 8];
-            t->seq++;
-            int len = build_i2c_record(t, &o, body, sizeof body);
-            if (len <= 0 || (size_t)len + 2u > sizeof body) { continue; }
-            body[len] = '\n';
-            body[len + 1] = '\0';
-            emit(ctx, body, (size_t)len + 1u);
-            sent_i2c++;
-        }
-    }
-
-    /* 🔴 din 도 i2c 와 같은 자리, 같은 방식이다 — `tx.period_ms` 를
-     *    기다리지 않는다. 상태 변화가 곧 이벤트라 즉시 내보내지 않으면
-     *    "언제 들어왔나" 가 다음 주기까지 묻힌다(규격 §7.6). 같은 `seq`,
-     *    같은 `tx.fields` 마스크를 쓴다.
+    /* 🔴 din 은 이 함수의 다른 무엇과도 다르다 — 엣지 그 자체가 이벤트라
+     *    `tx.period_ms` 를 기다리지 않는다(규격 §7.6). 수집·송신을 떼어
+     *    놓는 이번 변경(사용자 설계 2026-08-19)은 **ain·i2c** 에만 해당한다
+     *    — 상태 변화의 순간이 핵심인 din 을 마지막 값 반복 방식에 섞으면
+     *    "언제 들어왔나"가 다음 주기까지 묻힌다. 그대로 둔다.
      *
      *    out 이 채널마다 한 바퀴에 최대 하나(MK_SOL_COUNT=3)라
-     *    MK_TELEM_MAX_LINES(16)를 절대 넘지 않는다 — mk_i2c 처럼
-     *    "다 비우지 않으면 다음 tick 이 dropped 로 밀어낸다"는 계약이
-     *    걱정할 계제가 아니다. */
+     *    MK_TELEM_MAX_LINES(16)를 절대 넘지 않는다. */
     int sent_din = 0;
     if (t->sol != NULL) {
         MkSolOut o;
@@ -306,55 +272,79 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
         }
     }
 
+    /* 🔴 수집과 송신을 떼어 놓는다 (사용자 설계, 2026-08-19):
+     *
+     *      "수집은 수집대로 하고 송신은 내가 원하는 간격에 맞춰서 하는거지.
+     *       변수 a 라는 곳에 수집된 값을 계속 넣고, 송신 할 때는 변수 a 를
+     *       사용하면 어쨋든 그 안에 있던 값이 날라갈거 아니야"
+     *
+     *    ain 은 mk_ads1256.c 의 MkAdsChannel.last (DRDY 마다 덮어씀), i2c 는
+     *    mk_i2c.c 의 last[][] (push_out 마다 덮어씀) 를 그대로 읽는다. 여기서
+     *    큐를 비우지 않는다 — mk_queue 는 $STAT 진단용으로 그대로 둔다.
+     *
+     *    그래서 여기서는 `tx.period_ms` 를 **기다린다.** 주기 전에는 아무
+     *    것도 하지 않는다 — 안 그러면 이 값이 뜻을 잃는다. */
     uint32_t period = cfg_u32(t->cfg, "tx.period_ms", 100u);
     if (period == 0u) {
         period = 1u;
     }
     if (now_ms - t->last_ms < (int64_t)period) {
-        return 0;
+        return sent_din;
     }
     t->last_ms = now_ms;
 
     int sent = 0;
-    int progress = 1;
 
-    /* 🔴 한 바퀴에 **채널당 하나씩** 꺼낸다.
-     *
-     *    처음에는 한 채널의 큐를 다 비우고 다음으로 갔다. 그러면 앞 두
-     *    채널이 상한을 다 먹고 세 번째가 굶는다 — 시험이 그것을 잡았다
-     *    (`test_channels_take_turns`). 큐가 채널마다 따로인 이유가 격리인데
-     *    송신이 그 격리를 깨면 안 된다.
-     *
-     *    출발점도 매번 옮긴다. 그래야 상한에 걸려 잘릴 때 잘리는 쪽이
-     *    돌아가며 바뀐다. */
-    while (progress && sent < MK_TELEM_MAX_LINES) {
-        progress = 0;
-        for (int n = 0; n < MK_ADS_CHANNELS && sent < MK_TELEM_MAX_LINES; n++) {
-            int ch = (t->next_ch + n) % MK_ADS_CHANNELS;
-            if (!mk_ads_channel_enabled(t->ads, ch)) {
-                continue;
-            }
-            MkSample s;
-            if (!mk_queue_pop(mk_ads_queue(t->ads, ch), &s)) {
-                continue;
-            }
-            progress = 1;
+    /* 🔴 채널당 딱 한 줄 — 마지막 값이다. 밀린 것을 나눠 꺼내는 라운드로빈은
+     *    더 이상 필요 없다: 큐를 비우지 않으므로 "한 채널이 밀려 다른
+     *    채널을 굶긴다"는 상황 자체가 없다. `has_last`(mk_ads_last())가
+     *    거짓이면 — 한 번도 표본을 못 받았으면 — 아무것도 안 낸다. 0 을
+     *    지어내지 않는다(설계 원칙 3·4). */
+    for (int ch = 0; ch < MK_ADS_CHANNELS && sent < MK_TELEM_MAX_LINES; ch++) {
+        if (!mk_ads_channel_enabled(t->ads, ch)) {
+            continue;
+        }
+        MkSample s;
+        if (!mk_ads_last(t->ads, ch, &s)) {
+            continue;
+        }
 
-            char body[MK_LINE_MAX + 8];
-            t->seq++;
-            int len = build_record(t, ch, &s, body, sizeof body);
-            /* 🔴 잘린 JSON 을 내보내지 않는다. 반쪽짜리 줄은 호스트에서
-             *    파싱 오류가 되고, 그 오류는 링크 문제로 오인된다. */
-            if (len <= 0 || (size_t)len + 2u > sizeof body) {
-                continue;
+        char body[MK_LINE_MAX + 8];
+        t->seq++;
+        int len = build_record(t, ch, &s, body, sizeof body);
+        /* 🔴 잘린 JSON 을 내보내지 않는다. 반쪽짜리 줄은 호스트에서
+         *    파싱 오류가 되고, 그 오류는 링크 문제로 오인된다. */
+        if (len <= 0 || (size_t)len + 2u > sizeof body) {
+            continue;
+        }
+        body[len] = '\n';
+        body[len + 1] = '\0';
+        emit(ctx, body, (size_t)len + 1u);
+        sent++;
+    }
+
+    /* i2c 도 같은 방식 — 포트·슬롯마다 마지막 값이다. 아직 한 번도 값을
+     * 못 받은 슬롯(last_valid 거짓)은 낸다. BH1750·AM2320·MLX90614 는
+     * 물리적으로 느려(180ms~2s) 같은 값이 여러 주기 반복되는 것이 정상이다. */
+    int sent_i2c = 0;
+    if (t->i2c != NULL) {
+        for (unsigned p = 0; p < MK_I2C_COUNT && sent_i2c < MK_TELEM_MAX_LINES; p++) {
+            for (unsigned k = 0; k < MK_I2C_VALUES_MAX && sent_i2c < MK_TELEM_MAX_LINES; k++) {
+                MkI2cOut o;
+                if (!mk_i2c_last(t->i2c, p, k, &o)) {
+                    continue;
+                }
+                char body[MK_LINE_MAX + 8];
+                t->seq++;
+                int len = build_i2c_record(t, &o, body, sizeof body);
+                if (len <= 0 || (size_t)len + 2u > sizeof body) { continue; }
+                body[len] = '\n';
+                body[len + 1] = '\0';
+                emit(ctx, body, (size_t)len + 1u);
+                sent_i2c++;
             }
-            body[len] = '\n';
-            body[len + 1] = '\0';
-            emit(ctx, body, (size_t)len + 1u);
-            sent++;
         }
     }
-    /* 다음에는 그다음 채널부터 본다. */
-    t->next_ch = (t->next_ch + 1) % MK_ADS_CHANNELS;
+
     return sent + sent_i2c + sent_din;
 }

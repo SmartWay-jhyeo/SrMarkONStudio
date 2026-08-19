@@ -21,14 +21,14 @@
 /* 한 줄을 내보낸다. 줄바꿈은 이미 붙어 있다. */
 typedef void (*MkTelemEmit)(void *ctx, const char *line, size_t len);
 
-/* 🔴 한 번에 내보낼 줄 수 상한.
+/* 🔴 한 번의 tick 에서 내보낼 줄 수 상한.
  *
- *    수집 주기가 전송 주기보다 빠르면 큐가 쌓인다. 그때 밀린 것을 한
- *    번에 다 쏟으면 UART 가 막히고, 그동안 명령·하트비트가 밀려 보드가
- *    RUN 으로 떨어진다 — 링크가 나쁠 때 정확히 터지는 종류의 실패다.
- *
- *    대신 채널을 **돌아가며** 꺼낸다. 한 채널이 밀려 있다고 나머지가
- *    굶으면 안 된다 (mk_ads1256 의 라운드로빈과 같은 이유). */
+ *    🔴 [2026-08-19] 수집과 송신을 뗀 뒤(사용자 설계 — MkAdsChannel.last·
+ *    mk_i2c.c 의 last[][]) 더는 "밀린 큐를 나눠 꺼내는" 문제가 없다.
+ *    채널·포트·슬롯마다 정확히 한 줄만 나가므로 한 tick 의 최댓값은
+ *    MK_ADS_CHANNELS(7) + MK_I2C_COUNT×MK_I2C_VALUES_MAX(12) 로 고정이다.
+ *    이 상수는 이제 din(mk_solctl_take 루프)과 함께 쓰는 안전망이고,
+ *    din 쪽은 여전히 큐(엣지)를 비우는 방식이라 상한이 뜻을 가진다. */
 #define MK_TELEM_MAX_LINES  16
 
 typedef struct {
@@ -43,8 +43,6 @@ typedef struct {
     /* 규격 §7.1 — 레코드마다 1씩 오른다. 호스트가 누락을 검출한다. */
     uint32_t          seq;
     int64_t           last_ms;
-    /* 다음에 먼저 볼 채널. 라운드로빈의 출발점이다. */
-    int               next_ch;
 } MkTelem;
 
 void mk_telem_init(MkTelem *t, MkConfig *cfg, MkAds *ads,
