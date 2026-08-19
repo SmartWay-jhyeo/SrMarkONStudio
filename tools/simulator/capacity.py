@@ -31,6 +31,31 @@ from host.core.errors import ConfigError, Reason
 #: 뒤 버려야 하는 변환이 없고, 정착은 한 주기 안에 끝난다.
 SETTLING_MS = 0.18
 
+#: 채널 하나를 읽는 데 드는 SPI 왕복 시간 (ms).
+#:
+#: 🔴 [추가 2026-08-19] 예전 모델은 이것을 0 으로 두었다. 60 SPS(t18 =
+#:    16.84 ms)에서는 1 % 도 안 되어 무해했지만, 채널당 10 ms 를 노리면서
+#:    DRATE 를 1000~7500 으로 올리면 t18 이 1.18~0.31 ms 로 줄어 **SPI 가
+#:    예산의 12~34 %** 를 먹는다. 빼놓고 계산하면 "된다" 고 말해 놓고
+#:    실기기에서 주기를 못 맞춘다.
+#:
+#: 계산 (firmware/stage1/bsp/mk_ads_io.c: SCLK = 커널 64 MHz / 128 =
+#: 500 kHz → 한 바이트 16 µs):
+#:
+#:     WREG MUX   3 B    48 µs
+#:     SYNC       1 B    16 µs
+#:     t11 대기          4 µs   (24 tCLKIN = 3.13 µs, 올림)
+#:     WAKEUP     1 B    16 µs
+#:     ── 여기서 변환(t18) ──
+#:     RDATA      1 B    16 µs
+#:     t6 대기           7 µs   (50 tCLKIN = 6.51 µs, 올림)
+#:     데이터     3 B    48 µs
+#:     ────────────────────────
+#:                      155 µs
+#:
+#: ISR 진입·이탈은 안 셌다. 아래 SAFETY_MARGIN 이 그 몫이다.
+CHANNEL_SPI_MS = 0.155
+
 #: 계산값과 실제 사이의 여유. 1.0 = 여유 없음.
 SAFETY_MARGIN = 0.8
 
@@ -48,11 +73,31 @@ def required_sps(store) -> float:
     return total
 
 
+def settling_ms(drate: int) -> float:
+    """t18 — 채널을 바꾼 뒤 첫 유효 데이터까지 (ms).
+
+    ADS1256.pdf p.20 Table 13 그 자체다. 표 16행이 전부 `1/DRATE + 0.18 ms`
+    에 맞는다(위 SETTLING_MS 주석에 대조표).
+
+    🔴 이 시간이 지나면 값은 **완전히 정착돼 있다.** 같은 문서 p.21:
+       "There is no need to ignore or discard data while cycling through the
+        channels of the input multiplexer because the ADS1256 fully settles
+        before DRDY goes low" — 단, 그 보장은 MUX 를 바꾼 뒤 SYNC + WAKEUP
+       으로 필터를 다시 채웠을 때만 성립한다(같은 쪽 Step 1~4). 그렇게 하지
+       않고 이어 도는 DRDY 를 읽으면 이전 채널과 섞인 값이 나온다
+       (Figure 21). 펌웨어는 채널마다 SYNC/WAKEUP 을 다시 보낸다.
+    """
+    return 1000.0 / float(drate) + SETTLING_MS
+
+
+def per_sample_ms(drate: int) -> float:
+    """표본 하나에 실제로 드는 시간 (ms) = 정착 + SPI 왕복."""
+    return settling_ms(drate) + CHANNEL_SPI_MS
+
+
 def available_sps(drate: int) -> float:
-    """DRATE 와 채널 전환 정착시간으로 계산한 달성 가능 총 샘플률 (SPS)."""
-    conversion_ms = 1000.0 / float(drate)
-    per_sample_ms = conversion_ms + SETTLING_MS
-    return 1000.0 / per_sample_ms
+    """DRATE 와 채널 전환 비용으로 계산한 달성 가능 총 샘플률 (SPS)."""
+    return 1000.0 / per_sample_ms(drate)
 
 
 def margin_sps(store) -> float:
@@ -79,6 +124,7 @@ def check_capacity(store) -> None:
         raise ConfigError(
             Reason.CAPACITY,
             f"요구 {required:.1f} SPS > 가용 {available:.1f} SPS "
-            f"(DRATE {store.get('adc.drate')} SPS, 정착 {SETTLING_MS} ms). "
+            f"(DRATE {store.get('adc.drate')} SPS, 정착+SPI "
+            f"{per_sample_ms(int(store.get('adc.drate'))):.2f} ms/표본). "
             f"채널을 줄이거나 주기를 늘리거나 DRATE 를 올려야 한다",
         )

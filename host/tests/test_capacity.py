@@ -2,10 +2,13 @@ import pytest
 
 from host.core.errors import ConfigError, Reason
 from tools.simulator.capacity import (
+    CHANNEL_SPI_MS,
     SAFETY_MARGIN,
     available_sps,
     check_capacity,
+    per_sample_ms,
     required_sps,
+    settling_ms,
 )
 from tools.simulator.config_store import default_store
 
@@ -92,16 +95,26 @@ def test_default_config_is_within_capacity():
     check_capacity(default_store())            # 예외가 없어야 한다
 
 
-def test_the_edge_drate_really_puts_the_boundary_between_6_and_7():
+def test_the_edge_drate_really_puts_the_boundary_inside_the_channel_count():
     """아래 경계 시험들이 딛고 서는 전제를 먼저 못박는다.
 
-    🔴 이 시험이 없으면, 정착시간이 다시 바뀌어 경계가 채널 하나 폭을
-       벗어났을 때 아래 시험들이 조용히 무의미해진다 — 전부 통과하지만
+    🔴 이 시험이 없으면, 정착시간이 다시 바뀌어 경계가 채널 수 밖으로
+       나갔을 때 아래 시험들이 조용히 무의미해진다 — 전부 통과하지만
        아무것도 확인하지 않는 상태가 된다. 실제로 그렇게 됐었다.
+
+    경계가 1..6 안에 있어야 "하나 더 켜면 넘친다"(fits+1 ≤ 7)를 실제로
+    구성할 수 있다.
+
+    🔴 [개정 2026-08-19] 예전에는 `== 6` 이었다. SPI 왕복(155 µs)을 모델에
+       넣으면서 같은 DRATE 1000 에서 경계가 5 로 내려갔다 — 시험이 지키려는
+       것은 "경계가 6이다" 가 아니라 **"경계가 있고 양쪽을 짚을 수 있다"**
+       이므로 범위로 바꾼다.
     """
-    assert _channels_that_fit(_EDGE_DRATE, 10) == 6, (
-        "경계가 6채널과 7채널 사이에 있어야 한다. 정착시간이나 안전여유가 "
-        "바뀌었으면 _EDGE_DRATE 를 다시 고른다"
+    fits = _channels_that_fit(_EDGE_DRATE, 10)
+    assert 1 <= fits < 7, (
+        f"DRATE {_EDGE_DRATE}, 10 ms 에서 들어가는 채널이 {fits} 개다. "
+        "경계가 1..6 안에 있어야 아래 시험들이 뜻을 가진다 — 정착시간이나 "
+        "안전여유가 바뀌었으면 _EDGE_DRATE 를 다시 고른다"
     )
 
 
@@ -136,23 +149,85 @@ def test_capacity_error_reports_required_and_available():
     assert "가용" in exc.value.detail
 
 
-def test_settling_time_matches_the_datasheet_table():
-    """🔴 ADS1256.pdf, p.20, Table 13 "Settling Time vs Data Rate".
+#: 🔴 ADS1256.pdf, p.20, Table 13 "Settling Time vs Data Rate" (t18, ms).
+#:    fCLKIN = 7.68 MHz — 이 보드의 크리스털과 같다.
+DATASHEET_T18_MS = {
+    30000: 0.21, 15000: 0.25, 7500: 0.31, 3750: 0.44, 2000: 0.68,
+    1000: 1.18, 500: 2.18, 100: 10.18, 60: 16.84, 50: 20.18,
+    30: 33.51, 25: 40.18, 15: 66.84, 10: 100.18, 5: 200.18,
+}
 
-    표 전체가 `t18 = 1/DRATE + 0.18 ms` 에 맞고, available_sps() 가 계산하는
-    것이 바로 그 t18 의 역수다. 이 값이 용량 판정 전체의 바닥이므로,
-    누가 SETTLING_MS 를 다시 어림값으로 되돌리면 여기서 걸린다.
+
+def test_settling_time_matches_the_datasheet_table():
+    """정착시간 계산이 데이터시트 표 그대로인가.
+
+    표 전체가 `t18 = 1/DRATE + 0.18 ms` 에 맞는다. 이 값이 용량 판정
+    전체의 바닥이므로, 누가 SETTLING_MS 를 다시 어림값으로 되돌리면
+    여기서 걸린다.
     """
-    table_ms = {
-        30000: 0.21, 15000: 0.25, 7500: 0.31, 3750: 0.44, 2000: 0.68,
-        1000: 1.18, 500: 2.18, 100: 10.18, 60: 16.84, 50: 20.18,
-        30: 33.51, 25: 40.18, 15: 66.84, 10: 100.18, 5: 200.18,
-    }
-    for drate, t18_ms in table_ms.items():
-        got_ms = 1000.0 / available_sps(drate)
-        assert got_ms == pytest.approx(t18_ms, abs=0.01), (
-            f"DRATE {drate}: 데이터시트 {t18_ms} ms, 계산 {got_ms:.3f} ms"
+    for drate, t18_ms in DATASHEET_T18_MS.items():
+        assert settling_ms(drate) == pytest.approx(t18_ms, abs=0.01), (
+            f"DRATE {drate}: 데이터시트 {t18_ms} ms, "
+            f"계산 {settling_ms(drate):.3f} ms"
         )
+
+
+def test_the_spi_round_trip_is_counted_on_top_of_the_settling_time():
+    """🔴 표본 하나의 비용은 t18 만이 아니다.
+
+    채널을 바꾸려면 WREG MUX → SYNC → WAKEUP 을 보내고, 값을 가져오려면
+    RDATA 와 3바이트를 더 읽어야 한다. 500 kHz SCLK 에서 155 µs 다
+    (capacity.CHANNEL_SPI_MS 에 내역).
+
+    60 SPS(t18 16.84 ms)에서는 1 % 도 안 되어 예전 모델이 무시했지만,
+    채널당 10 ms 를 노리며 DRATE 를 1000 이상으로 올리면 예산의 12 % 를
+    넘는다. 빼놓고 계산하면 "된다" 고 말해 놓고 실기기에서 주기를 못 맞춘다
+    — 이 시험이 그 회귀를 막는다.
+
+    🔴 기대값을 `CHANNEL_SPI_MS` 로 적지 않는다. 그러면 상수를 0 으로
+       되돌려도 양변이 함께 0 이 되어 시험이 통과한다 — 처음 쓴 판이 실제로
+       그랬고, 되돌림 검사에서 드러났다. 그래서 하드웨어 사실에서 다시
+       계산해 맞춘다.
+    """
+    # firmware/stage1/bsp/mk_ads_io.c: SCLK = MK_SPI4_KERNEL_HZ(64 MHz) / 128
+    sclk_hz = 64_000_000 / 128
+    us_per_byte = 8 / sclk_hz * 1e6                     # = 16 µs
+    # WREG MUX 3 + SYNC 1 + WAKEUP 1 + RDATA 1 + 데이터 3
+    bytes_per_sample = 3 + 1 + 1 + 1 + 3
+    # app/mk_ads1256.h: MK_ADS_T11_SYNC_US(4) + MK_ADS_T6_US(7)
+    idle_us = 4 + 7
+    expect_ms = (bytes_per_sample * us_per_byte + idle_us) / 1000.0
+
+    assert CHANNEL_SPI_MS == pytest.approx(expect_ms, abs=0.005), (
+        f"SPI 왕복 {CHANNEL_SPI_MS} ms 가 배선 사실과 안 맞는다 "
+        f"(SCLK 500 kHz, {bytes_per_sample} B + {idle_us} µs "
+        f"→ {expect_ms:.3f} ms)"
+    )
+    for drate in (1000, 2000, 7500):
+        assert per_sample_ms(drate) == pytest.approx(
+            DATASHEET_T18_MS[drate] + expect_ms, abs=0.01
+        )
+    # 느린 쪽에서는 여전히 무시할 만하다 — 모델이 과하게 비관적이지 않다.
+    assert expect_ms / DATASHEET_T18_MS[60] < 0.01
+
+
+def test_seven_channels_at_ten_milliseconds_need_at_least_2000_sps():
+    """🔴 이 작업의 결론을 숫자로 못박는다.
+
+    7채널 × 10 ms = 700 SPS 를 요구한다. 카탈로그의 DRATE 중 그것을
+    (안전여유까지 포함해) 감당하는 가장 느린 값이 2000 SPS 다 —
+    1000 SPS 는 t18 1.18 ms + SPI 0.155 ms = 1.335 ms/표본이라 한 바퀴가
+    9.34 ms 이고, 여유 없이 딱 붙어 실기기에서 지킬 수 없다.
+
+    잡음은 그 대가다. Table 6(버퍼 오프, PGA=1)의 noise-free 분해능이
+    60 SPS 21.2 비트 → 2000 SPS 18.5 비트로 떨어진다. 4~20 mA 환산으로는
+    약 0.01 mA(16 mA 폭의 0.06 %)이고, 이 보드에서 실측된 60 SPS 편차
+    1,449 카운트(≈0.0072 mA)와 같은 자릿수다 — ADS1256 자신의 잡음이
+    아니라 바깥에서 들어오는 것이 이미 지배적이라는 뜻이다.
+    """
+    demand = 7 * (1000.0 / 10.0)
+    assert available_sps(1000) * SAFETY_MARGIN < demand
+    assert available_sps(2000) * SAFETY_MARGIN >= demand
 
 
 def test_safety_margin_is_applied():
