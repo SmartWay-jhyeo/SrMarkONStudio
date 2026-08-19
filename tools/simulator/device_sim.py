@@ -44,6 +44,20 @@ DIN_CONNECTORS: tuple[int, ...] = (18, 19, 20)
 #:    는 전부 고정값/톱니 패턴이지 실제 수신기의 흔들림이 아니다.
 GNSS_DEMO_WARMUP_MS = 5000
 
+#: 🔴 [판단, 2026-08-19] `gnss.enabled` 가 켜지는 순간(NMEA 워밍업 단계부터
+#:    — 규격 §7.1.2 상 device_clock 이 아니면 이미 `t` 는 UTC 다) `t` 를
+#:    무엇에 잇는가에 쓰는 고정 anchor.
+#:
+#:    시뮬레이터는 시각을 스스로 읽지 않는다(클래스 docstring — 결정성을
+#:    위해 `tick(now_ms)` 로만 받는다). 실제 벽시계(`time.time()`)를 쓰면
+#:    같은 시나리오가 실행할 때마다 다른 `t` 를 내 시험을 비결정적으로
+#:    만든다 — 그래서 진짜 UTC 를 흉내 내지 않고, 이미 이 파일이 쓰는
+#:    "시뮬레이터임이 값에서도 드러나야 한다"는 원칙(GNSS_DEMO_WARMUP_MS
+#:    주석)을 그대로 따라 고정된 상수 하나에 anchor 한다. 값 자체는
+#:    firmware/stage1/tests/test_timeax.c 의 시험 fixture(1700000000000)와
+#:    자릿수만 맞춘 임의의 수다 — 실제 어느 시각도 가리키지 않는다.
+GNSS_DEMO_EPOCH_MS = 1_700_000_000_000
+
 #: 🔴 시뮬레이터에는 옵토가 없다 — 실기기는 사람이 신호선을 흔들어야
 #:    상태가 바뀐다. 이 주기는 화면 확인용 **데모**일 뿐이다. `ain` 처럼
 #:    매 주기 값을 내면 규격 §7.6 이 금지하는 "주기 송신"이 돼 버리므로,
@@ -121,6 +135,18 @@ class DeviceSim:
         #: None 이면 꺼져 있다 — `_gnss_time_state()` 가 이 값으로
         #: 워밍업 경과를 잰다.
         self._gnss_enabled_at_ms: int | None = None
+        #: `t` 변환의 anchor 쌍(장치 ms <-> "UTC" ms). `gnss.enabled` 가
+        #: 켜지는 순간 한 번 세운다 — `_convert_t()` 참고. 꺼지면 비운다.
+        self._gnss_anchor_dev_ms: int | None = None
+        self._gnss_anchor_epoch_ms: int | None = None
+        #: 역행 방지(`_convert_t()` 전용) — mk_timeax_now_ms_monotonic()
+        #: 과 같은 이유·같은 방식(firmware/stage1/app/mk_timeax.c 참고).
+        #: **전진 방향 질의**(raw t_ms 가 지금까지 본 것 이상)에서 마지막
+        #: 으로 낸 값·그 raw t_ms 를 기억해 두고 작아지면 최소 폭만 민다.
+        #: 더 느린 채널·포트의 오래된(작은) raw t_ms 로 온 질의는 이 값을
+        #: 건드리지 않는다 — _convert_t() 의 되돌림 검사 주석 참고.
+        self._last_reported_t_ms: int | None = None
+        self._last_reported_raw_ms: int | None = None
         self._boot_ms = 0
         # 🔴 부팅 기본값은 ACTIVE 다 (규격 §6.4). 보드는 혼자서도 제 일을
         #    해야 하고, 테스트는 사람이 명시적으로 들어가는 상태다.
@@ -319,6 +345,62 @@ class DeviceSim:
         pps_age_ms = now_ms % 1000
         return "gnss_pps", 2, pps_age_ms, 9
 
+    def _convert_t(self, t_ms: int, time_source: str) -> int:
+        """획득 시각(t_ms, 부팅 후 경과 ms)을 등급에 따라 바꾼다.
+
+        규격 §7.1.2 — device_clock 이면 그대로, gnss_* 면 anchor 로부터
+        선형 변환한 "UTC" 값(GNSS_DEMO_EPOCH_MS 참고 — 데모용 고정값이라
+        진짜 UTC 는 아니다). 어느 쪽이든 **뒤로 가지 않는다** — 등급이
+        떨어지면(gnss_* -> device_clock) 변환 없는 원래 값이 방금 전 UTC
+        값보다 훨씬 작아지므로, 마지막으로 낸 값보다 작아지면 최소 폭(+1ms)
+        만 밀어 올린다(firmware/stage1/app/mk_timeax.c 의
+        mk_timeax_now_ms_monotonic 과 같은 이유·같은 방식 — 카메라 프레임
+        정렬·저장 데이터의 시간순 정렬이 뒤집히면 안 된다).
+
+        🔴 [되돌림으로 찾은 회귀 — 2026-08-19] 처음에는 "마지막으로 낸
+        값보다 작으면 무조건 민다"였다. ain·i2c·din 이 raw t_ms 순서와
+        무관하게 한 DeviceSim 을 공유하고 채널·포트마다 수집 주기가 다르므로,
+        수집이 빠른 채널(예: ain, 기본 100ms)이 큰 t_ms 로 먼저 나간 직후
+        수집이 느린 포트(예: i2c, 최대 60000ms)가 **옛(작은) t_ms 표본을
+        그대로 반복**하면 "더 작다"는 이유만으로 밀어 올려 버렸다 — 반복되는
+        같은 표본의 t 가 호출될 때마다 달라지는 새 버그였다(device_clock
+        상태에서도, 즉 등급 전환과 무관하게 벌어졌다).
+        host/tests/test_device_sim.py 의
+        test_i2c_repeats_last_value_and_never_touched_ports_stay_silent 가
+        이것을 잡았다.
+
+        그래서 지금은 **raw t_ms 가 지금까지 본 것보다 작은 질의**(다른
+        채널의 더 오래된 표본)는 클램프하지 않는다 — "다른 채널의 과거
+        시각"과 "같은 시간축이 진짜로 뒤로 간 것"을 raw t_ms 순서로
+        구분한다. firmware/stage1/app/mk_timeax.c 의
+        mk_timeax_now_ms_monotonic 과 같은 수정.
+
+        🔴 [남는 위험, 해결 안 함] GNSS 가 내려간 뒤 오랫동안 재수집을 안
+        한 느린 채널이 그 옛 표본을 반복하다가, 다른 채널의 raw t_ms 가
+        그것을 앞지르는 순간부터는 클램프 밖(과거 질의)으로 빠져 그
+        채널만 한 번 작은 값으로 보일 수 있다. 모든 채널·포트가 각자
+        수집 시각에 변환값을 실어 저장하는 것이 완전한 해법이지만 이번
+        범위 밖이다 — 시뮬레이터의 채널 주기가 전부 초 단위 미만이라
+        실제로 마주칠 가능성은 낮다고 판단했다.
+        """
+        if time_source == "device_clock" or self._gnss_anchor_epoch_ms is None:
+            converted = t_ms
+        else:
+            converted = (self._gnss_anchor_epoch_ms
+                         + (t_ms - self._gnss_anchor_dev_ms))
+
+        if (self._last_reported_raw_ms is not None
+                and t_ms < self._last_reported_raw_ms):
+            # 다른(더 느린) 채널·포트의 오래된 표본이다 — 그대로 낸다.
+            return converted
+
+        if (self._last_reported_t_ms is not None
+                and converted < self._last_reported_t_ms):
+            converted = self._last_reported_t_ms + 1
+        self._last_reported_t_ms = converted
+        self._last_reported_raw_ms = t_ms
+        return converted
+
     def tick(self, now_ms: int) -> list[str]:
         """시각을 진행시키고 이번에 내보낼 줄들을 반환한다."""
         self._now_ms = now_ms
@@ -329,8 +411,16 @@ class DeviceSim:
         if self.store.get("gnss.enabled"):
             if self._gnss_enabled_at_ms is None:
                 self._gnss_enabled_at_ms = now_ms
+                # 🔴 이 순간부터 t 가 UTC 로 바뀐다(gnss_nmea 워밍업 단계도
+                #    포함 — 규격 §7.1.2 는 device_clock 만 아니면 UTC 라고
+                #    한다). anchor 를 여기서 세워야 워밍업 중에 수집된
+                #    표본도 곧바로 변환된다.
+                self._gnss_anchor_dev_ms = now_ms
+                self._gnss_anchor_epoch_ms = GNSS_DEMO_EPOCH_MS
         else:
             self._gnss_enabled_at_ms = None
+            self._gnss_anchor_dev_ms = None
+            self._gnss_anchor_epoch_ms = None
 
         # 🔴 호스트가 사라지면 테스트도 끝난다 (규격 §6.4). 하트비트가 이미
         #    데드맨이므로 방아쇠를 새로 만들지 않는다 — 그리고 그것이 옳은
@@ -427,7 +517,11 @@ class DeviceSim:
                         self.store,
                         channel=ch,
                         seq=self._seq,
-                        t_ms=t_ms,
+                        # 🔴 t 는 획득 시각(t_ms)을 시간축으로 바꾼 값 —
+                        #    capture_counter 는 그대로 원시 t_ms 다(펌웨어
+                        #    mk_telem.c 와 같은 구분 — 변환 없는 원시
+                        #    카운터는 따로 남긴다).
+                        t_ms=self._convert_t(t_ms, time_source),
                         raw=raw,
                         capture_counter=t_ms * 1000,
                         time_source=time_source,
@@ -463,7 +557,7 @@ class DeviceSim:
             self._seq += 1
             lines.append(render(build_din_record(
                 self.store, connector_id=cid, state=self._din_state[cid],
-                seq=self._seq, t_ms=now_ms,
+                seq=self._seq, t_ms=self._convert_t(now_ms, time_source),
                 time_source=time_source, time_quality=time_quality,
             )))
         return lines
@@ -481,11 +575,17 @@ class DeviceSim:
             if cid not in self._last_i2c_t:
                 continue
             t_ms = self._last_i2c_t[cid]
+            # 🔴 포트 하나에 여러 양(quantity)이 같은 t_ms 에서 나올 수
+            #    있다(예: 온습도) — 변환은 포트당 한 번만 한다. 양마다
+            #    따로 부르면 역행 방지 보정이 첫 양에서 이미 last_reported
+            #    를 밀어 올린 뒤라, 같은 순간의 두 번째 양이 다른 t 를 받는
+            #    이상한 결과가 나온다.
+            converted_t = self._convert_t(t_ms, time_source)
             for quantity, value in self._last_i2c_values[cid].items():
                 self._seq += 1
                 lines.append(render(build_i2c_record(
                     self.store, connector_id=cid, quantity=quantity,
-                    seq=self._seq, t_ms=t_ms, value=value,
+                    seq=self._seq, t_ms=converted_t, value=value,
                     time_source=time_source, time_quality=time_quality,
                 )))
         return lines

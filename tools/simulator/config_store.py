@@ -26,9 +26,16 @@ from host.core.errors import ConfigError, Reason
 from host.core.records import SCHEMA_VER
 
 #: NDJSON 필드 마스크 비트 정의 (규격 §7.2)
+#:
+#: 🔴 [판단, 2026-08-19] `time_source` 는 여기 없다 — 펌웨어
+#:    (firmware/stage1/app/mk_cfgtable.c FIELDS)와 같은 이유로 뺐다. `t` 가
+#:    UTC epoch_ms 인지 부팅 후 경과 ms 인지는 이 필드만이 말해 주므로,
+#:    마스크로 끌 수 있으면 device_clock 의 `t` 를 호스트가 UTC 로 오해해
+#:    저장하는 사고가 되돌아온다. `i2c` 의 `quantity`·`value`, `din` 의
+#:    `connector_id`·`state` 와 같은 자리로 옮겼다(항상 실린다, telemetry.py
+#:    참고). bit=1 자리는 비워 둔다 — 다른 필드가 새로 쓰지 않는다.
 FIELD_BITS: tuple[tuple[int, str, bool, str], ...] = (
     (0, "device_id", False, "보드 식별자"),
-    (1, "time_source", True, "시간 소스"),
     (2, "time_quality", False, "시간 품질"),
     (3, "raw", True, "ADS1256 원시 카운트"),
     (4, "ma", True, "전류 (mA)"),

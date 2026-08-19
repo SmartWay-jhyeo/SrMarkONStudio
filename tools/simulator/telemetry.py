@@ -96,8 +96,9 @@ def build_ain_record(
         rec["status"] = 0
     if on("device_id"):
         rec["device_id"] = store.get("dev.id")
-    if on("time_source"):
-        rec["time_source"] = time_source
+    # 🔴 [판단, 2026-08-19] time_source 는 마스크로 못 끈다 — config_store.py
+    #    FIELD_BITS 주석과 같은 근거.
+    rec["time_source"] = time_source
     if on("time_quality"):
         rec["time_quality"] = time_quality
     if on("capture_counter"):
@@ -161,8 +162,8 @@ def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
         rec["status"] = status
     if mask & (1 << _BIT_OF["device_id"]):
         rec["device_id"] = str(store.get("dev.id"))
-    if mask & (1 << _BIT_OF["time_source"]):
-        rec["time_source"] = time_source
+    # 🔴 time_source 는 마스크로 못 끈다 — build_ain_record 와 같은 근거.
+    rec["time_source"] = time_source
     if mask & (1 << _BIT_OF["time_quality"]):
         rec["time_quality"] = time_quality
     return rec
@@ -190,8 +191,8 @@ def build_din_record(store: ConfigStore, *, connector_id: int, state: int,
     rec["state"] = state
     if mask & (1 << _BIT_OF["device_id"]):
         rec["device_id"] = str(store.get("dev.id"))
-    if mask & (1 << _BIT_OF["time_source"]):
-        rec["time_source"] = time_source
+    # 🔴 time_source 는 마스크로 못 끈다 — build_ain_record 와 같은 근거.
+    rec["time_source"] = time_source
     if mask & (1 << _BIT_OF["time_quality"]):
         rec["time_quality"] = time_quality
     return rec

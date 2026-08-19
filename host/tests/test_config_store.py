@@ -360,9 +360,13 @@ def test_reset_restores_defaults():
 
 
 def test_field_mask_default_matches_spec():
-    """기본 on 비트: time_source(1), raw(3), ma(4), value(5), status(7), connector_id(9)"""
+    """기본 on 비트: raw(3), ma(4), value(5), status(7), connector_id(9).
+
+    🔴 [판단, 2026-08-19] time_source(옛 비트 1)는 더 이상 여기 없다 —
+    tx.fields 마스크로 끌 수 없도록 FIELD_BITS 밖으로 옮겼다(항상 실린다).
+    비트 1 자리는 비워 둔다."""
     store = default_store()
-    assert store.field_mask == 0b1010111010
+    assert store.field_mask == 0b1010111000
 
 
 def test_catalog_lines_end_with_cfg_end_matching_count():
