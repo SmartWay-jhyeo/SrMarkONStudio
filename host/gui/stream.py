@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from host.core.errors import ProtocolError
 from host.core.framing import parse_line
@@ -54,6 +54,14 @@ STALE_WARN_S = 1.0
 #:    "느려짐" 이고 그 후는 "고장" 이다.
 STALE_FAULT_S = 3.0
 
+#: 기본으로 숨기는 타입 — `$CFG,LIST` 카탈로그 응답(규격 §7.3)이다.
+#:
+#: 🔴 연결하면 이 카탈로그가 91줄(항목마다 cfg_item + cfg_field 여러 줄 +
+#:    마지막 cfg_end 하나)을 한꺼번에 쏟아낸다. "정말 오고 있나" 를 보는
+#:    화면인데 정작 보고 싶은 텔레메트리가 그 사이에 파묻히면 이 화면의
+#:    존재 이유가 없다. 체크박스로 언제든 다시 켤 수 있다(`qt/stream_view.py`).
+DEFAULT_HIDDEN_TYPES: frozenset[str] = frozenset({"cfg_item", "cfg_field", "cfg_end"})
+
 
 @dataclass(frozen=True)
 class StreamRow:
@@ -78,6 +86,15 @@ class StreamRow:
     ma: float | None = None
     unit: str = ""
     status: int | None = None
+    #: 이 줄이 전체 스트림에서 몇 번째로 들어왔는지(`StreamState.total_lines`
+    #: 와 같은 채번). `-1` 은 아직 `ingest()` 를 거치지 않은 값(시험에서
+    #: `parse_row` 를 직접 부를 때)이라는 뜻이다.
+    #:
+    #: 🔴 콘솔(Qt, `qt/stream_view.py`)이 "어디까지 그렸는지" 를 판단하는
+    #:    유일한 근거다. `deque(maxlen=...)` 가 오래된 줄을 밀어내도 이
+    #:    번호는 흔들리지 않아야, 매 프레임 표를 통째로 다시 그리지 않고
+    #:    새로 온 줄만 이어붙일 수 있다 — 그것이 이 필드가 있는 이유다.
+    ordinal: int = -1
 
 
 def _num(rec: dict, key: str) -> float | None:
@@ -121,6 +138,73 @@ def parse_row(line: str, arrived_s: float) -> StreamRow:
         unit=str(rec["unit"]) if isinstance(rec.get("unit"), str) else "",
         status=_int(rec, "status"),
     )
+
+
+# ---------------------------------------------------------------- 콘솔 서식
+#
+# 🔴 표(`QTableWidget`)에 행을 하나씩 위젯으로 쌓던 것을 없앤 이유가 이
+#    서식이 필요한 이유다 — 초당 수십 줄에서 위젯 생성 비용이 GUI 스레드를
+#    못 따라가 이벤트 큐가 무한히 밀렸다(실측: 워커 틱 간격이 5초 → 8초 →
+#    11초 → 23초 → 47초+ 로 발산). 텍스트 콘솔은 줄마다 위젯을 만들지
+#    않으므로 이 문제가 구조적으로 없다.
+#
+#    "어떻게 찍을까" 는 Qt 와 무관한 판정이라 여기서 정한다 — 디스플레이
+#    없이 정렬이 흔들리지 않는지 시험할 수 있어야 한다.
+
+#: 각 열의 고정 폭. `seq`·`t` 는 uint32 상한(4294967295, 10자리)을 담고,
+#: `type` 은 가장 긴 실제 타입 문자열("cfg_field"·"cfg_value", 9자)에
+#: 맞춘다. `value`·`ma` 는 센서 물리량이라 설정에 따라 범위가 사람마다
+#: 다르므로(§4 대시보드 게이지와 같은 사정) 넉넉히 잡는다 — 그래도 더 긴
+#: 값이 오면 그 줄만 정렬이 밀릴 뿐 글자가 잘리지는 않는다(원문은 항상
+#: 그대로 뒤에 붙는다).
+_SEQ_W = 10
+_T_W = 10
+_TYPE_W = 9
+_CONN_W = 2
+_VALUE_W = 12
+_RAW_W = 9
+_MA_W = 9
+
+#: 값이 없을 때 찍는 자리표시자. 빈 칸이면 "정렬이 깨졌나" 와 "값이
+#: 원래 없나" 를 구분할 수 없다 — cmd·corrupt 줄은 seq·t·value·raw·ma 가
+#: 전부 없는 것이 정상이다(규격에 그 필드가 없는 응답).
+_BLANK = "—"
+
+
+def _cell(v: object, width: int, *, decimals: int | None = None) -> str:
+    if v is None:
+        text = _BLANK
+    elif decimals is not None:
+        text = f"{v:.{decimals}f}"
+    else:
+        text = str(v)
+    return text.rjust(width)
+
+
+def format_header() -> str:
+    """콘솔 맨 위에 한 번 고정으로 거는 열 이름표(`qt/stream_view.py`)."""
+    return (
+        f"{'seq'.rjust(_SEQ_W)} {'t'.rjust(_T_W)} {'type'.ljust(_TYPE_W)} "
+        f"{'J'.rjust(_CONN_W)} {'value'.rjust(_VALUE_W)} {'raw'.rjust(_RAW_W)} "
+        f"{'ma'.rjust(_MA_W)}  원문"
+    )
+
+
+def format_row(row: StreamRow) -> str:
+    """줄 하나를 콘솔에 찍을 고정폭 문자열로. 맨 끝에 원문이 그대로 붙는다.
+
+    🔴 raw(ADC 카운트)·ma 는 value 의 파생이 아니라 **원본**이다 — 실기기에서
+       0 근처가 65528/-65516 처럼 튀는 것이 value 만 봐서는 안 보인다. 셋
+       다 따로 찍는다(`StreamRow.raw_count` 머리말과 같은 이유).
+    """
+    seq = _cell(row.seq, _SEQ_W)
+    t = _cell(row.t, _T_W)
+    typ = (row.type or "").ljust(_TYPE_W)
+    conn = _cell(row.connector, _CONN_W)
+    value = _cell(row.value, _VALUE_W, decimals=4)
+    raw = _cell(row.raw_count, _RAW_W)
+    ma = _cell(row.ma, _MA_W, decimals=4)
+    return f"{seq} {t} {typ} {conn} {value} {raw} {ma}  {row.line}"
 
 
 def staleness_level(since_last_s: float | None) -> Level:
@@ -196,7 +280,7 @@ class StreamState:
            멈춘다 — 다시 켜면 그동안 쌓인 것까지 한번에 보인다.
         """
         for line in lines:
-            row = parse_row(line, now_s)
+            row = replace(parse_row(line, now_s), ordinal=self.total_lines)
             self._rows.append(row)
             self.total_lines += 1
             self.total_bytes += len(line.encode("utf-8"))

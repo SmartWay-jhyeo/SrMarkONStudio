@@ -5,7 +5,13 @@
 """
 
 from host.core.framing import build_command
-from host.gui.stream import StreamState, staleness_level
+from host.gui.stream import (
+    DEFAULT_HIDDEN_TYPES,
+    StreamState,
+    format_header,
+    format_row,
+    staleness_level,
+)
 from host.gui.widgets.status_chip import Level
 
 
@@ -212,3 +218,96 @@ def test_to_ndjson_joins_buffered_lines_with_newlines():
 
 def test_to_ndjson_is_empty_string_when_nothing_buffered():
     assert StreamState().to_ndjson() == ""
+
+
+# ----------------------------------------------------------------- ordinal
+#
+# 🔴 콘솔(Qt)이 "어디까지 그렸는지" 를 판단하려면 줄마다 흔들리지 않는
+#    번호가 있어야 한다(매 프레임 표를 통째로 다시 그리던 것을 없애는
+#    이유 자체가 이것 — stream_view.py 머리말 참조). deque 가 밀려나도
+#    (오래된 줄이 사라져도) 새로 붙는 번호는 계속 이어져야 한다.
+
+def test_rows_get_monotonically_increasing_ordinals():
+    s = StreamState()
+    s.ingest([_ain_line(1), _ain_line(2), _ain_line(3)], now_s=0.0)
+    rows = s.visible_rows()
+    assert [r.ordinal for r in rows] == [0, 1, 2]
+
+
+def test_ordinals_keep_increasing_even_after_buffer_eviction():
+    """🔴 되돌림 검사 — maxlen 을 넘겨 오래된 줄이 밀려나도, 남은 줄의
+    번호가 0 부터 다시 매겨지면 안 된다(그러면 콘솔이 이미 그린 줄을
+    새 줄로 착각해 중복으로 다시 찍는다)."""
+    s = StreamState(maxlen=2)
+    for seq in range(4):
+        s.ingest([_ain_line(seq)], now_s=float(seq))
+    rows = s.visible_rows()
+    assert [r.ordinal for r in rows] == [2, 3]
+
+
+# ------------------------------------------------------------- 콘솔 서식
+#
+# 🔴 Qt 를 모르는 층에서 문자열 서식을 확정한다 — "무엇을 어떻게 찍는가"
+#    는 판정이지 그리기가 아니고, 디스플레이 없이 시험할 수 있어야 한다.
+
+def test_format_row_keeps_raw_and_ma_as_separate_fixed_width_fields():
+    """🔴 raw(ADC 카운트)와 ma·value 는 다른 것이다 — 콘솔 한 줄에서도
+    셋 다 읽을 수 있어야 한다(테이블일 때의 요구사항과 같다)."""
+    s = StreamState()
+    s.ingest([_ain_line(1, raw=65528, ma=0.0001, value=0.0)], now_s=0.0)
+    row = s.visible_rows()[0]
+    line = format_row(row)
+    assert "65528" in line
+    assert "0.0001" in line
+    assert "0.0000" in line  # value
+
+
+def test_format_row_ends_with_the_verbatim_original_line():
+    """🔴 원시값과 NDJSON 원문을 둘 다 유지한다 — 파싱 요약 뒤에 원문이
+    그대로 붙어야 사람이 눈으로 대조할 수 있다."""
+    s = StreamState()
+    line_text = _ain_line(1)
+    s.ingest([line_text], now_s=0.0)
+    row = s.visible_rows()[0]
+    assert format_row(row).endswith(line_text)
+
+
+def test_format_row_uses_a_placeholder_for_missing_numeric_fields():
+    """cmd·corrupt 줄은 seq·t·value·raw·ma 가 전부 없다. 빈 칸이면 정렬이
+    깨진 것인지 값이 원래 없는 것인지 구분이 안 되므로 자리표시자를 찍는다."""
+    s = StreamState()
+    line_text = build_command("SACK", "CFG", "OK").rstrip("\r\n")
+    s.ingest([line_text], now_s=0.0)
+    row = s.visible_rows()[0]
+    line = format_row(row)
+    assert "—" in line
+    assert line.endswith(line_text)
+
+
+def test_format_row_lines_up_columns_for_different_rows():
+    """🔴 값의 자릿수가 달라도(음수·큰 seq) 열 경계가 흔들리면 안 된다 —
+    다른 줄이라도 같은 위치에서 원문이 시작해야 한다."""
+    s = StreamState()
+    s.ingest([_ain_line(3, connector_id=3, raw=-65516, ma=-8.0, value=-4.0008),
+              _ain_line(37196, connector_id=3, raw=8388607, ma=12.0, value=99.9999)],
+             now_s=0.0)
+    rows = s.visible_rows()
+    lines = [format_row(r) for r in rows]
+    original_starts = [len(ln) - len(r.line) for ln, r in zip(lines, rows)]
+    assert original_starts[0] == original_starts[1]
+
+
+def test_format_header_names_the_columns():
+    header = format_header()
+    for col in ("seq", "t", "type", "value", "raw", "ma"):
+        assert col in header
+
+
+# ------------------------------------------------------------- 기본 필터
+#
+# 🔴 연결 직후 `$CFG,LIST` 카탈로그가 91줄을 쏟아낸다 — cfg_item·cfg_field·
+#    cfg_end. 텔레메트리를 보려는 화면인데 그 사이에 파묻히면 이 화면의
+#    존재 이유가 없다. 기본으로 꺼 두고 체크박스로 켤 수 있게 한다.
+
+def test_default_hidden_types_are_exactly_the_catalog_record_types():
+    assert DEFAULT_HIDDEN_TYPES == frozenset({"cfg_item", "cfg_field", "cfg_end"})
