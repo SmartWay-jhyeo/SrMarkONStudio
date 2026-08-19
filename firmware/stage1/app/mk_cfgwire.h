@@ -87,10 +87,18 @@ typedef struct {
  *    없으면(NULL) 빈 배열이다. 정상 경로에서는 항상 MK_SOL_COUNT(3)개를
  *    받는다 — 커넥터가 있으면 상태는 항상 있다(레일과 달리 "아직 안 낸"
  *    중간 상태가 없다). */
+/* 🔴 `gnss_pps_age_ms`·`gnss_sats` 는 시간축 진단이다(규격 §7.4, Phase 3).
+ *    `time_source`/`time_quality` 가 "지금 등급이 무엇인가"를 말한다면
+ *    이 둘은 "그 등급을 얼마나 믿을 수 있나"를 보탠다 — 등급이 gnss_pps
+ *    라도 마지막 PPS 가 1.4초 전이면 다음 tick 에 내려갈 참이라는 것을
+ *    미리 알 수 있다. -1 은 "아직 모른다"(PPS 를 한 번도 못 봤다 · GGA 를
+ *    한 번도 못 받았다)는 뜻이고 `null` 로 나간다 — 0 을 지어내지 않는다
+ *    (설계 원칙 3·4와 같은 결). */
 int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *ctl_mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
+                    int64_t gnss_pps_age_ms, int32_t gnss_sats,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,

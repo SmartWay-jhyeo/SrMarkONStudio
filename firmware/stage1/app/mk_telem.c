@@ -82,6 +82,19 @@ static int field_on(const MkTelem *t, uint32_t mask, const char *name)
     return 0;                    /* 모르는 필드는 싣지 않는다 */
 }
 
+/* time_source 문자열. timeax 가 안 붙어 있으면(1단계 빌드) "device_clock"
+ * 고정 — 예전 동작 그대로다. */
+static const char *time_source_of(const MkTelem *t)
+{
+    return t->timeax ? mk_timeax_grade_name(mk_timeax_grade(t->timeax))
+                     : "device_clock";
+}
+
+static uint32_t time_quality_of(const MkTelem *t)
+{
+    return t->timeax ? mk_timeax_time_quality(t->timeax) : 0u;
+}
+
 /* ---- 레코드 ------------------------------------------------------------- */
 
 static int build_record(MkTelem *t, int ch, const MkSample *s,
@@ -137,12 +150,14 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
     if (field_on(t, mask, "time_source")) {
-        /* 🔴 1단계에는 GNSS 도 PPS 도 없다. `t` 는 부팅 후 경과 ms 이고
-         *    UTC 가 아니다 — 호스트가 이것을 시각으로 저장하면 안 된다. */
-        mk_json_str(&j, "time_source", "device_clock");
+        /* 🔴 Phase 3 — timeax 가 없으면(1단계 빌드) "device_clock" 고정,
+         *    붙어 있으면 실제 등급(gnss_pps/gnss_nmea/device_clock)이다.
+         *    device_clock 일 때 `t` 는 부팅 후 경과 ms 이지 UTC 가
+         *    아니다 — 호스트가 그 상태에서 이것을 시각으로 저장하면 안 된다. */
+        mk_json_str(&j, "time_source", time_source_of(t));
     }
     if (field_on(t, mask, "time_quality")) {
-        mk_json_u32(&j, "time_quality", 0u);
+        mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
     if (field_on(t, mask, "capture_counter")) {
         /* 🔴 지금은 획득 시각이 곧 이것이다. 고분해능 타이머 캡처는 Phase 3
@@ -190,10 +205,10 @@ static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
     if (field_on(t, mask, "time_source")) {
-        mk_json_str(&j, "time_source", "device_clock");
+        mk_json_str(&j, "time_source", time_source_of(t));
     }
     if (field_on(t, mask, "time_quality")) {
-        mk_json_u32(&j, "time_quality", 0u);
+        mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
     return mk_json_end(&j);
 }
@@ -223,10 +238,10 @@ static int build_din_record(MkTelem *t, const MkSolOut *o,
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
     if (field_on(t, mask, "time_source")) {
-        mk_json_str(&j, "time_source", "device_clock");
+        mk_json_str(&j, "time_source", time_source_of(t));
     }
     if (field_on(t, mask, "time_quality")) {
-        mk_json_u32(&j, "time_quality", 0u);
+        mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
     return mk_json_end(&j);
 }
@@ -241,6 +256,11 @@ void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c)
 void mk_telem_attach_sol(MkTelem *t, MkSolCtl *sol)
 {
     t->sol = sol;
+}
+
+void mk_telem_attach_timeax(MkTelem *t, MkTimeAx *timeax)
+{
+    t->timeax = timeax;
 }
 
 int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)

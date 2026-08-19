@@ -3,6 +3,7 @@
 #include "mk_ads1256.h"
 #include "mk_railctl.h"
 #include "mk_solctl.h"
+#include "mk_timeax.h"
 #include "mk_json.h"
 
 #include <string.h>
@@ -280,6 +281,11 @@ void mk_hostlink_attach_sol(MkHostlink *h, struct MkSolCtl *sol)
     h->sol = sol;
 }
 
+void mk_hostlink_attach_timeax(MkHostlink *h, struct MkTimeAx *timeax)
+{
+    h->timeax = timeax;
+}
+
 static void on_stat(MkHostlink *h, int64_t now_ms)
 {
     if (h->cfg == NULL) {
@@ -355,16 +361,33 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         }
     }
 
+    /* 🔴 Phase 3 — timeax 가 붙어 있으면 실제 등급을 싣는다. 안 붙어
+     *    있으면(1단계와 같은 빌드 경로) "device_clock" 고정이다 — `t` 는
+     *    부팅 후 경과 ms 이고 UTC 가 아니다. */
+    const char *time_source = "device_clock";
+    uint32_t    time_quality = 0u;
+    int64_t     gnss_pps_age_ms = -1;
+    int32_t     gnss_sats = -1;
+    if (h->timeax != NULL) {
+        time_source  = mk_timeax_grade_name(mk_timeax_grade(h->timeax));
+        time_quality = mk_timeax_time_quality(h->timeax);
+        int64_t age_us = mk_timeax_pps_age_us_now(h->timeax);
+        gnss_pps_age_ms = (age_us >= 0) ? age_us / 1000 : -1;
+        gnss_sats = mk_timeax_sats(h->timeax);   /* GGA 가 한 번도 없어도 0 — sats 는
+                                                    * "본 적 없음" 을 따로 구분할 근거가
+                                                    * 없다(uint8_t 0 이 곧 그 뜻이다). */
+    }
+
+    /* 🔴 896 은 원래 rails+din+queues 최악 길이(721) + 여유였다(주석
+     *    윗줄 참고). "gnss":{"pps_age_ms":<i64>,"sats":<i32>} 최악
+     *    ~45바이트를 더해도 그 여유 안이다. */
     char body[896];
     int n = mk_cfgwire_stat(
         now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
         h->ctl_mode == MK_CTL_TEST ? "TEST" : "ACTIVE",
         h->fw, h->board_rev, (uint32_t)now_ms,
-        /* 🔴 1단계에는 GNSS 도 PPS 도 없다. `t` 는 부팅 후 경과 ms 이고
-         *    UTC 가 아니다 — 호스트가 이것을 시각으로 저장하면 안 된다.
-         *    3단계에서 시간 소스가 붙으면 여기가 바뀐다. */
-        "device_clock", 0u,
+        time_source, time_quality, gnss_pps_age_ms, gnss_sats,
         &rs,
         n_din > 0 ? ds : NULL, n_din,
         n_q > 0 ? qs : NULL, n_q, body, sizeof body);

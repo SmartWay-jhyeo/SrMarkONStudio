@@ -78,6 +78,11 @@ typedef struct {
      * 싣는다(규격 §7.4). 없으면 빈 배열이다. */
     struct MkSolCtl *sol;
 
+    /* GNSS/PPS 시간축(Phase 3). 붙어 있으면 $STAT 의 time_source·
+     * time_quality·gnss.* 가 실제 등급을 싣는다. 없으면 "device_clock"·
+     * quality 0 고정이다(1단계와 같다). */
+    struct MkTimeAx *timeax;
+
     /* 제어 모드 (규격 §6.4). `mk_hostlink_tick` 이 CONFIG->RUN 전이를
      * 보고 스스로 ACTIVE 로 되돌린다. */
     MkCtlMode   ctl_mode;
@@ -113,6 +118,11 @@ void mk_hostlink_attach_rails(MkHostlink *h, struct MkRailCtl *rails);
  * 배열이다. */
 struct MkSolCtl;
 void mk_hostlink_attach_sol(MkHostlink *h, struct MkSolCtl *sol);
+
+/* GNSS/PPS 시간축을 붙인다(Phase 3). 부르지 않으면 $STAT 의 time_source 는
+ * "device_clock" 고정이다(1단계와 같은 동작). */
+struct MkTimeAx;
+void mk_hostlink_attach_timeax(MkHostlink *h, struct MkTimeAx *timeax);
 
 /* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
  *

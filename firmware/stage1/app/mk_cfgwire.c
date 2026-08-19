@@ -160,6 +160,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
                     const char *time_source, uint32_t time_quality,
+                    int64_t gnss_pps_age_ms, int32_t gnss_sats,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
@@ -176,6 +177,22 @@ int mk_cfgwire_stat(int64_t now_ms,
     mk_json_str(&j, "time_source", time_source);
     mk_json_u32(&j, "time_quality", time_quality);
     mk_json_u32(&j, "uptime_ms", uptime_ms);
+
+    /* 🔴 시간축 진단(Phase 3). `time_source`/`time_quality` 가 "지금 등급"
+     *    이면 이 둘은 "그 등급이 얼마나 오래됐나"다 — 헤더 주석 참고.
+     *    -1 은 "아직 모른다"이고 null 로 나간다(0 을 지어내지 않는다). */
+    mk_json_object_begin(&j, "gnss");
+    if (gnss_pps_age_ms >= 0) {
+        mk_json_i64(&j, "pps_age_ms", gnss_pps_age_ms);
+    } else {
+        mk_json_null(&j, "pps_age_ms");
+    }
+    if (gnss_sats >= 0) {
+        mk_json_i32(&j, "sats", gnss_sats);
+    } else {
+        mk_json_null(&j, "sats");
+    }
+    mk_json_object_end(&j);
 
     /* 🔴 **실제로 핀에 낸 것**을 싣는다. 설정표를 읽으면 안 된다.
      *

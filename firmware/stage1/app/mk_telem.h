@@ -17,6 +17,7 @@
 #include "mk_config.h"
 #include "mk_i2c.h"
 #include "mk_solctl.h"
+#include "mk_timeax.h"
 
 /* 한 줄을 내보낸다. 줄바꿈은 이미 붙어 있다. */
 typedef void (*MkTelemEmit)(void *ctx, const char *line, size_t len);
@@ -39,6 +40,8 @@ typedef struct {
     const char       *device_id;
     MkI2c            *i2c;                  /* 없으면 NULL — ain 만 낸다 */
     MkSolCtl         *sol;                  /* 없으면 NULL — din 을 안 낸다 */
+    MkTimeAx         *timeax;               /* 없으면 NULL — time_source 는
+                                              * "device_clock" 고정(1단계와 같다) */
 
     /* 규격 §7.1 — 레코드마다 1씩 오른다. 호스트가 누락을 검출한다. */
     uint32_t          seq;
@@ -56,6 +59,11 @@ void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c);
 /* 디지털 입력(J18~J20) 층을 물린다. 붙이지 않으면 `din` 을 내지 않는다.
  * i2c 와 같은 이유로 seq·tx.fields 를 나눠 쓴다 (규격 §7.6). */
 void mk_telem_attach_sol(MkTelem *t, MkSolCtl *sol);
+
+/* GNSS/PPS 시간축(Phase 3)을 물린다. 붙이면 ain·i2c·din 레코드의
+ * `time_source`·`time_quality` 가 실제 등급을 싣는다. 붙이지 않으면
+ * "device_clock"·0 고정이다(1단계와 같은 동작). */
+void mk_telem_attach_timeax(MkTelem *t, MkTimeAx *timeax);
 
 /* 전송 주기가 됐으면 큐를 비워 내보낸다. 반환은 내보낸 줄 수.
  *

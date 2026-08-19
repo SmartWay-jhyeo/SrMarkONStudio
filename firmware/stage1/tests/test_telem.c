@@ -204,6 +204,59 @@ static void test_record_shape(void)
     CHECK(LINES[0][strlen(LINES[0]) - 1] == '\n', "줄바꿈으로 끝난다");
 }
 
+/* time_quality 비트는 기본 꺼짐(FIELDS 의 def=0)이다 — 켜서 시험한다.
+ * 비트 번호는 표에서 끌어온다(test_field_mask_selects 와 같은 이유 —
+ * 숫자를 박지 않는다). */
+static void enable_time_quality_field(void)
+{
+    size_t n = 0;
+    const MkFieldBit *f = mk_cfgtable_fields(&n);
+    MkCfgItem *mask_item = mk_cfg_find(&CFG, "tx.fields");
+    uint32_t mask = mask_item ? mask_item->cur.u : 0u;
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(f[i].name, "time_quality") == 0) {
+            mask |= (1u << f[i].bit);
+        }
+    }
+    set_u32("tx.fields", mask);
+}
+
+static void test_time_source_defaults_to_device_clock_without_timeax(void)
+{
+    /* 🔴 Phase 3 이전(또는 timeax 를 안 붙인 빌드)과 같은 동작 — 회귀
+     * 방지. */
+    setup();
+    enable_time_quality_field();
+    set_last(0, 1000, 4000000);
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK_HAS(LINES[0], "\"time_source\":\"device_clock\"",
+              "timeax 를 안 붙이면 device_clock 고정");
+    CHECK_HAS(LINES[0], "\"time_quality\":0", "품질도 0 고정");
+}
+
+static void test_time_source_follows_attached_timeax_grade(void)
+{
+    setup();
+    enable_time_quality_field();
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_telem_attach_timeax(&T, &tx);
+
+    mk_timeax_on_pps(&tx, 1000000ULL);
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1772200855000LL;
+    mk_timeax_on_rmc(&tx, &rmc, 1050000ULL);   /* PPS 와 짝지어 gnss_pps 로 */
+
+    set_last(0, 1000, 4000000);
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK_HAS(LINES[0], "\"time_source\":\"gnss_pps\"",
+              "timeax 를 붙이면 실제 등급을 싣는다");
+    CHECK_HAS(LINES[0], "\"time_quality\":2", "품질도 등급 숫자를 싣는다");
+}
+
 static void test_seq_increases_so_the_host_can_find_gaps(void)
 {
     /* 규격 §7.1 — 호스트가 누락을 검출하는 유일한 근거다. 채널 셋이 한
@@ -696,6 +749,8 @@ int main(int argc, char **argv)
     test_no_data_sends_nothing();
     test_channel_with_no_data_is_never_sent_even_over_many_periods();
     test_record_shape();
+    test_time_source_defaults_to_device_clock_without_timeax();
+    test_time_source_follows_attached_timeax_grade();
     test_seq_increases_so_the_host_can_find_gaps();
     test_repeats_the_last_value_without_new_acquisition();
     test_only_the_latest_sample_survives_when_acquisition_outpaces_tx();
