@@ -118,7 +118,13 @@ typedef struct {
      *    남는다 — 여기서 지우지 않는다. mk_telem 은 이제 큐를 비우지
      *    않고 이 자리만 읽는다. mk_ads_on_spi_done() 의 READING 완료
      *    지점(큐에 넣는 바로 그 자리)이 여기도 함께 덮어쓴다 — 그래야
-     *    두 자리가 어긋나지 않는다. */
+     *    두 자리가 어긋나지 않는다.
+     *
+     *    🔴 mk_ads_configure() 로 채널을 꺼도 has_last/last 는 안 비운다 —
+     *    mk_i2c.c 는 비운다. 의도적 비대칭이다(근거는 mk_i2c.c 의 disable
+     *    분기 주석). 여기서 안 비워도 되는 이유는 mk_telem.c 가 배출 전에
+     *    mk_ads_channel_enabled() 를 따로 확인하기 때문이고, 채널을 다시
+     *    켜도 슬롯의 의미(그 채널의 전압)가 바뀌지 않기 때문이다. */
     MkSample last;
     uint8_t  has_last;      /* 한 번이라도 표본을 받았는가 */
 } MkAdsChannel;

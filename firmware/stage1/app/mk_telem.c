@@ -279,8 +279,9 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
      *       사용하면 어쨋든 그 안에 있던 값이 날라갈거 아니야"
      *
      *    ain 은 mk_ads1256.c 의 MkAdsChannel.last (DRDY 마다 덮어씀), i2c 는
-     *    mk_i2c.c 의 last[][] (push_out 마다 덮어씀) 를 그대로 읽는다. 여기서
-     *    큐를 비우지 않는다 — mk_queue 는 $STAT 진단용으로 그대로 둔다.
+     *    mk_i2c.c 의 last[][] (store_last 마다 덮어씀) 를 그대로 읽는다.
+     *    여기서 큐를 비우지 않는다 — mk_queue 는 $STAT 진단용으로 그대로
+     *    둔다.
      *
      *    그래서 여기서는 `tx.period_ms` 를 **기다린다.** 주기 전에는 아무
      *    것도 하지 않는다 — 안 그러면 이 값이 뜻을 잃는다. */

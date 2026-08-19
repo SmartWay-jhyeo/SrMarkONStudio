@@ -141,7 +141,6 @@ static void test_one_port_per_tick(void)
     }
 
     int mixed_ports_in_one_tick = 0;
-    MkI2cOut out;
     for (int64_t t = 0; t < 3000; t += 10) {
         int before = BUS.n;
         mk_i2c_tick(&I2C, &CFG, t);
@@ -152,26 +151,28 @@ static void test_one_port_per_tick(void)
                 if (BUS.addr[k] != first_addr) { mixed_ports_in_one_tick = 1; }
             }
         }
-        /* 매 바퀴 뒤 완전히 비운다 — mk_i2c.h 의 계약. */
-        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
     }
 
     CHECK(!mixed_ports_in_one_tick,
           "한 바퀴에 두드리는 포트는 하나뿐이다 (주소가 안 섞인다)");
     CHECK(BUS.n > 6, "그러고도 실제로 여러 번 두드린다 — 이가 있는 시험");
-    CHECK(I2C.dropped == 0u, "매 바퀴 비웠으면 버릴 것이 없다");
 }
 
 /* 🔴 드라이버가 없는 종류는 status=3 이다. 아무것도 안 보내면 값이 왜
  *    없는지 화면 어디에도 답이 없다.
  *
- * 🔴 [검토 지적 2026-08-18] 바퀴마다 완전히 비우지 않고 시험 끝에
- *    mk_i2c_take() 를 한 번만 부르면, "주기마다 한 번만 알리는가"를
- *    2칸짜리 out 버퍼가 가려 버린다 — step_port() 의 시간 가드를 통째로
- *    지워도(매 바퀴 push) 이 시험은 그대로 통과했다(버려지는 40개는 보지
- *    않고 살아남은 2개만 봤으므로). 그래서 이제 **매 바퀴 뒤** while 로
- *    완전히 비우고 나온 레코드 수를 세어, 400ms/주기 200ms 에서 나와야
- *    하는 트리거 횟수(2 — t=0 즉시 한 번 + t=200 에 한 번)를 못박는다.
+ * 🔴 [검토 지적 2026-08-18] 시험 끝에 딱 한 번만 확인하면, "주기마다
+ *    한 번만 알리는가"를 놓친다 — step_port() 의 시간 가드를 통째로
+ *    지워도(매 바퀴 알림) 마지막 값만 보면 그대로 통과했다(중간의 잘못된
+ *    반복은 안 보고 마지막 한 개만 봤으므로). 그래서 **매 바퀴 뒤**
+ *    알림이 새로 왔는지를 보고 그 횟수를 세어, 400ms/주기 200ms 에서
+ *    나와야 하는 트리거 횟수(2 — t=0 즉시 한 번 + t=200 에 한 번)를
+ *    못박는다.
+ *
+ * 🔴 [2026-08-19] 예전엔 out[] 배출 큐를 매 바퀴 mk_i2c_take() 로 비우며
+ *    셌다. 그 큐가 없어진 뒤로는 mk_i2c_last() 의 t_ms 가 바뀔 때마다
+ *    "새로 한 번 알렸다"로 센다 — 같은 "매 바퀴 확인한다"는 취지를
+ *    last() 로 옮긴 것뿐, 위 교훈(끝에 한 번만 보면 안 된다)은 그대로다.
  *
  * 🔴 [AM2320·MLX90614 추가] 예전에는 여기서 IR_TEMP 를 "드라이버 없음"의
  *    본보기로 썼다. 이제 IR_TEMP(MLX90614) 도 HUMID(AM2320) 도 드라이버가
@@ -192,13 +193,18 @@ static void test_unsupported_kind_reports_status_three(void)
      * 여전히 FAULT(status=3) 경로를 탄다. */
     k->cur.u = (uint32_t)MK_I2C_KIND_WATER_TEMP;
 
+    /* 🔴 [2026-08-19] out[]/mk_i2c_take() 가 없어져 "몇 번 알렸는가"를
+     *    큐에서 셀 수 없다 — 대신 mk_i2c_last() 가 매번 t_ms 를 갱신하는
+     *    것을 이용해, 바뀔 때마다 "새로 한 번 알렸다"로 센다. */
     int n_records = 0;
     int all_status_three = 1;
     int all_quantity_temp = 1;
-    MkI2cOut out;
+    int64_t seen_t_ms = -1;
     for (int64_t t = 0; t < 400; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &out) == 1) {
+        MkI2cOut out;
+        if (mk_i2c_last(&I2C, 0u, 0u, &out) == 1 && out.t_ms != seen_t_ms) {
+            seen_t_ms = out.t_ms;
             n_records++;
             if (out.status != 3u) { all_status_three = 0; }
             if (out.quantity == NULL || strcmp(out.quantity, "temp") != 0) {
@@ -212,7 +218,6 @@ static void test_unsupported_kind_reports_status_three(void)
     CHECK(all_quantity_temp,
           "quantity 가 실린다 — 없으면 host/gui/screen.py 가 레코드를 버린다 (C1)");
     CHECK(BUS.n == 0, "지원 안 하면 버스를 두드리지 않는다");
-    CHECK(I2C.dropped == 0u, "매 바퀴 다 비웠으면 버릴 것이 없다");
 }
 
 /* 🔴 [C1] 종류→양 표를 직접 확인한다. 각 종류가 규격 §7.5.1 표대로다. */
@@ -238,22 +243,20 @@ static void test_kind_quantities_table_matches_the_spec(void)
     CHECK(n == 1 && strcmp(q[0], "temp") == 0, "방수 온도 = temp 하나");
 }
 
-/* 🔴 [I1] 여러 포트가 같은 바퀴에 레코드를 내도 잃지 않는다.
+/* 🔴 [I1, 2026-08-19 갱신] 여러 포트가 같은 바퀴에 값을 내도 서로 안
+ *    덮어쓴다.
  *
  *    FAULT(드라이버 없음)는 버스를 안 건드려 순회가 안 멈춘다 — 포트
  *    여섯을 전부 같은 미지원 종류로 켜 두면 부팅 직후(모든
- *    last_read_ms=0) 한 바퀴 안에서 여섯 포트가 동시에 gate 를 통과해
- *    레코드가 쌓인다. MK_I2C_OUT_MAX(=MK_I2C_COUNT × MK_I2C_VALUES_MAX)
- *    가 이 최악을 감당하지 못하면 dropped 가 올라간다.
+ *    last_read_ms=0) 한 바퀴 안에서 여섯 포트가 동시에 gate 를 통과한다.
  *
- * 🔴 [AM2320·MLX90614 추가] 예전엔 HUMID(양 둘)로 여섯 포트를 켜 정확히
- *    MK_I2C_OUT_MAX(12) 를 채웠다. 이제 HUMID 도 드라이버가 있어(AM2320)
- *    미지원 경로를 안 탄다 — 카탈로그에서 아직 드라이버가 없는 유일한
- *    종류는 WATER_TEMP(양 하나)뿐이라, 이 시험이 "미지원" 경로로 만들 수
- *    있는 최악은 이제 6×1=6 이다. 버퍼 크기(12)는 여전히 이 최악을
- *    안전하게 덮는다 — 값을 12→6 으로 낮춘 것이지 버퍼를 줄인 것이
- *    아니다. */
-static void test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer(void)
+ *    예전에는 이것이 배출 큐(out[], MK_I2C_OUT_MAX 칸) 오버플로 시험이었다
+ *    — 여섯 포트가 한 큐를 다투면 자리가 모자랄 수 있었다. 2026-08-19 에
+ *    그 큐를 걷어내고 포트·슬롯마다 고정 자리(last[][])로 바꾸면서
+ *    "넘친다"는 개념 자체가 없어졌다 — 이제 이 시험이 지키는 것은
+ *    "포트 여섯이 같은 바퀴에 값을 내도 각자의 슬롯에 맞게 들어가고 서로
+ *    섞이지 않는다"다. */
+static void test_many_faulted_ports_in_one_tick_all_get_recorded(void)
 {
     setup();
     for (unsigned jack = 10u; jack <= 15u; jack++) {
@@ -263,12 +266,20 @@ static void test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer(void)
     mk_i2c_tick(&I2C, &CFG, 0);      /* 여섯 포트가 전부 처음 트리거된다 */
 
     int n = 0;
-    MkI2cOut out;
-    while (mk_i2c_take(&I2C, &out) == 1) { n++; }
+    for (unsigned p = 0; p < MK_I2C_COUNT; p++) {
+        MkI2cOut out;
+        if (mk_i2c_last(&I2C, p, 0u, &out) == 1) {
+            n++;
+            CHECK(out.connector_id == mk_i2c_connector_of(p),
+                  "제 포트의 커넥터 번호로 들어간다 — 다른 포트 것으로 안 섞인다");
+            CHECK(out.status == 3u, "미지원 status=3");
+            CHECK(out.quantity != NULL && strcmp(out.quantity, "temp") == 0,
+                  "quantity 는 방수 온도의 temp");
+        }
+    }
 
-    CHECK(n == (int)(MK_I2C_COUNT * 1),
-          "포트 여섯 × 양 하나 = 여섯 줄이 한 바퀴에 다 나온다");
-    CHECK(I2C.dropped == 0u, "MK_I2C_OUT_MAX 가 최악을 감당해 버리는 것이 없다");
+    CHECK(n == (int)MK_I2C_COUNT,
+          "포트 여섯 전부 같은 바퀴에 값을 냈고, 전부 읽힌다");
     CHECK(BUS.n == 0, "드라이버가 없으니 버스는 안 건드린다");
 }
 
@@ -291,11 +302,16 @@ static void test_unsupported_kind_retry_has_a_floor_even_at_min_period(void)
      * WATER_TEMP 로 시험한다. */
     enable_port_kind(10u, (uint32_t)MK_I2C_KIND_WATER_TEMP, 0x50u, 10u);  /* period_ms = 카탈로그 하한 */
 
+    /* out[]/mk_i2c_take() 가 없어져 "몇 번 알렸는가"를 mk_i2c_last() 의
+     * t_ms 변화로 센다(위 test_unsupported_kind_reports_status_three 와
+     * 같은 요령). */
     int n_events = 0;
-    MkI2cOut out;
+    int64_t seen_t_ms = -1;
     for (int64_t t = 0; t < 2000; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &out) == 1) {
+        MkI2cOut out;
+        if (mk_i2c_last(&I2C, 0u, 0u, &out) == 1 && out.t_ms != seen_t_ms) {
+            seen_t_ms = out.t_ms;
             CHECK(out.status == 3u, "미지원은 늘 status=3");
             n_events++;
         }
@@ -326,11 +342,15 @@ static void test_fault_retry_has_a_floor_even_at_min_period(void)
     enable_lux_port(10u, 0x23u, 10u);   /* period_ms = 카탈로그 하한 */
     BUS.ret = -1;                       /* start 가 항상 NACK */
 
+    /* out[]/mk_i2c_take() 가 없어져 t_ms 변화로 "몇 번 알렸는가"를 센다
+     * (위 미지원 종류 시험과 같은 요령). */
     int n_events = 0;
-    MkI2cOut out;
+    int64_t seen_t_ms = -1;
     for (int64_t t = 0; t < 2000; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &out) == 1) {
+        MkI2cOut out;
+        if (mk_i2c_last(&I2C, 0u, 0u, &out) == 1 && out.t_ms != seen_t_ms) {
+            seen_t_ms = out.t_ms;
             CHECK(out.status == 1u, "NACK 은 status=1");
             n_events++;
         }
@@ -783,25 +803,26 @@ static void test_am2320_real_read_failure_emits_both_quantities_as_status(void)
                     * 채우므로 AM2320 응답의 CRC 는 항상 안 맞는다 */
     enable_port_kind(10u, (uint32_t)MK_I2C_KIND_HUMID, 0x5Cu, 2000u);
 
-    int n_temp = 0, n_humidity = 0;
-    int all_status_two = 1;
-    MkI2cOut out;
-    /* OFF→START(rc=0, start 없음)→WARMUP(2000ms)→READY 진입 즉시 읽기 —
-     * 넉넉히 2100ms 를 돌린다. */
+    /* out[]/mk_i2c_take() 가 없어져 매 바퀴 흘러가는 레코드를 셀 수 없다
+     * — 대신 tick 을 다 돌린 뒤 last[][] 의 두 슬롯을 직접 본다(마지막
+     * 값이 곧 이 시험이 보려는 사실이다). */
     for (int64_t t = 0; t <= 2100; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &out) == 1) {
-            if (out.status != 2u) { all_status_two = 0; }
-            if (!out.have_value && out.quantity != NULL) {
-                if (strcmp(out.quantity, "temp") == 0) { n_temp++; }
-                if (strcmp(out.quantity, "humidity") == 0) { n_humidity++; }
-            }
-        }
     }
 
-    CHECK(n_temp >= 1 && n_humidity >= 1,
-          "실패해도 temp·humidity 두 줄 다 나간다(§7.5.1 표를 따라간다)");
-    CHECK(all_status_two, "CRC 가 안 맞으면 데이터 오류(status=2)");
+    MkI2cOut temp, humidity;
+    int have_temp = mk_i2c_last(&I2C, 0u, 0u, &temp);
+    int have_humidity = mk_i2c_last(&I2C, 0u, 1u, &humidity);
+    CHECK(have_temp && have_humidity,
+          "실패해도 temp·humidity 두 슬롯 다 채워진다(§7.5.1 표를 따라간다)");
+    CHECK(!have_temp || (!temp.have_value
+          && temp.quantity != NULL && strcmp(temp.quantity, "temp") == 0),
+          "temp 슬롯: 값은 비어 있어도 quantity 는 남는다");
+    CHECK(!have_humidity || (!humidity.have_value
+          && humidity.quantity != NULL && strcmp(humidity.quantity, "humidity") == 0),
+          "humidity 슬롯: 값은 비어 있어도 quantity 는 남는다");
+    CHECK((!have_temp || temp.status == 2u) && (!have_humidity || humidity.status == 2u),
+          "CRC 가 안 맞으면 데이터 오류(status=2)");
 }
 
 /* ---- I3 — 설계 §11 이 요구한 상태기계 시험 다섯 --------------------------
@@ -832,8 +853,6 @@ static void test_does_not_read_during_warmup(void)
                 read_seen_at = (int)t;
             }
         }
-        MkI2cOut out;
-        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
     }
 
     CHECK(start_done_at >= 0, "start 가 불렸다");
@@ -857,8 +876,6 @@ static void test_effective_period_is_the_longer_of_period_and_warmup(void)
         if (after > before && BUS.ntx[after - 1] == 0u && BUS.nrx[after - 1] == 2u) {
             read_times[n_reads++] = t;
         }
-        MkI2cOut out;
-        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
     }
 
     CHECK(n_reads >= 2, "read 가 여러 번 있었다");
@@ -876,8 +893,6 @@ static void test_start_is_called_once_when_turned_on(void)
     enable_lux_port(10u, 0x23u, 50u);
     for (int64_t t = 0; t < 1000; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        MkI2cOut out;
-        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
     }
     int start_writes = 0;
     for (int k = 0; k < BUS.n; k++) {
@@ -895,12 +910,19 @@ static void test_isolation_a_dead_port_does_not_stop_the_rest(void)
     /* HUMID(AM2320) 는 이제 드라이버가 있다 — 죽은 포트는 WATER_TEMP 로. */
     enable_port_kind(11u, (uint32_t)MK_I2C_KIND_WATER_TEMP, 0x40u, 50u);  /* 드라이버 없음 — 계속 죽어 있다 */
 
+    /* out[]/mk_i2c_take() 가 없어져 두 포트를 각자의 t_ms 변화로 따로
+     * 센다 — 포트 0(J10)은 살아 있고, 포트 1(J11)은 죽어 있다. */
     int ok_count = 0, fault_count = 0;
-    MkI2cOut out;
+    int64_t ok_t_ms = -1, fault_t_ms = -1;
     for (int64_t t = 0; t < 500; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &out) == 1) {
+        MkI2cOut out;
+        if (mk_i2c_last(&I2C, 0u, 0u, &out) == 1 && out.t_ms != ok_t_ms) {
+            ok_t_ms = out.t_ms;
             if (out.connector_id == 10u && out.status == 0u) { ok_count++; }
+        }
+        if (mk_i2c_last(&I2C, 1u, 0u, &out) == 1 && out.t_ms != fault_t_ms) {
+            fault_t_ms = out.t_ms;
             if (out.connector_id == 11u && out.status == 3u) { fault_count++; }
         }
     }
@@ -917,22 +939,16 @@ static void test_io_error_codes_map_to_status_one_and_two(void)
     mk_i2c_tick(&I2C, &CFG, 0);      /* OFF -> START (버스 안 건드림) */
     mk_i2c_tick(&I2C, &CFG, 10);     /* START 시도: 실패 */
     MkI2cOut out;
-    int seen_status1 = 0;
-    while (mk_i2c_take(&I2C, &out) == 1) {
-        if (out.status == 1u) { seen_status1 = 1; }
-    }
-    CHECK(seen_status1, "io -1(응답 없음) 은 status=1");
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &out) == 1 && out.status == 1u,
+          "io -1(응답 없음) 은 status=1");
 
     setup();
     enable_lux_port(10u, 0x23u, 50u);
     BUS.ret = -2;
     mk_i2c_tick(&I2C, &CFG, 0);
     mk_i2c_tick(&I2C, &CFG, 10);
-    int seen_status2 = 0;
-    while (mk_i2c_take(&I2C, &out) == 1) {
-        if (out.status == 2u) { seen_status2 = 1; }
-    }
-    CHECK(seen_status2, "io -2(버스 오류) 는 status=2");
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &out) == 1 && out.status == 2u,
+          "io -2(버스 오류) 는 status=2");
 }
 
 /* 🔴 [I2] 읽기 실패가 이어지면 OFF 로 되돌아가 start 부터 다시 한다.
@@ -943,10 +959,8 @@ static void test_read_failure_forces_a_fresh_start(void)
 {
     setup();
     enable_lux_port(10u, 0x23u, 10u);
-    MkI2cOut out;
     for (int64_t t = 0; t <= 200; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
     }
     int start_writes_before = 0;
     for (int k = 0; k < BUS.n; k++) {
@@ -957,7 +971,6 @@ static void test_read_failure_forces_a_fresh_start(void)
     BUS.ret = -1;   /* 이제부터 다음 read 가 실패한다 */
     for (int64_t t = 210; t <= 600; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &out) == 1) { /* 버린다 */ }
     }
     int start_writes_after = 0;
     for (int k = 0; k < BUS.n; k++) {
@@ -969,10 +982,10 @@ static void test_read_failure_forces_a_fresh_start(void)
 
 /* ---- 마지막 값 (수집·송신 분리, 사용자 설계 2026-08-19) ------------------
  *
- * mk_telem 은 이제 out[]/mk_i2c_take() 를 매 tick 비우지 않는다 —
- * tx.period_ms 마다 mk_i2c_last(port, slot) 만 읽는다. out[] 자체는
- * 그대로 있다(위 시험들이 이미 본다) — 이 절은 옆에 새로 생긴 last[][]
- * 저장소만 본다. */
+ * mk_telem 은 tx.period_ms 마다 mk_i2c_last(port, slot) 만 읽는다 — 배출
+ * 큐가 없다(2026-08-19 에 out[]/mk_i2c_take() 를 걷어냈다, mk_i2c.h 의
+ * MkI2c 주석 참고). 그래서 아래 시험들은 tick 을 돌린 뒤 last[][] 만 본다
+ * — 예전처럼 매 바퀴 뒤 큐를 비울 필요가 없다. */
 
 static void test_last_value_is_absent_before_any_read(void)
 {
@@ -988,10 +1001,8 @@ static void test_last_value_updates_on_a_successful_read(void)
 {
     setup();
     enable_lux_port(10u, 0x23u, 200u);
-    MkI2cOut drained;
     for (int64_t t = 0; t <= 400; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &drained) == 1) { /* out[] 은 그대로 둔다 */ }
     }
 
     MkI2cOut last;
@@ -1006,39 +1017,57 @@ static void test_last_value_records_a_failure_too(void)
 {
     /* 🔴 실패·미지원도 마지막 값이다 — null·status 를 그대로 반복해서
      *    내보내는 것이 규격 §7.5 의 취지다("살아 있는 척하지 않는다"의
-     *    반대쪽: "죽었으면 죽었다고 계속 말한다"). */
+     *    반대쪽: "죽었으면 죽었다고 계속 말한다"). quantity 도 함께
+     *    남아야 한다 — 없으면 host/gui/screen.py 가 이 레코드를 통째로
+     *    버린다(C1, mk_i2c.h 의 push_status 관련 주석과 같은 이유). */
     setup();
     BUS.ret = -1;                      /* 처음부터 응답 없음 */
     enable_lux_port(10u, 0x23u, 200u);
-    MkI2cOut drained;
     for (int64_t t = 0; t <= 50; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &drained) == 1) { }
     }
 
     MkI2cOut last;
     CHECK(mk_i2c_last(&I2C, 0u, 0u, &last) == 1, "실패도 마지막 값을 남긴다");
+    CHECK(last.quantity != NULL && strcmp(last.quantity, "lux") == 0,
+          "실패해도 quantity 를 잃지 않는다");
     CHECK(last.have_value == 0, "값 자리는 비어 있다(null)");
     CHECK(last.status == 1u, "응답 없음");
 }
 
-static void test_last_value_survives_take_draining_out(void)
+/* 🔴 값이 둘인 종류(온습도, AM2320)는 두 슬롯이 각각 채워져야 한다 — 하나가
+ *    다른 하나를 덮어쓰면 host 는 온도와 습도 중 하나를 영영 못 받는다.
+ *    일반 fake_xfer 는 AM2320 의 CRC 를 못 맞추므로(위 test_am2320_* 주석
+ *    참고), AM2320 전용 가짜 버스(am_fake_xfer/AM)를 이 포트에 직접
+ *    붙인다. */
+static void test_last_value_stores_both_slots_of_a_two_quantity_kind(void)
 {
-    /* 🔴 큐(mk_queue)와 같은 이유 — out[] 을 비워도(mk_i2c_take) last[][]
-     *    는 별도 저장소라 남는다. */
     setup();
-    enable_lux_port(10u, 0x23u, 200u);
-    MkI2cOut drained;
-    for (int64_t t = 0; t <= 400; t += 10) {
-        mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &drained) == 1) { }
-    }
-    /* out[] 을 다시 한번 완전히 비운다 — 확실히 빈 상태에서 확인한다. */
-    while (mk_i2c_take(&I2C, &drained) == 1) { }
+    am_setup_positive_example();
+    I2C.io.xfer = am_fake_xfer;
+    I2C.io.ctx = &AM;
+    I2C.io.delay_us = am_fake_delay;
+    enable_port_kind(10u, (uint32_t)MK_I2C_KIND_HUMID, 0x5Cu, 2000u);
 
-    MkI2cOut last;
-    CHECK(mk_i2c_last(&I2C, 0u, 0u, &last) == 1,
-          "out[] 을 비워도 마지막 값은 그대로 있다");
+    /* OFF->START(start 없음)->WARMUP(2000ms)->READY 진입 즉시 읽기. */
+    for (int64_t t = 0; t <= 2100; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+    }
+
+    MkI2cOut temp, humidity;
+    CHECK(mk_i2c_last(&I2C, 0u, 0u, &temp) == 1, "slot 0(temp) 이 채워진다");
+    CHECK(temp.quantity != NULL && strcmp(temp.quantity, "temp") == 0,
+          "slot 0 은 temp");
+    CHECK(temp.have_value == 1 && temp.value > 24.9f && temp.value < 25.1f,
+          "0x00FA → 25.0°C (p.13~14 예제)");
+
+    CHECK(mk_i2c_last(&I2C, 0u, 1u, &humidity) == 1,
+          "slot 1(humidity) 도 따로 채워진다 — slot 0 에 덮어써지지 않는다");
+    CHECK(humidity.quantity != NULL && strcmp(humidity.quantity, "humidity") == 0,
+          "slot 1 은 humidity");
+    CHECK(humidity.have_value == 1
+          && humidity.value > 49.9f && humidity.value < 50.1f,
+          "0x01F4 → 50.0%RH (p.13~14 예제)");
 }
 
 static void test_last_value_is_cleared_when_the_kind_changes(void)
@@ -1048,10 +1077,8 @@ static void test_last_value_is_cleared_when_the_kind_changes(void)
      *    값이 오기 전까지는 아무 슬롯도 안 나가야 한다. */
     setup();
     enable_lux_port(10u, 0x23u, 200u);
-    MkI2cOut drained;
     for (int64_t t = 0; t <= 400; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &drained) == 1) { }
     }
     MkI2cOut before;
     CHECK(mk_i2c_last(&I2C, 0u, 0u, &before) == 1, "선행 확인 — 값이 있다");
@@ -1069,10 +1096,8 @@ static void test_last_value_is_cleared_when_disabled(void)
 {
     setup();
     enable_lux_port(10u, 0x23u, 200u);
-    MkI2cOut drained;
     for (int64_t t = 0; t <= 400; t += 10) {
         mk_i2c_tick(&I2C, &CFG, t);
-        while (mk_i2c_take(&I2C, &drained) == 1) { }
     }
     MkI2cOut before;
     CHECK(mk_i2c_last(&I2C, 0u, 0u, &before) == 1, "선행 확인 — 값이 있다");
@@ -1115,7 +1140,7 @@ int main(int argc, char **argv)
     printf("-- 지원 안 하는 종류 --\n"); test_unsupported_kind_reports_status_three();
     printf("-- 종류→양 표 --\n");       test_kind_quantities_table_matches_the_spec();
     printf("-- [I1] 여러 포트 동시 FAULT --\n");
-    test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer();
+    test_many_faulted_ports_in_one_tick_all_get_recorded();
     printf("-- 재시도 하한(미지원) --\n");
     test_unsupported_kind_retry_has_a_floor_even_at_min_period();
     printf("-- 재시도 하한(FAULT) --\n");
@@ -1175,8 +1200,8 @@ int main(int argc, char **argv)
     test_last_value_updates_on_a_successful_read();
     printf("-- 마지막 값 — 실패도 남는다 --\n");
     test_last_value_records_a_failure_too();
-    printf("-- 마지막 값 — out[] 비워도 남는다 --\n");
-    test_last_value_survives_take_draining_out();
+    printf("-- 마지막 값 — 양이 둘인 종류는 두 슬롯 다 --\n");
+    test_last_value_stores_both_slots_of_a_two_quantity_kind();
     printf("-- 마지막 값 — 종류 바뀌면 비운다 --\n");
     test_last_value_is_cleared_when_the_kind_changes();
     printf("-- 마지막 값 — 끄면 비운다 --\n");

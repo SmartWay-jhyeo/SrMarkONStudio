@@ -107,7 +107,7 @@ void mk_solctl_tick(MkSolCtl *sc, MkConfig *cfg, int64_t now_ms)
         if (sc->n_out >= MK_SOL_COUNT) {
             /* 🔴 정상 경로로는 오지 않는다 — 채널마다 한 바퀴에 최대
              *    하나만 확정되므로 out 은 절대 안 넘친다. 그래도
-             *    mk_i2c.c 의 dropped 와 같은 이유로 조용히 버리지 않고
+             *    mk_queue.c 의 drops 와 같은 이유로 조용히 버리지 않고
              *    센다: 세지 않으면 유실이 없었던 것으로 보인다. */
             sc->out_dropped++;
             continue;

@@ -79,43 +79,26 @@ static void clear_last(MkI2c *i, unsigned port)
     }
 }
 
-/* port·slot 은 mk_i2c_last() 가 그대로 돌려줄 자리다 — slot 은
- * mk_i2c_kind_quantities() 의 순서와 같다. */
-static void push_out(MkI2c *i, unsigned port, unsigned slot,
-                     const char *quantity, float value, int have_value,
-                     uint16_t status, int64_t t_ms)
+/* port·slot 의 마지막 값을 덮어쓴다 — slot 은 mk_i2c_kind_quantities() 의
+ * 순서와 같다. 이름이 "push"가 아니라 "store"인 이유: 예전에는 out[] 이라는
+ * 배출 큐에도 같이 밀어 넣었지만(2026-08-19 이전), mk_telem 이 그 큐를
+ * 드레인하는 대신 last[][] 를 tx.period_ms 마다 직접 읽는 구조로 바뀌면서
+ * 큐 자체가 없어졌다 — 지금 이 함수가 하는 일은 정말로 "보관"뿐이다. */
+static void store_last(MkI2c *i, unsigned port, unsigned slot,
+                       const char *quantity, float value, int have_value,
+                       uint16_t status, int64_t t_ms)
 {
-    unsigned connector_id = mk_i2c_connector_of(port);
-
-    if (i->n_out >= MK_I2C_OUT_MAX) {
-        /* 🔴 정상 경로로는 오지 않는다 — FAULT 는 버스를 안 건드려 한
-         *    바퀴에 여럿이 겹칠 수 있다(mk_i2c.h 의 mk_i2c_tick 계약).
-         *    조용히 버리지 않고 센다 — mk_queue.c 의 drops 와 같은 이유:
-         *    세지 않으면 유실이 없었던 것으로 보인다. */
-        i->dropped++;
-    } else {
-        MkI2cOut *o = &i->out[i->n_out++];
-        o->connector_id = connector_id;
-        o->quantity = quantity;
-        o->value = value;
-        o->have_value = have_value;
-        o->status = status;
-        o->t_ms = t_ms;
+    if (slot >= (unsigned)MK_I2C_VALUES_MAX) {
+        return;
     }
-
-    /* 🔴 마지막 값은 out[] 이 가득 차 위에서 버렸어도 반드시 갱신한다 —
-     *    송신은 여기만 보므로, out[] 사정과 무관하게 항상 최신이어야
-     *    한다(사용자 설계 2026-08-19). */
-    if (slot < (unsigned)MK_I2C_VALUES_MAX) {
-        MkI2cOut *last = &i->last[port][slot];
-        last->connector_id = connector_id;
-        last->quantity = quantity;
-        last->value = value;
-        last->have_value = have_value;
-        last->status = status;
-        last->t_ms = t_ms;
-        i->last_valid[port][slot] = 1u;
-    }
+    MkI2cOut *last = &i->last[port][slot];
+    last->connector_id = mk_i2c_connector_of(port);
+    last->quantity = quantity;
+    last->value = value;
+    last->have_value = have_value;
+    last->status = status;
+    last->t_ms = t_ms;
+    i->last_valid[port][slot] = 1u;
 }
 
 /* 🔴 [C1] 실패(1·2)·미지원(3) 을 알릴 때 이 함수를 쓴다. 종류가 내는
@@ -128,7 +111,7 @@ static void push_status(MkI2c *i, unsigned port, uint8_t kind,
     const char *q[MK_I2C_VALUES_MAX];
     int n = mk_i2c_kind_quantities(kind, q);
     for (int k = 0; k < n; k++) {
-        push_out(i, port, (unsigned)k, q[k], 0.0f, 0, status, t_ms);
+        store_last(i, port, (unsigned)k, q[k], 0.0f, 0, status, t_ms);
     }
 }
 
@@ -175,17 +158,6 @@ int mk_i2c_last(const MkI2c *i, unsigned port, unsigned slot, MkI2cOut *out)
     return 1;
 }
 
-int mk_i2c_take(MkI2c *i, MkI2cOut *out)
-{
-    if (i->out_head >= i->n_out) {
-        i->out_head = 0;
-        i->n_out = 0;
-        return 0;
-    }
-    *out = i->out[i->out_head++];
-    return 1;
-}
-
 /* 한 포트를 한 걸음 나아가게 한다. 버스를 건드렸으면 1 을 돌려준다. */
 static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
 {
@@ -201,7 +173,26 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
      *
      *    마지막 값도 비운다 — 꺼진 뒤에도 옛 값을 계속 내보내면 죽은
      *    센서가 살아 있는 것처럼 보인다(사용자 설계 2026-08-19 의 취지와
-     *    반대). state != OFF 로 막아 매 바퀴 다시 비우지 않는다. */
+     *    반대). state != OFF 로 막아 매 바퀴 다시 비우지 않는다.
+     *
+     *    🔴 [비대칭, 의도적] mk_ads1256.c 의 mk_ads_configure() 는 채널을
+     *    꺼도 has_last/last 를 비우지 않는다 — 여기와 다르다. 통일하지
+     *    않았다: 이유가 서로 다르기 때문이다.
+     *      - I2C: mk_telem 이 이 포트를 걸러낼 방법이 last_valid 뿐이다
+     *        (ADS 처럼 "enabled 인가"를 다시 확인하는 문이 없다,
+     *        mk_telem.c 의 i2c 배출 루프 참고). 여기서 안 비우면 disable
+     *        이 mk_telem 관점에서 아무 효과가 없다 — 그래서 반드시 비운다.
+     *      - I2C 는 게다가 종류가 바뀌면 슬롯의 **의미**(quantity)가 함께
+     *        바뀐다(조도 1슬롯 ↔ 온습도 2슬롯). 안 비우면 "lux" 였던 값이
+     *        온습도로 바뀐 뒤에도 slot0 에 남아 host 가 지금 종류와 안 맞는
+     *        quantity 를 정상값처럼 받는다 — ADS 채널은 재설정해도 슬롯의
+     *        의미(그 채널의 전압)가 그대로라 이 문제가 없다.
+     *      - ADS: mk_telem.c 가 배출 전에 mk_ads_channel_enabled() 를 직접
+     *        확인한다 — has_last 를 안 비워도 꺼진 채널은 안 나간다. 게다가
+     *        mk_ads_configure() 는 "바뀐 것이 없으면 손대지 않는다" 는
+     *        가드가 있어(다음 due 시각을 매 바퀴 미루지 않기 위해서) 여기서
+     *        clear 를 끼워 넣으면 그 가드와 얽혀 더 복잡해진다 — 얻는 것
+     *        없이 코드만 늘어난다. */
     if (!enabled || kind == (uint8_t)MK_I2C_KIND_NONE) {
         if (st->state != MK_I2C_OFF) {
             clear_last(i, p);
@@ -235,9 +226,11 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
          *
          *    🔴 버스를 안 건드리므로 0(안 건드림)을 돌려준다 — 한 바퀴
          *    안에서 다른 포트로 순회가 이어진다. 여러 포트가 동시에 이
-         *    길을 타면 한 바퀴에 여럿이 몰릴 수 있다 — mk_i2c.h 의
-         *    MK_I2C_OUT_MAX 가 그 최악(포트 수 × 종류당 양)을 감당한다
-         *    (검토 지적 I1). */
+         *    길을 타면 한 바퀴에 여럿이 몰릴 수 있다 — last[][] 는 포트·
+         *    슬롯마다 고정 자리라 몇이 겹쳐도 서로 안 덮어쓴다(검토 지적
+         *    I1; 2026-08-19 이전에는 배출 큐 MK_I2C_OUT_MAX 가 이 최악을
+         *    감당하는 몫이었다 — 큐를 걷어낸 뒤로는 애초에 넘칠 자리가
+         *    없다). */
         uint32_t retry = retry_period_ms(NULL, period);
         if (st->state != MK_I2C_FAULT || now - st->last_read_ms >= (int64_t)retry) {
             st->state = MK_I2C_FAULT;
@@ -313,7 +306,7 @@ static int step_port(MkI2c *i, MkConfig *cfg, unsigned p, int64_t now)
         }
         for (int k = 0; k < n && k < MK_I2C_VALUES_MAX; k++) {
             /* 🔴 타임스탬프는 읽기가 끝난 지금이다 (설계 원칙 2). */
-            push_out(i, p, (unsigned)k, v[k].quantity, v[k].value, 1, 0u, now);
+            store_last(i, p, (unsigned)k, v[k].quantity, v[k].value, 1, 0u, now);
         }
         return 1;
     }

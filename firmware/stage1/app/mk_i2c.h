@@ -131,20 +131,6 @@ typedef struct {
     int64_t     t_ms;
 } MkI2cOut;
 
-/* 🔴 내보낼 것을 담아 두는 자리 — 2 로는 모자란다 (검토 지적 I1).
- *
- *    READY 에서 실제로 버스를 두드리는 포트는 한 바퀴에 하나뿐이지만,
- *    FAULT(드라이버 없음 · status=3)는 버스를 안 건드려 순회를 안 멈춘다
- *    — 한 바퀴 안에서 **포트 여섯 전부**가 gate 를 동시에 통과할 수
- *    있다(부팅 직후 last_read_ms 가 다 0이라 그렇다). 종류마다 최대
- *    MK_I2C_VALUES_MAX(2, 온습도)줄을 내므로 최악은
- *    MK_I2C_COUNT × MK_I2C_VALUES_MAX 다.
- *
- *    mk_telem.c 의 MK_TELEM_MAX_LINES(16)보다 작아야 배출이 한 바퀴 안에
- *    끝난다는 그쪽 가정이 깨지지 않는다 — 지금 6×2=12 < 16 이라 괜찮지만,
- *    MK_I2C_COUNT 나 MK_I2C_VALUES_MAX 가 늘면 그 가정도 다시 본다. */
-#define MK_I2C_OUT_MAX  (MK_I2C_COUNT * MK_I2C_VALUES_MAX)
-
 typedef struct {
     MkI2cState state;
     uint8_t    kind;             /* 지금 물려 있는 종류 (바뀌면 되돌린다) */
@@ -158,21 +144,14 @@ typedef struct MkI2c {
     MkI2cPort port[MK_I2C_COUNT];
     unsigned  next_port;         /* 라운드로빈 출발점 */
 
-    MkI2cOut  out[MK_I2C_OUT_MAX];
-    int       n_out;
-    int       out_head;
-    /* 🔴 mk_i2c_take() 로 못 비운 사이 push_out 이 자리가 없어 버린 개수
-     *    (mk_queue.c 의 drops 와 같은 관례). 버려도 값이 섞이거나 다음
-     *    레코드가 이전 것에 덮어써지지는 않는다 — 그냥 통째로 사라진다.
-     *    올라간다고 해서 손을 쓰는 코드는 아직 없다(YAGNI) — $STAT 노출은
-     *    이 Task 범위 밖이다. 세지 않으면 유실이 없었던 것으로 보인다. */
-    uint32_t  dropped;
-
     /* 🔴 포트·양(quantity)별 마지막 값 — 수집과 송신을 떼어 놓는 자리다
-     *    (사용자 설계, 2026-08-19). push_out() 이 값을 만들 때마다(성공도
-     *    실패·미지원도) 여기를 덮어쓴다. out[]/mk_i2c_take() 는 그대로
-     *    둔다 — 지우지 않는다(위 주석). mk_telem 은 이제 out[] 을 비우지
-     *    않고 이 자리만 tx.period_ms 마다 읽는다.
+     *    (사용자 설계, 2026-08-19). store_last() 가 값을 만들 때마다(성공도
+     *    실패·미지원도) 여기를 덮어쓴다. mk_telem 은 이 자리만 tx.period_ms
+     *    마다 읽는다 — 배출용 큐는 없다. 한 바퀴 안에서 포트 여럿이 동시에
+     *    값을 내도(FAULT 는 버스를 안 건드려 순회가 안 멈춘다) 포트·슬롯마다
+     *    자리가 고정이라 서로 덮어쓰지 않는다 — 큐가 아니라 표이기 때문에
+     *    "넘친다"는 개념 자체가 없다(예전엔 out[] 이라는 배출 큐가 있어
+     *    여섯 포트가 겹치면 자리가 모자랄 수 있었다 — 2026-08-19 에 걷어냈다).
      *
      *    슬롯 번호는 mk_i2c_kind_quantities() 가 매기는 순서와 같다(온습도
      *    라면 0=temp, 1=humidity). 포트의 kind·addr 이 바뀌거나 꺼지면
@@ -184,25 +163,10 @@ typedef struct MkI2c {
 
 void mk_i2c_init(MkI2c *i, const MkI2cIo *io);
 
-/* 한 바퀴에 포트 **하나**만 나아간다. 매 루프 불러도 된다.
- *
- * 🔴 out 버퍼는 MK_I2C_OUT_MAX 칸이다(위 정의 참고). 정상 경로(READY 에서
- *    값을 읽음)는 한 바퀴에 버스를 건드리는 포트가 하나뿐이고 그 포트가
- *    내는 값도 최대 2개(온습도)라 절대 안 넘친다. 하지만 **지원 안 하는
- *    종류(드라이버 없음)는 버스를 건드리지 않으므로 한 바퀴 안에서
- *    포트 여섯 전부가 동시에 status=3 을 낼 수 있다** — 그래서 이 함수를
- *    부른 직후에는 mk_i2c_take() 로 **반드시 완전히** 비워야 한다. 안
- *    비우고 다음 바퀴를 돌리면 새 레코드가 자리가 없어 조용히 버려지고
- *    dropped 만 올라간다. */
+/* 한 바퀴에 포트 **하나**만 나아간다. 매 루프 불러도 된다. 배출할 것을
+ * 따로 비우지 않아도 된다 — 한 포트가 낸 값은 last[][] 의 제 슬롯에
+ * 바로 쌓이고, 다음 바퀴가 다른 포트를 건드려도 그 슬롯을 건드리지 않는다. */
 void mk_i2c_tick(MkI2c *i, MkConfig *cfg, int64_t now_ms);
-
-/* 내보낼 것이 있으면 1 을 돌려주고 out 을 채운다. 없으면 0.
- *
- * 🔴 mk_i2c_tick() 을 부른 **매 바퀴 뒤** 0 이 나올 때까지 while 로
- *    반복해서 불러야 하는 계약이다. 다 비우지 않은 채 다음 tick 을 부르면
- *    이전 바퀴가 남겨 둔 자리 때문에 이번 바퀴의 레코드가 밀려 버려질 수
- *    있다 — dropped 로 셀 수 있다. */
-int mk_i2c_take(MkI2c *i, MkI2cOut *out);
 
 /* 포트·슬롯의 마지막 값을 읽는다. 1 이면 out 을 채웠다(한 번이라도 값을
  * 받았다 — 성공이든 실패·미지원이든), 0 이면 아직 없다. mk_telem 이

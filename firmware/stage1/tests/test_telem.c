@@ -51,7 +51,7 @@ static void set_u32(const char *key, uint32_t v)
  *    push)는 이제 이 파일의 시험 목적("송신이 무엇을 보는가")과 무관하다.
  *    ADS 는 불투명 구조체가 아니므로(test_ads1256.c 도 이렇게 한다) 시험이
  *    "수집이 방금 끝났다"를 흉내 내려면 이 자리를 직접 채운다 — mk_i2c 의
- *    시험이 MkI2c.out[]/last[][] 를 직접 채우는 것과 같은 방식이다. */
+ *    시험이 MkI2c.last[][] 를 직접 채우는 것과 같은 방식이다. */
 static void set_last(int ch, int64_t t_ms, int32_t raw)
 {
     ADS.ch[ch].last.t_ms = t_ms;
@@ -467,12 +467,12 @@ static void test_failure_repeats_at_the_tx_period_not_the_retry_period(void)
           "i2c 재시도(200ms)와는 별개다");
 }
 
-/* 🔴 [2026-08-19] mk_telem 은 더 이상 out[]/mk_i2c_take() 를 드레인하지
- *    않는다 — last[][] 만 읽는다. 그래서 out[] 을 직접 채우던 예전
- *    시험은 last[][] 를 직접 채우는 방식으로 바꾼다(포트 2(=J12),
- *    슬롯 0·1 — 온습도 자리). mk_i2c.c 의 push_out() 이 실제로 두 자리를
- *    같이 채우는 것은 tests/test_i2c.c 의 몫이고, 여기서는 mk_telem 이
- *    last[][] 를 정확히 읽어 레코드로 만드는지만 본다. */
+/* 🔴 [2026-08-19] mk_telem 은 out[]/mk_i2c_take() 없이 last[][] 만 읽는다
+ *    — 그 배출 큐 자체가 mk_i2c.c 에서 걷어내졌다. 이 시험은 last[][] 를
+ *    직접 채운다(포트 2(=J12), 슬롯 0·1 — 온습도 자리). mk_i2c.c 의
+ *    store_last() 가 실제로 두 자리를 같이 채우는 것은 tests/test_i2c.c 의
+ *    몫이고, 여기서는 mk_telem 이 last[][] 를 정확히 읽어 레코드로
+ *    만드는지만 본다. */
 static void test_reads_i2c_values_straight_from_the_last_value_cache(void)
 {
     setup();
