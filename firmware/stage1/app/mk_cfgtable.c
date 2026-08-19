@@ -33,11 +33,12 @@ static const char *const I2C_KIND_LABELS[] = {
 };
 
 /* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 1(디바운스) + led 3+3×4
- * + i2c 5×6 */
+ * + i2c 5×6 + gnss 2(사용·통신속도) */
 #define ITEM_COUNT   (1 + 3 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
-                      + MK_I2C_COUNT * 5)
+                      + MK_I2C_COUNT * 5 \
+                      + 2)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
 #define GEN_COUNT    (MK_AIN_COUNT * 5 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 5)
@@ -62,6 +63,15 @@ static const uint32_t DRATE_CHOICES[] = {
     2, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1000, 2000, 3750, 7500
 };
 static const uint32_t PGA_CHOICES[] = { 1, 2, 4, 8, 16, 32, 64 };
+
+/* GNSS UART 통신속도. 업계에서 흔히 쓰는 NMEA 보율 상수다 — UM981
+ * 자체의 공장 기본값은 데이터시트를 확보하지 못해 **확인 필요**다(§5).
+ * 115200 을 기본으로 둔 것은 이 보드의 다른 UART(USART3, 호스트 VCP)가
+ * 이미 115200 이상을 쓰고 있어 자릿수가 맞는다는 것뿐이고, 실기기로
+ * 검증되지 않았다. */
+static const uint32_t GNSS_BAUD_CHOICES[] = {
+    4800, 9600, 19200, 38400, 57600, 115200, 230400
+};
 
 /* 만들어 쓰는 키·라벨을 담아 둘 자리. 포인터로 참조되므로 살아 있어야 한다. */
 static char s_keys[GEN_COUNT][MK_CFG_KEY_MAX + 1];
@@ -340,6 +350,32 @@ static size_t add_sol(size_t i)
     return i;
 }
 
+/* GNSS/PPS 시간축(J16, 데이터시트 §5.5, Phase 3). */
+static size_t add_gnss(size_t i)
+{
+    /* 🔴 값·라벨·note·범위가 시뮬레이터(tools/simulator/config_store.py
+     *    의 gnss.* )와 한 글자도 다르면 안 된다 — crosscheck_cfgtable.py
+     *    가 대조한다(sol.debounce_ms 와 같은 관례). */
+    s_items[i] = (MkCfgItem){
+        .key = "gnss.enabled", .group = "gnss", .vtype = MK_VT_BOOL,
+        .label = "GNSS 사용",
+        .note = "J16 에 GNSS 모듈이 꽂혀 있을 때만 켠다 — 없으면 NMEA 가 "
+                "안 와서 시간 등급이 device_clock 에 머문다" };
+    i++;
+    /* 🔴 note 를 길게 두면 이 줄이 mk_cfgwire_list 의 320바이트 버퍼를
+     *    넘어 **조용히 카탈로그에서 빠진다** — I2C 종류 항목에서 실제로
+     *    겪은 문제다(위 mk_cfgwire.c 주석, 2026-08-17). choices 배열까지
+     *    있는 enum 항목이라 여유가 적어 note 를 짧게 둔다. */
+    s_items[i] = (MkCfgItem){
+        .key = "gnss.baud", .group = "gnss", .vtype = MK_VT_ENUM,
+        .choices = GNSS_BAUD_CHOICES, .n_choices = 7, .unit = "bps",
+        .label = "GNSS 통신속도",
+        .note = "UM981 기본값 확인 필요" };
+    s_items[i].def.u = 115200;
+    i++;
+    return i;
+}
+
 /* WS2812 체인 J21~J24. */
 static size_t add_led(size_t i)
 {
@@ -463,6 +499,7 @@ void mk_cfgtable_init(MkConfig *cfg)
     i = add_adc(i);
     i = add_ain(i);
     i = add_sol(i);
+    i = add_gnss(i);
     i = add_led(i);
     i = add_i2c(i);
 
