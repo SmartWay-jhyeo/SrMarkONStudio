@@ -559,3 +559,51 @@ def test_channel_units_come_from_the_settings(form):
 # 🔴 `test_imports_no_qt` 는 여기서 걷어냈다. 파일마다 손으로 복사한
 #    문자열 검사였고, 그러다 보니 정작 `screen.py`·`theme.py` 에는
 #    없었다. 지금은 `test_layer_boundaries.py` 가 층 전체를 AST 로 훑는다.
+
+
+# ---- 호스트 링크 (규격 §4.2) -------------------------------------------------
+
+
+def test_the_link_group_has_a_human_name():
+    """🔴 "링크" 가 아니라 "호스트 링크" 다. 이 보드에는 GNSS·I2C·Jetson 등
+    여러 통신선이 있고, 여기서 바꾸는 것은 지금 이 화면이 쓰는 그 선이다."""
+    from host.gui.settings_form import group_label
+
+    assert group_label("link") == "호스트 링크"
+
+
+def test_link_baud_choices_get_labels_the_board_cannot_supply():
+    """🔴 "실기기에서 확인됐는가" 는 보드가 알 수 있는 사실이 아니다.
+
+    그것은 사람이 쌓은 기록이고, 그 기록은 호스트에 있다. 그래서 카탈로그가
+    이름표를 안 보내도 화면이 붙인다 — 안 붙이면 콤보에 숫자만 여섯 개
+    나열되고, 사용자는 제일 큰 값을 고른다.
+    """
+    from tools.simulator.config_store import default_store
+
+    from host.core.config_schema import parse_catalog
+    from host.gui.settings_form import SettingsForm
+
+    schema = parse_catalog(list(default_store().catalog_lines()))
+    form = SettingsForm(schema)
+    row = form.row("link.baud")
+
+    assert len(row.choice_labels) == len(row.choices)
+    joined = " ".join(row.choice_labels)
+    assert "기본" in joined and "확인됨" in joined
+    assert "미확인" in joined
+
+
+def test_other_enums_keep_the_catalog_labels():
+    """🔴 링크 속도에만 붙인다. 다른 열거까지 손대면 보드가 보낸 이름표를
+    호스트가 덮어쓰는 셈이 된다."""
+    from tools.simulator.config_store import default_store
+
+    from host.core.config_schema import parse_catalog
+    from host.gui.settings_form import SettingsForm
+
+    schema = parse_catalog(list(default_store().catalog_lines()))
+    form = SettingsForm(schema)
+
+    assert form.row("gnss.baud").choice_labels == ()      # 숫자가 곧 뜻이다
+    assert "없음" in form.row("i2c10.kind").choice_labels

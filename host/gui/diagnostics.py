@@ -647,6 +647,76 @@ def _board_group(stat: dict | None) -> Group:
     return Group("board", "보드", (up_r, mode_r, ctl_r))
 
 
+# --------------------------------------------------------------- 호스트 링크
+
+def _link_group(stat: dict | None) -> Group:
+    """규격 §4.2·§7.4 — 이 대화가 오가는 선 자체의 상태.
+
+    🔴 여기서 답해야 하는 것은 셋이다.
+
+       1. 지금 몇으로 말하고 있나
+       2. **지금 저장해도 되나** — `baud` 와 `confirmed` 가 다르면 안 된다
+       3. 그 속도로 돌리려다 되돌아온 적이 있나 — 링크가 그 속도를 못 견딘다는
+          유일한 누적 실측이다
+    """
+    link = _sub(stat, "link")
+    baud = _int(link, "baud")
+    confirmed = _int(link, "confirmed")
+    pending = _int(link, "pending")
+    remaining = _int(link, "remaining_ms")
+    reverted = _int(link, "reverted")
+
+    if baud is None:
+        baud_r = _unknown("link.baud", "링크 속도",
+                          "이 펌웨어는 링크 속도를 답하지 않는다 — "
+                          "부팅 기본값으로 도는 구형 빌드다")
+    else:
+        baud_r = Reading(
+            "link.baud", "링크 속도", f"{baud:,} bps",
+            "지금 전선에 서 있는 속도다. 설정 화면의 `호스트 링크` 에서 "
+            "바꾼다 — 이 항목만 확인 절차를 탄다(규격 §4.2)",
+            Level.IDLE, Verification.VERIFIED)
+
+    # 🔴 대기 중인지가 이 묶음에서 가장 중요한 한 줄이다. 확정 전에는
+    #    $CFG,SAVE 가 거부되는데(§4.2.2 규칙 5), 그 사실을 여기 말고는
+    #    알려 줄 곳이 없다 — 사용자는 "저장이 왜 안 되지" 만 보게 된다.
+    if link is None:
+        pending_r = _unknown("link.pending", "확인 대기")
+    elif pending is None:
+        pending_r = Reading(
+            "link.pending", "확인 대기", "없음",
+            "속도가 확정된 상태다 — 지금 저장하면 다음 부팅에도 남는다",
+            Level.IDLE, Verification.VERIFIED)
+    else:
+        left = "" if remaining is None else f" (남은 시간 {remaining / 1000:.1f}초)"
+        pending_r = Reading(
+            "link.pending", "확인 대기", f"{pending:,} bps{left}",
+            "🔴 아직 확정되지 않았다. 이 동안 저장은 거부되고, 시한이 지나면 "
+            f"보드가 스스로 {confirmed:,} bps 로 돌아간다"
+            if confirmed is not None else
+            "🔴 아직 확정되지 않았다 — 시한이 지나면 보드가 스스로 되돌아간다",
+            Level.WARN, Verification.VERIFIED)
+
+    if reverted is None:
+        rev_r = _unknown("link.reverted", "되돌아간 횟수")
+    elif reverted == 0:
+        rev_r = Reading(
+            "link.reverted", "되돌아간 횟수", _count(0),
+            "속도를 바꿨다가 확인이 안 돼 되돌아간 적이 없다",
+            Level.IDLE, Verification.VERIFIED)
+    else:
+        # 🔴 경고다. 정상 동작에서는 일어나지 않고, 일어났다면 그 속도로는
+        #    이 배선이 안 된다는 **실측**이다(규격 §4.2.5의 미해결 문제가
+        #    이 보드에서 나타나는 방식).
+        rev_r = Reading(
+            "link.reverted", "되돌아간 횟수", _count(reverted),
+            "속도를 올렸다가 확인이 안 돼 되돌아온 적이 있다 — "
+            "그 속도는 이 배선에서 안 된다는 뜻이다",
+            Level.WARN, Verification.VERIFIED)
+
+    return Group("link", "호스트 링크", (baud_r, pending_r, rev_r))
+
+
 # --------------------------------------------------------------- 조립
 
 def build_diagnostics(stat: dict | None, *, error: str = "",
@@ -662,6 +732,7 @@ def build_diagnostics(stat: dict | None, *, error: str = "",
         _gnss_group(stat),
         _queue_group(stat),
         _lcd_group(stat),
+        _link_group(stat),
         _io_group(stat),
         _board_group(stat),
     )

@@ -432,3 +432,61 @@ def test_every_reading_says_something_readable(sim_stat):
     for r in d.readings:
         assert r.label and r.value
         assert "{" not in r.value and "}" not in r.value
+
+
+# ---- 호스트 링크 (규격 §4.2·§7.4) -------------------------------------------
+
+
+def _stat_with_link(**over):
+    link = {"baud": 921600, "confirmed": 921600, "pending": None,
+            "remaining_ms": None, "applied": 0, "confirmed_count": 0,
+            "reverted": 0}
+    link.update(over)
+    return {"type": "stat", "link": link}
+
+
+def test_link_group_reports_the_current_speed():
+    state = build_diagnostics(_stat_with_link())
+    r = state.reading("link.baud")
+    assert r is not None and "921,600" in r.value
+    assert not r.warning
+
+
+def test_a_pending_change_is_a_warning_and_explains_the_deadline():
+    """🔴 확정 전에는 `$CFG,SAVE` 가 거부된다(규격 §4.2.2 규칙 5).
+
+    그 사실을 여기 말고 알려 줄 곳이 없다 — 사용자는 "저장이 왜 안 되지"
+    만 보게 된다.
+    """
+    state = build_diagnostics(_stat_with_link(
+        baud=1500000, pending=1500000, remaining_ms=7200))
+    r = state.reading("link.pending")
+    assert r is not None
+    assert "1,500,000" in r.value
+    assert "7.2" in r.value                       # 남은 시간을 말한다
+    assert r.warning
+    assert "저장" in r.note and "돌아간다" in r.note
+
+
+def test_no_pending_change_says_saving_is_safe():
+    r = build_diagnostics(_stat_with_link()).reading("link.pending")
+    assert r is not None and not r.warning
+    assert "저장" in r.note
+
+
+def test_a_revert_is_a_warning_because_it_is_a_measurement():
+    """🔴 되돌아간 적이 있다 = 그 속도로는 이 배선이 안 된다는 실측이다.
+
+    선행 프로젝트에서 미해결로 남은 대역폭 문제가 이 보드에서 나타나는
+    방식이고(CLAUDE.md §1.2), 그것을 알려 주는 유일한 누적 기록이다.
+    """
+    r = build_diagnostics(_stat_with_link(reverted=2)).reading("link.reverted")
+    assert r is not None and r.warning
+    assert "2" in r.value
+
+
+def test_an_old_firmware_without_a_link_object_is_unknown_not_zero():
+    """🔴 모르는 것은 "모름" 이다 — 0 이나 기본값을 지어내지 않는다."""
+    r = build_diagnostics({"type": "stat"}).reading("link.baud")
+    assert r is not None and not r.known
+    assert r.value == UNKNOWN_TEXT

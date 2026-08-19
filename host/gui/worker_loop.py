@@ -223,6 +223,18 @@ class WorkerLoop:
         🔴 거부와 통신 실패를 구분한다. 보드가 INTERLOCK 으로 거부한 것과
         보드에 닿지 못한 것은 사용자에게 다른 사실이다.
         """
+        # 🔴 링크 속도 변경은 명령 하나가 아니라 **절차**다 (규격 §4.2) —
+        #    설정·포트 재개방·확인·실패 시 복귀까지 최대 십수 초가 걸린다.
+        #    `send()` 로 보낼 수 없으므로 여기서 갈라 서비스에 넘긴다.
+        #
+        #    한 스텝의 전송 예산(dispatch_budget_s)을 통째로 넘긴다. 그것이
+        #    맞다 — 이 절차가 도는 동안 하트비트가 끊기면 보드는 RUN 으로
+        #    떨어지는데, 그것은 사고가 아니라 **원하는 일**이다. 링크가
+        #    끊긴 채 TEST 출력이 살아 있으면 안 되기 때문이다(규격 §6.4).
+        if cmd.verb == "BAUD" and cmd.args[:1] == ("CHANGE",):
+            self._dispatch_baud_change(cmd)
+            return
+
         try:
             ack = self.service.send(cmd.verb, *cmd.args)
         except Exception as exc:                          # noqa: BLE001
@@ -244,4 +256,41 @@ class WorkerLoop:
         self.queue.complete(
             cmd.send_id, ok=True,
             payload=getattr(self.service, "last_payload", None),
+        )
+
+    def _dispatch_baud_change(self, cmd) -> None:
+        """`BAUD,CHANGE,<baud>` — 링크 속도 변경 절차 전체를 서비스에 맡긴다.
+
+        🔴 결과를 **`payload` 로 통째로 넘긴다.** `ok`/`reason` 만 넘기면
+           화면이 "어디까지 갔는가"(`stage`)와 "옛 속도로 돌아왔는가"
+           (`recovered`)를 알 수 없다. 실패했을 때 사람이 알아야 하는 것이
+           바로 그 둘이다 — 기다리면 되는지, 전원을 손봐야 하는지가 거기서
+           갈린다.
+        """
+        change = getattr(self.service, "change_baud", None)
+        if not callable(change):
+            # 링크 속도 변경을 모르는 서비스(구형 스텁·시험용). 조용히
+            # 실패하지 않고 그 사실을 말한다 — 무응답은 죽은 링크와
+            # 구분되지 않는다(규격 §5 의 UNSUPPORTED 와 같은 판단).
+            self.queue.complete(cmd.send_id, ok=False,
+                                error="이 서비스는 링크 속도를 바꿀 수 없다")
+            return
+        try:
+            result = change(int(cmd.args[1]))
+        except Exception as exc:                          # noqa: BLE001
+            self.queue.complete(cmd.send_id, ok=False, error=str(exc))
+            return
+
+        # 🔴 이 절차가 끝난 직후에는 하트비트를 다시 세워야 한다. 보드는
+        #    그동안 RUN 으로 떨어졌을 수 있고, 그 상태에서는 설정 변경이
+        #    전부 ERR,MODE 다 — 사용자가 다음에 무엇을 눌러도 거부된다.
+        self._last_hb = None
+
+        self.queue.complete(
+            cmd.send_id, ok=result.ok,
+            reason=result.reason or None,
+            error=result.error or None,
+            payload={"baud": result.baud, "stage": result.stage,
+                     "recovered": result.recovered, "ok": result.ok,
+                     "reason": result.reason, "error": result.error},
         )

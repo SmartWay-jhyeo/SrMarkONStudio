@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from PyQt6.QtWidgets import (
     QApplication,
@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
 from host.core.limits import DEFAULT_BAUD
 from host.gui.command_queue import CommandQueue
 from host.gui.diagnostics import build_diagnostics
+from host.gui.link_baud import failure_hint, outcome_text
 from host.gui.qt.dashboard import Dashboard
 from host.gui.qt.diagnostics_page import DiagnosticsPage
 from host.gui.qt.parts import TestBand
@@ -60,6 +61,24 @@ WINDOW_TITLE = "MarkON Studio"
 #: 🔴 `진단` 은 맨 뒤다. 평소에 볼 화면이 아니라 **뭔가 이상할 때** 여는
 #:    화면이고, 앞에 두면 대시보드로 가는 길이 한 칸 멀어진다.
 PAGES = ("대시보드", "설정", "스트림", "진단")
+
+
+@dataclass(frozen=True)
+class _BaudOutcome:
+    """워커가 `payload` 로 돌려준 링크 속도 결과를 다시 세운 것 (규격 §4.2).
+
+    🔴 큐를 지나오면서 dataclass 가 dict 가 된다(스레드 경계를 넘는 것은
+       평범한 자료여야 한다). 화면 문구를 만드는 `host.gui.link_baud` 는
+       필드 이름만 보므로, 여기서 같은 이름으로 다시 묶어 준다 —
+       `payload.get(...)` 를 문구 함수 안에 흩뿌리지 않기 위해서다.
+    """
+
+    ok: bool
+    baud: int
+    stage: str
+    reason: str
+    error: str
+    recovered: bool
 
 
 def _checked_views(*views) -> tuple[View, ...]:
@@ -101,6 +120,7 @@ class MainWindow(QMainWindow):
         self._settings.apply_requested.connect(self._on_apply)
         self._settings.save_requested.connect(self._on_save)
         self._settings.reset_requested.connect(self._on_reset)
+        self._settings.baud_change_requested.connect(self._on_baud_change)
         #: 🔴 NDJSON 이 실제로 오고 있는지 보여주는 원문 스트림.
         #:    `StreamState` 는 Qt 를 모른다(host/gui/stream.py) — 여기서는
         #:    보관하고 `_on_step` 에서 먹이기만 한다.
@@ -350,6 +370,9 @@ class MainWindow(QMainWindow):
                     self._top.set_link(
                         f"저장 실패: {res.reason or res.error}", bad=True)
                 continue
+            if tag == "link:baud":
+                self._on_baud_result(res)
+                continue
             if tag == "cfg:reset":
                 if res.ok:
                     # 보드 값이 전부 바뀌었다 — 화면을 다시 읽는다.
@@ -365,6 +388,34 @@ class MainWindow(QMainWindow):
                 self._settings.on_accepted(key)
             else:
                 self._settings.on_rejected(key, res.reason or "거부됨")
+
+    def _on_baud_result(self, res) -> None:
+        """링크 속도 절차의 결말을 화면에 붙인다 (규격 §4.2).
+
+        🔴 **실패했을 때 무슨 일이 있었는지 말한다.** "실패" 세 글자로 끝내면
+           사용자가 알 수 있는 것이 없다 — 기다리면 되는지, 다른 값을 골라야
+           하는지, 보드 전원을 손봐야 하는지가 전부 다른 대응이다.
+        """
+        payload = res.payload if isinstance(res.payload, dict) else {}
+        outcome = _BaudOutcome(
+            ok=bool(payload.get("ok", res.ok)),
+            baud=int(payload.get("baud", self._baud)),
+            stage=str(payload.get("stage", "confirm")),
+            reason=str(payload.get("reason") or res.reason or ""),
+            error=str(payload.get("error") or res.error or ""),
+            recovered=bool(payload.get("recovered", False)),
+        )
+        message, bad = outcome_text(outcome)
+        hint = failure_hint(outcome)
+        if hint:
+            message = f"{message} · {hint}"
+
+        # 🔴 호스트가 실제로 쓰는 속도를 화면 전체에 알린다. 대역폭 여유
+        #    표시(설정 화면의 필드 카드)가 이 값으로 계산되므로, 안 고치면
+        #    바꾼 뒤에도 옛 속도 기준으로 "몇 %" 를 말한다.
+        self._baud = outcome.baud
+        self._settings.on_baud_changed(outcome.baud, message, bad)
+        self._top.set_link(message, bad=bad)
 
     def _render_diagnostics(self, result, now_s: float) -> None:
         """워커가 물어온 `$STAT` 을 진단 화면에 먹인다.
@@ -423,6 +474,17 @@ class MainWindow(QMainWindow):
 
     def _on_reset(self) -> None:
         self._queue.submit("CFG", "RESET", tag="cfg:reset")
+
+    def _on_baud_change(self, baud: int) -> None:
+        """링크 속도 변경 절차를 워커에 맡긴다 (규격 §4.2).
+
+        🔴 **태그를 고정으로 준다.** 절차 하나가 십수 초까지 걸리므로 그동안
+           사용자가 다시 누를 수 있는데, 두 절차가 겹치면 무엇으로 되돌아가야
+           하는지가 흐려진다. 같은 태그면 아직 안 보낸 것이 덮어써진다
+           (command_queue 의 판단 기준: "마지막 것만 반영되면 되는가?" — 링크
+           속도는 그렇다. 중간값을 거쳐 갈 이유가 없다).
+        """
+        self._queue.submit("BAUD", "CHANGE", str(baud), tag="link:baud")
 
     def closeEvent(self, event) -> None:      # noqa: N802
         self._worker.stop()

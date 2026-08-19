@@ -712,3 +712,89 @@ def test_diagnostics_page_says_when_it_knows_nothing(app):
     page.render(build_diagnostics(None))
     row = page._cards["clock"]._rows["clock.src"]
     assert row._value.text() == UNKNOWN_TEXT
+
+
+# ---- 링크 속도 (규격 §4.2) ---------------------------------------------------
+#
+# 🔴 이 항목만 `apply_requested` 를 타지 않는다. 명령 하나가 아니라 절차이고,
+#    사람이 "그래도 하겠다" 고 말해야 나간다.
+
+
+def test_link_baud_is_not_sent_with_the_other_settings(app, form):
+    """🔴 같이 보내면 순서가 깨진다 — 링크가 바뀌는 중에 뒤따라 나가는
+    `$CFG,SET` 은 옛 속도로 허공에 나간다."""
+    page = SettingsPage()
+    page.set_form(form)
+    page._confirm = lambda _text: True
+
+    applied: list = []
+    bauds: list = []
+    page.apply_requested.connect(applied.append)
+    page.baud_change_requested.connect(bauds.append)
+
+    page._rows["tx.period_ms"]._editor.setText("250")
+    page.set_value("link.baud", "1500000")
+    page._apply.click()
+
+    assert bauds == [1500000]
+    assert applied and dict(applied[0]) == {"tx.period_ms": "250"}
+    assert "link.baud" not in dict(applied[0])
+
+
+def test_link_baud_asks_before_breaking_the_link(app, form):
+    """🔴 확인 대화상자가 이 항목의 안전장치 절반이다.
+
+    나머지 절반은 보드의 10초 되돌림이고, 그것은 이미 끊긴 뒤에 작동한다.
+    """
+    page = SettingsPage()
+    page.set_form(form)
+    asked: list[str] = []
+    page._confirm = lambda text: (asked.append(text), False)[1]
+
+    bauds: list = []
+    page.baud_change_requested.connect(bauds.append)
+    page.set_value("link.baud", "2000000")
+    page._apply.click()
+
+    assert asked, "묻지 않고 보냈다"
+    assert "2,000,000" in asked[0]
+    assert "확인된 적이 없다" in asked[0]
+    assert bauds == [], "거절했는데 보냈다"
+
+
+def test_declining_puts_the_old_value_back(app, form):
+    """🔴 안 하기로 한 값이 화면에 남으면, 다음 `적용` 에 묻지도 않고
+    딸려 나간다 — 사용자는 이미 바뀐 줄 안다."""
+    page = SettingsPage()
+    page.set_form(form)
+    page._confirm = lambda _text: False
+
+    page.set_value("link.baud", "2000000")
+    page._apply.click()
+
+    assert form.row("link.baud").value == "921600"
+    assert not form.is_dirty("link.baud")
+
+
+def test_a_failed_change_puts_the_real_speed_back_and_says_why(app, form):
+    """🔴 실패했는데 화면에 새 값이 남아 있으면 사용자는 바뀐 줄 알고
+    다음 `적용` 을 누른다 — 그리고 그것은 아무 일도 안 한다."""
+    page = SettingsPage()
+    page.set_form(form)
+    page.set_value("link.baud", "2000000")
+
+    page.on_baud_changed(921600, "새 속도로는 보드와 말이 되지 않았다", True)
+
+    assert form.row("link.baud").value == "921600"
+    assert "말이 되지 않았다" in page._status.text()
+    assert not page.has_unsaved, "실패했으면 저장할 것도 없다"
+
+
+def test_a_successful_change_marks_the_settings_unsaved(app, form):
+    """🔴 확정과 저장은 다른 일이다 (규격 §4.2.2 규칙 3)."""
+    page = SettingsPage()
+    page.set_form(form)
+    page.on_baud_changed(1500000, "링크 속도 1,500,000 bps 로 확정됐다", False)
+
+    assert form.row("link.baud").value == "1500000"
+    assert page.has_unsaved

@@ -24,7 +24,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from host.core.limits import DEFAULT_BAUD
+from host.core.limits import DEFAULT_BAUD, LINK_BAUD_KEY
+from host.gui.link_baud import confirm_text, is_link_baud
 from host.gui.qt.cell import Cell
 from host.gui.qt.cells import RangeFields, RowWidget
 from host.gui.qt.field_mask import FieldMaskCard
@@ -58,6 +59,14 @@ class SettingsPage(QWidget):
     save_requested = pyqtSignal()
     #: $CFG,RESET — 전부 기본값으로
     reset_requested = pyqtSignal()
+    #: 🔴 링크 속도만 따로 나간다 (규격 §4.2).
+    #:
+    #:    `$CFG,SET` 하나로 끝나는 일이 아니다 — 보내고, 포트를 새 속도로
+    #:    다시 열고, 확인을 보내고, 안 되면 옛 속도로 돌아와야 한다. 그
+    #:    절차를 `apply_requested` 에 섞으면 **다른 설정 몇 개와 함께 큐에
+    #:    들어가** 순서가 뒤엉킨다 — 링크가 바뀌는 중에 뒤따라 나가는
+    #:    `$CFG,SET` 은 전부 허공으로 간다.
+    baud_change_requested = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None, *,
                  baud: int = DEFAULT_BAUD) -> None:
@@ -407,9 +416,65 @@ class SettingsPage(QWidget):
             self._status.setStyleSheet("")
 
     def _on_apply(self) -> None:
+        """🔴 링크 속도는 나머지와 **갈라서** 보낸다 (규격 §4.2).
+
+        같이 보내면 두 가지가 깨진다. 하나는 순서 — 링크가 바뀌는 중에
+        뒤따라 나가는 `$CFG,SET` 은 옛 속도로 허공에 나간다. 다른 하나는
+        확인 — 이것만은 사람이 "그래도 하겠다" 고 말해야 나가야 한다.
+        """
         if self._form is None:
             return
-        self.apply_requested.emit(self._form.pending_changes())
+        pending = self._form.pending_changes()
+        rest = [(k, v) for k, v in pending if not is_link_baud(k)]
+        baud = next((v for k, v in pending if is_link_baud(k)), None)
+
+        if rest:
+            self.apply_requested.emit(rest)
+
+        if baud is None:
+            return
+        # 🔴 "지금 속도" 는 폼이 아니라 **호스트가 실제로 포트를 연 속도**다.
+        #    카탈로그의 값은 보드가 마지막으로 말해 준 것이라, 되돌림이
+        #    막 일어난 뒤에는 한 박자 낡았을 수 있다.
+        try:
+            old = int(self._baud)
+            new = int(baud)
+        except (TypeError, ValueError):
+            return
+        if not self._confirm(confirm_text(old, new)):
+            # 되돌린다 — 안 하기로 한 값이 화면에 남아 다음 `적용` 에
+            # 딸려 나가면, 사용자는 두 번째에는 묻지도 않고 바뀐 줄 안다.
+            self._form.revert(LINK_BAUD_KEY)
+            self.set_value(LINK_BAUD_KEY, str(old))
+            return
+        self.baud_change_requested.emit(new)
+
+    def on_baud_changed(self, baud: int, message: str, bad: bool) -> None:
+        """링크 속도 절차가 끝났다. 화면을 사실에 맞춘다.
+
+        🔴 성공이든 실패든 **지금 실제로 쓰는 속도**로 되돌려 놓는다.
+           실패했는데 화면에 새 값이 남아 있으면, 사용자는 바뀐 줄 알고
+           다음 `적용` 을 누른다 — 그리고 그것은 아무 일도 안 한다.
+        """
+        self._baud = baud
+        if self._form is not None and LINK_BAUD_KEY in self._rows:
+            self._form.revert(LINK_BAUD_KEY)
+            self._form.accept(LINK_BAUD_KEY)
+            self.set_value(LINK_BAUD_KEY, str(baud))
+            self._rows[LINK_BAUD_KEY].mark_dirty(False)
+            if bad:
+                self._rows[LINK_BAUD_KEY].show_error(message)
+            else:
+                self._rows[LINK_BAUD_KEY].clear_error()
+                # 확정됐어도 Flash 에는 아직 없다 — 저장해야 남는다.
+                self._unsaved = True
+        # 🔴 상태 문구는 `_refresh_buttons()` **뒤에** 쓴다. 저쪽이 자기
+        #    문구("바뀐 것이 없다" 등)로 덮어쓰기 때문이다 — 순서를 뒤집으면
+        #    링크가 끊겼다 돌아온 사실이 화면에서 통째로 사라진다.
+        self._refresh_buttons()
+        self._status.setText(message)
+        self._status.setStyleSheet(
+            f"color: {Color.FAULT};" if bad else f"color: {Color.WARN};")
 
     def _on_revert(self) -> None:
         if self._form is None:

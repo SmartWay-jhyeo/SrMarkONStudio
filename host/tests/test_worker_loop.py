@@ -384,3 +384,91 @@ def test_a_service_without_fetch_stat_does_not_break_the_loop():
     r = WorkerLoop(FakeService(), CommandQueue()).step(0.0)
     assert r.stat is None
     assert r.stat_error is None
+
+
+# ---- 링크 속도 변경 (규격 §4.2) ---------------------------------------------
+#
+# 🔴 이것만 `send()` 를 타지 않는다. 명령 하나가 아니라 **절차**이고(설정 →
+#    포트 재개방 → 확인 → 실패 시 복귀), 십수 초가 걸릴 수 있다.
+
+
+class FakeBaudService(FakeService):
+    def __init__(self, result):
+        super().__init__()
+        self.result = result
+        self.changes = []
+
+    def change_baud(self, baud):
+        self.changes.append(baud)
+        return self.result
+
+
+class FakeBaudResult:
+    def __init__(self, ok, baud, stage, reason="", error="", recovered=False):
+        self.ok, self.baud, self.stage = ok, baud, stage
+        self.reason, self.error, self.recovered = reason, error, recovered
+
+
+def test_baud_change_goes_to_the_service_not_to_send():
+    svc = FakeBaudService(FakeBaudResult(True, 1500000, "confirmed",
+                                         recovered=True))
+    q = CommandQueue()
+    loop = WorkerLoop(svc, q)
+    q.submit("BAUD", "CHANGE", "1500000", tag="link:baud")
+
+    out = loop.step(0.0)
+
+    assert svc.changes == [1500000]
+    assert svc.sent == [], "$BAUD,CHANGE 라는 명령을 전선에 내보내면 안 된다"
+    assert len(out.results) == 1
+    assert out.results[0].ok
+
+
+def test_the_result_carries_enough_to_explain_a_failure():
+    """🔴 `ok`/`reason` 만 넘기면 화면이 "어디까지 갔나" 와 "돌아왔나" 를
+    말할 수 없다. 실패했을 때 사람이 알아야 하는 것이 바로 그 둘이다 —
+    기다리면 되는지, 전원을 손봐야 하는지가 거기서 갈린다."""
+    svc = FakeBaudService(FakeBaudResult(
+        False, 921600, "confirm", error="응답 없음", recovered=True))
+    q = CommandQueue()
+    loop = WorkerLoop(svc, q)
+    q.submit("BAUD", "CHANGE", "2000000", tag="link:baud")
+
+    res = loop.step(0.0).results[0]
+
+    assert not res.ok
+    assert res.payload["stage"] == "confirm"
+    assert res.payload["baud"] == 921600
+    assert res.payload["recovered"] is True
+
+
+def test_the_heartbeat_is_restarted_right_after_the_procedure():
+    """🔴 절차가 도는 동안 보드는 RUN 으로 떨어졌을 수 있다(규격 §6.2).
+
+    그 상태에서는 설정 변경이 전부 ERR,MODE 다 — 사용자가 다음에 무엇을
+    눌러도 거부된다. 다음 스텝에서 곧바로 하트비트를 보내 되찾는다.
+    """
+    svc = FakeBaudService(FakeBaudResult(True, 1500000, "confirmed",
+                                         recovered=True))
+    q = CommandQueue()
+    loop = WorkerLoop(svc, q)
+
+    loop.step(0.0)                       # 하트비트 한 번
+    assert svc.heartbeats == 1
+    q.submit("BAUD", "CHANGE", "1500000", tag="link:baud")
+    loop.step(0.1)                       # 주기가 안 됐으니 평소라면 안 보낸다
+    hb_after_change = svc.heartbeats
+
+    loop.step(0.2)
+    assert svc.heartbeats == hb_after_change + 1, (
+        "절차 직후에는 주기를 기다리지 않고 하트비트를 다시 세운다")
+
+
+def test_a_service_that_cannot_change_baud_says_so():
+    """🔴 조용히 실패하지 않는다 — 무응답은 죽은 링크와 구분되지 않는다."""
+    q = CommandQueue()
+    loop = WorkerLoop(FakeService(), q)
+    q.submit("BAUD", "CHANGE", "1500000", tag="link:baud")
+
+    res = loop.step(0.0).results[0]
+    assert not res.ok and "바꿀 수 없다" in res.error

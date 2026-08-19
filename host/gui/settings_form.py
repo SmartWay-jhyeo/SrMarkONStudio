@@ -32,6 +32,8 @@ from enum import Enum
 from host.core.config_schema import ConfigItem, ConfigSchema
 from host.core.errors import ConfigError
 from host.core.limits import MAX_ARG_BYTES
+from host.gui.link_baud import choice_label as baud_choice_label
+from host.gui.link_baud import is_link_baud
 
 
 class Widget(Enum):
@@ -258,6 +260,12 @@ GROUP_LABELS = {
     "sol": "디지털 입력",
     "led": "LED",
     "i2c": "I2C 센서",
+    "gnss": "GNSS",
+    "lcd": "화면",
+    # 🔴 "링크" 가 아니라 "호스트 링크" 다. 이 보드에는 GNSS·I2C·Jetson 등
+    #    여러 통신선이 있고, 여기서 바꾸는 것은 **지금 이 화면이 쓰고 있는**
+    #    그 선 하나다(규격 §4.2).
+    "link": "호스트 링크",
 }
 
 
@@ -509,6 +517,16 @@ def build_row(item: ConfigItem) -> Row:
         #    이라고만 쓰면 사용자는 이유를 알 수 없다.
         reason = item.note or "이 항목은 보드에서 변경할 수 없다"
 
+    choice_labels = tuple(item.choice_labels)
+    # 🔴 링크 속도의 선택지에는 꼬리표를 붙인다 (규격 §4.2.5).
+    #
+    #    보드가 붙여 보낼 수도 있었지만 안 한다 — 카탈로그 한 줄의 상한
+    #    (384바이트)에 여섯 개의 한글 꼬리표가 들어가지 않고, 무엇보다
+    #    "실기기에서 확인됐는가" 는 보드가 알 수 있는 사실이 아니다.
+    #    그것은 사람이 쌓은 기록이고, 그 기록은 호스트에 있다.
+    if is_link_baud(item.key) and not choice_labels:
+        choice_labels = tuple(baud_choice_label(c) for c in item.choices)
+
     return Row(
         key=item.key,
         label=item.label or item.key,
@@ -519,7 +537,7 @@ def build_row(item: ConfigItem) -> Row:
         minimum=item.minimum,
         maximum=item.maximum,
         choices=tuple(item.choices),
-        choice_labels=tuple(item.choice_labels),
+        choice_labels=choice_labels,
         editable=editable,
         reason=reason,
         # 🔴 편집 가능해도 사유를 버리지 않는다. Row.note 의 설명 참조.
