@@ -27,7 +27,9 @@ from PyQt6.QtWidgets import (
 
 from host.core.limits import DEFAULT_BAUD
 from host.gui.command_queue import CommandQueue
+from host.gui.diagnostics import build_diagnostics
 from host.gui.qt.dashboard import Dashboard
+from host.gui.qt.diagnostics_page import DiagnosticsPage
 from host.gui.qt.parts import TestBand
 from host.gui.qt.settings_page import SettingsPage
 from host.gui.qt.stream_view import StreamView
@@ -55,7 +57,9 @@ from host.gui.stream import StreamState
 from host.gui.qt.style import stylesheet
 
 WINDOW_TITLE = "MarkON Studio"
-PAGES = ("대시보드", "설정", "스트림")
+#: 🔴 `진단` 은 맨 뒤다. 평소에 볼 화면이 아니라 **뭔가 이상할 때** 여는
+#:    화면이고, 앞에 두면 대시보드로 가는 길이 한 칸 멀어진다.
+PAGES = ("대시보드", "설정", "스트림", "진단")
 
 
 def _checked_views(*views) -> tuple[View, ...]:
@@ -103,10 +107,22 @@ class MainWindow(QMainWindow):
         self._stream_state = StreamState()
         self._stream_view = StreamView()
 
+        #: 🔴 `$STAT` 진단. 보드가 말하는 것 중 텔레메트리에 안 실리는 것들이
+        #:    여기로 온다 — 클럭 출처·PPS 원시 캡처·큐 유실·화면 회복 계수기.
+        #:    이게 없어서 "PPS 가 안 온다" 를 GDB 로 파고들었다(diagnostics.py).
+        self._diagnostics = DiagnosticsPage()
+        #: 마지막으로 읽은 `$STAT` 과 그 시각. 🔴 둘을 함께 들고 있어야
+        #:    "언제 읽은 값인가" 를 화면이 말할 수 있다. 값만 남기면 링크가
+        #:    끊긴 뒤에도 낡은 값이 지금 값처럼 보인다.
+        self._stat: dict | None = None
+        self._stat_at: float | None = None
+        self._stat_error = ""
+
         self._pages = QStackedWidget()
         self._pages.addWidget(self._dashboard)
         self._pages.addWidget(self._settings)
         self._pages.addWidget(self._stream_view)
+        self._pages.addWidget(self._diagnostics)
         self._top.page_selected.connect(self._pages.setCurrentIndex)
 
         # 🔴 세 구역으로 나눈다: 정체성 바(위) · 레일(왼쪽) · 캔버스.
@@ -219,8 +235,13 @@ class MainWindow(QMainWindow):
         """
         try:
             stat = self._service.fetch_stat()
-        except Exception:                    # noqa: BLE001
+        except Exception as exc:             # noqa: BLE001
+            self._stat_error = str(exc)
             return
+        # 🔴 진단 화면도 이 응답으로 첫 화면을 세운다. 워커가 곧 다시 묻지만
+        #    (worker_loop._fetch_stat), 그 전까지 "전부 모름" 을 보여줄 이유가
+        #    없다 — 방금 읽은 답을 이미 손에 들고 있다.
+        self._stat, self._stat_at, self._stat_error = stat, time.monotonic(), ""
         din = stat.get("din")
         if not isinstance(din, list) or not din:
             return
@@ -312,6 +333,13 @@ class MainWindow(QMainWindow):
         self._stream_state.ingest(result.raw_lines, now_s=now_s)
         self._stream_view.render(self._stream_state, now_s=now_s)
 
+        # 🔴 진단 화면도 `_views` 밖이다 — 스트림과 같은 이유로 "지금이
+        #    언제인가" 를 알아야 한다. `$STAT` 은 1.5 초에 한 번만 오므로
+        #    (worker_loop.STAT_INTERVAL_S), 매 스텝 다시 그리는 목적은 값이
+        #    아니라 **나이**다. 링크가 끊기면 값은 그대로인데 나이만 늘고,
+        #    그 사실이 곧 사람이 알아야 할 것이다.
+        self._render_diagnostics(result, now_s)
+
         for res in result.results:
             tag = res.tag or ""
             if tag == "cfg:save":
@@ -337,6 +365,26 @@ class MainWindow(QMainWindow):
                 self._settings.on_accepted(key)
             else:
                 self._settings.on_rejected(key, res.reason or "거부됨")
+
+    def _render_diagnostics(self, result, now_s: float) -> None:
+        """워커가 물어온 `$STAT` 을 진단 화면에 먹인다.
+
+        🔴 **판정은 여기 없다.** `build_diagnostics()` 가 Qt 없이 전부 하고
+           (경고 여부·번역·"모름"), 이 함수는 무엇을 언제 읽었는지만 챙긴다.
+
+        🔴 실패했다고 마지막 값을 지우지 않는다. 지우면 링크가 한 번 끊길
+           때마다 화면이 통째로 비고, "끊기기 직전에 이랬다" 가 사라진다 —
+           채널 트레이스를 남기는 것과 같은 판단(screen.build_channels).
+           대신 나이를 함께 보여 주어 지금 값이 아님을 말한다.
+        """
+        if result.stat is not None:
+            self._stat, self._stat_at, self._stat_error = result.stat, now_s, ""
+        elif result.stat_error:
+            self._stat_error = result.stat_error
+
+        age = None if self._stat_at is None else now_s - self._stat_at
+        self._diagnostics.render(build_diagnostics(
+            self._stat, error=self._stat_error, age_s=age))
 
     def _on_ctl_mode(self, mode: str) -> None:
         """제어 모드 전환을 보드에 요청한다 (규격 §6.4).

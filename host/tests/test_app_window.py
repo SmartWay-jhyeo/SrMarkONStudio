@@ -42,7 +42,12 @@ def window(app):
 
 def test_window_opens_without_a_board(window):
     assert window.windowTitle().startswith("MarkON Studio")
-    assert window._pages.count() == 3          # 대시보드 · 설정 · 스트림
+    # 🔴 탭 이름표와 실제 페이지 수가 어긋나면 상단에서 고른 탭이 엉뚱한
+    #    화면을 연다. 숫자를 손으로 적지 않고 `PAGES` 와 대조한다 — 화면이
+    #    늘 때마다 이 시험을 고치게 하면 그 대조가 사라진다.
+    from host.gui.app import PAGES
+
+    assert window._pages.count() == len(PAGES)
 
 
 def test_every_view_keeps_the_contract(window):

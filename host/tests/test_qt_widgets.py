@@ -651,3 +651,64 @@ def test_dashboard_renders_din_state(app):
 def test_stylesheet_applies(app):
     assert "background" in stylesheet()
     assert app.styleSheet()
+
+
+# ------------------------------------------------------------ 진단 화면
+
+def _diag_stat(**over):
+    base = {
+        "type": "stat", "mode": "CONFIG", "ctl_mode": "ACTIVE",
+        "time_source": "device_clock", "time_quality": 0, "uptime_ms": 1000,
+        "clock": {"src": "hsi", "sysclk_hz": 64_000_000},
+        "gnss": {"pps_age_ms": None, "pps_raw_age_ms": None,
+                 "pps_raw_count": 0, "pps_unpaired_reason": None,
+                 "sats": None, "init_sent": False, "init_exhausted": False,
+                 "sentence_seen": False},
+        "rails": {"v24": False, "v14v9": False, "v5": True},
+        "din": [{"connector_id": c, "state": 0} for c in (18, 19, 20)],
+        "queues": [{"ch": 0, "depth": 0, "peak": 0, "drops": 0}],
+        "lcd": {"epoch": 0, "reinit": 0, "redraw": 0, "verify_ok": 0,
+                "verify_fail": 0, "rejected": 0, "readback": None},
+    }
+    base.update(over)
+    return base
+
+
+def test_diagnostics_page_draws_every_reading(app):
+    """🔴 판정은 `host/gui/diagnostics.py` 가 Qt 없이 한다. 여기서 보는 것은
+    **배선** 이다 — 모든 항목이 실제로 위젯 한 줄씩을 얻는가."""
+    from host.gui.diagnostics import build_diagnostics
+    from host.gui.qt.diagnostics_page import DiagnosticsPage
+
+    state = build_diagnostics(_diag_stat(), age_s=0.1)
+    page = DiagnosticsPage()
+    page.render(state)
+
+    drawn = {k for card in page._cards.values() for k in card._rows}
+    assert drawn == {r.key for r in state.readings}
+    assert page._headline.text() == state.headline
+
+
+def test_diagnostics_page_survives_a_changing_queue_list(app):
+    """채널을 켜고 끄면 큐 항목 수가 바뀐다 — 그때 줄을 다시 세운다."""
+    from host.gui.diagnostics import build_diagnostics
+    from host.gui.qt.diagnostics_page import DiagnosticsPage
+
+    page = DiagnosticsPage()
+    page.render(build_diagnostics(_diag_stat()))
+    page.render(build_diagnostics(_diag_stat(queues=[
+        {"ch": 0, "depth": 0, "peak": 0, "drops": 0},
+        {"ch": 3, "depth": 1, "peak": 2, "drops": 0},
+    ])))
+    assert "queue.3" in page._cards["queues"]._rows
+
+
+def test_diagnostics_page_says_when_it_knows_nothing(app):
+    """보드가 없으면 항목 자리는 남기되 전부 "모름" 이다."""
+    from host.gui.diagnostics import UNKNOWN_TEXT, build_diagnostics
+    from host.gui.qt.diagnostics_page import DiagnosticsPage
+
+    page = DiagnosticsPage()
+    page.render(build_diagnostics(None))
+    row = page._cards["clock"]._rows["clock.src"]
+    assert row._value.text() == UNKNOWN_TEXT
