@@ -91,19 +91,45 @@ class SerialTransport:
         # 연 뒤에도 한 번 더 내린다 — 드라이버에 따라 열면서 되살아난다.
         self._ser.dtr = False
         self._ser.rts = False
-        self._buf = ""
+        self._buf = b""
 
     def write(self, data: str) -> None:
         self._ser.write(data.encode("utf-8"))
 
     def read_lines(self) -> Iterator[str]:
+        # 🔴 바이트로 모았다가 줄 단위로만 디코딩한다 [실증 2026-08-19].
+        #
+        # 예전에는 `self._ser.read()` 가 돌려준 조각마다 바로
+        # `decode("utf-8", errors="replace")` 했다. 한글은 UTF-8 로
+        # 3바이트인데 그 3바이트가 두 번의 `read()` 에 걸쳐 나뉘면(포트
+        # 버퍼·드라이버가 아무 바이트 수에서나 끊어 줄 수 있다) 각 조각이
+        # 그 자체로는 불완전한 바이트열이 되고, `errors="replace"` 가
+        # 그것을 되돌릴 수 없는 `�` 로 바꿔 버린다. 실제로 "시간 품질"이
+        # "???간 품질"로 깨져 GUI 에 떴다 — 초당 줄 수가 늘수록(100줄/초)
+        # 조각 경계가 잦아져 더 자주 터진다.
+        #
+        # `\n`(0x0A)은 UTF-8 연속 바이트(0x80~0xBF 범위)와 값이 겹치지
+        # 않으므로 항상 문자 경계이자 줄 경계다. 그래서 바이트 버퍼에
+        # 계속 이어 붙이다가 `\n` 으로 자른 **완성된 줄**만 디코딩하면,
+        # 조각이 어디서 끊기든 멀티바이트 문자는 항상 온전한 상태로
+        # 디코딩된다.
         chunk = self._ser.read(self._ser.in_waiting or 1)
         if chunk:
-            self._buf += chunk.decode("utf-8", errors="replace")
-        while "\n" in self._buf:
-            line, self._buf = self._buf.split("\n", 1)
+            self._buf += chunk
+        while b"\n" in self._buf:
+            line, self._buf = self._buf.split(b"\n", 1)
             if line.strip():
-                yield line.strip()
+                # errors="replace" 는 여기서도 남긴다 — 다만 이제는 조각
+                # 경계가 아니라 **물리 손상**(HANDOFF.md 가 실측한 링크
+                # 유실·손상)만 걸린다. 줄을 통째로 버리면
+                # `_record_raw()`(아래)의 불변조건("파싱 성패와 무관하게
+                # 모든 수신 줄을 남긴다")이 깨지고 손상 자체가 원문 패널
+                # 에서 사라진다. 대체문자로 채우면 줄은 보이고, JSON 파싱이
+                # 깨지는 대부분의 경우 `corrupt_total` 로도 잡힌다(완전한
+                # 보장은 아니다 — 대체문자가 우연히 유효한 JSON 문자열
+                # 안에 들어가면 못 잡는다. 프로토콜에 CRC 가 없는 지금
+                # 구조에서는 "지운다"보다 "보이게 남긴다"가 낫다는 판단).
+                yield line.decode("utf-8", errors="replace").strip()
 
     def close(self) -> None:
         self._ser.close()
