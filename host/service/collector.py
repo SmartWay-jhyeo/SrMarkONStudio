@@ -307,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def _handle_signal(signum, _frame) -> None:
-        log.info("종료 신호(%s) 받음 — 쓰던 것을 마무리한다", signum)
+        log.info("종료 신호(%s) 받음: 쓰던 것을 마무리한다", signum)
         collector.stop()
 
     signal.signal(signal.SIGINT, _handle_signal)
