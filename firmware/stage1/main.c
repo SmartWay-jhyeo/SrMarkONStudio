@@ -45,6 +45,7 @@
 #include "mk_config.h"
 #include "mk_flash.h"
 #include "mk_hostlink.h"
+#include "app/mk_linkbaud.h"
 #include "mk_uart.h"
 
 #include <stddef.h>
@@ -66,8 +67,37 @@
  *
  * 🔴 이 오차는 클럭에 매여 있다. 클럭을 바꾸면 BRR 이 다른 정수로 떨어져
  *    오차가 달라지므로, host/tests/test_firmware_clock.py 가 커널 클럭과
- *    이 상수로 오차를 다시 계산해 2 % 안인지 본다. */
+ *    이 상수로 오차를 다시 계산해 2 % 안인지 본다.
+ *
+ * 🔴 [개정, 2026-08-20] 이제 이것은 **부팅 기본값**이다. 실제 속도는 설정
+ *    항목 `link.baud` 로 바꿀 수 있고(규격 §4.2), 확정된 값만 Flash 에
+ *    남는다. 921600 을 기본으로 그대로 둔 이유는 §4.2.5 에 있다 — 이 값만
+ *    실기기에서 확인됐고, 더 높은 속도는 F103(BMP) 브리지가 견디는지
+ *    아무도 모른다. */
 #define UART_BAUD    921600u
+
+/* 🔴 카탈로그의 기본값과 부팅 기본값이 갈리면, 저장이 없는 보드가
+ *    카탈로그와 다른 속도로 말한다. 컴파일 때 못박는다. */
+_Static_assert(UART_BAUD == MK_LINKBAUD_DEFAULT,
+               "main.c 의 UART_BAUD 와 mk_linkbaud.h 의 기본값이 갈렸다");
+
+/* 🔴 고를 수 있는 속도가 **이 클럭에서 실제로 나오는지** 컴파일 때 본다.
+ *
+ *    카탈로그(app/mk_cfgtable.c)와 이 검사가 같은 목록
+ *    (MK_LINKBAUD_CHOICE_LIST)을 펼쳐 쓴다. 못 내는 값이 목록에 있으면
+ *    사용자가 그것을 고르는 순간에만 드러나고, 그 순간은 이미 링크가
+ *    끊긴 뒤다 — 여기서 막지 않으면 막을 곳이 없다.
+ *
+ *    실행 시간에도 mk_linkbaud_request() 가 같은 계산을 한 번 더 한다.
+ *    이쪽은 클럭을 바꿨을 때 **빌드가 깨지게** 하는 것이 목적이다. */
+#define MK_LB_CHECK(v)                                                       \
+    _Static_assert(MK_LINKBAUD_BRR(MK_USART3_KERNEL_HZ, v) >= 16u,           \
+                   #v ": BRR < 16 — 오버샘플 16 으로 낼 수 없는 속도다");    \
+    _Static_assert(MK_LINKBAUD_ERR_PPM(MK_USART3_KERNEL_HZ, v)               \
+                       <= MK_LINKBAUD_MAX_ERR_PPM,                           \
+                   #v ": 보율 오차가 2 % 를 넘는다 — 목록에서 빼야 한다");
+MK_LINKBAUD_CHOICE_LIST(MK_LB_CHECK)
+#undef MK_LB_CHECK
 
 /* 🔴 상태 LED(PD11)와 전원 레일(PD8·PD9·PD10)은 같은 포트에 있다.
  *    그래서 GPIOD 를 만지는 파일을 bsp/mk_rails.c 하나로 묶었다 —
@@ -92,7 +122,26 @@ static MkGnssCtl s_gnssctl;
 static MkTimeAx  s_timeax;
 static MkLcd     s_lcd;
 static MkScreen  s_screen;
+static MkLinkBaud s_linkbaud;
 static int      s_led_on;
+
+/* 링크 속도를 실제로 바꾼다 (규격 §4.2). mk_linkbaud 가 부른다.
+ *
+ * 🔴 이 콜백이 불리는 시점이 이 기능의 전부다 — 응답($SACK,CFG,OK)이
+ *    **옛 속도로 다 나간 뒤**여야 한다. 그 순서는 두 겹으로 지켜진다:
+ *
+ *      1) mk_hostlink_feed() 는 절대 apply 하지 않는다. 슈퍼루프가 그
+ *         뒤에 부르는 mk_linkbaud_tick() 안에서만 일어난다.
+ *      2) mk_uart_set_baud() 가 재설정 전에 TC(전송 완료)를 기다린다.
+ *
+ *    한 겹만으로는 부족하다. (1)만 있으면 emit 이 비동기(DMA)로 바뀌는
+ *    순간 조용히 깨지고, (2)만 있으면 이 함수를 feed 안에서 부르는
+ *    구조로 되돌아갔을 때 막을 것이 없다. */
+static void apply_link_baud(void *ctx, uint32_t baud)
+{
+    (void)ctx;
+    mk_uart_set_baud(baud);
+}
 
 /* 채널별 표본 저장소.
  *
@@ -331,7 +380,6 @@ int main(void)
     mk_queue_set_critical_section(mk_critsec_enter, mk_critsec_exit);
 
     mk_rails_init();
-    mk_uart_init(UART_BAUD);
 
     /* 🔴 설정을 먼저 세운 뒤 저장본을 덮어씌운다. 저장이 없거나 깨졌으면
      *    기본값 그대로 간다 — 기본값은 전원 레일이 전부 꺼진 상태다.
@@ -345,6 +393,26 @@ int main(void)
     }
     mk_cfg_mark_saved(&s_cfg);   /* 방금 읽은 것과 같으니 저장할 것이 없다 */
 
+    /* 🔴 UART 를 여는 것이 설정을 읽은 **뒤**다 (규격 §4.2).
+     *
+     *    속도가 이제 설정 항목이라 Flash 를 읽기 전에는 무엇으로 열어야
+     *    하는지 알 수 없다. 순서를 되돌리면 저장된 속도로 바꾸는 순간
+     *    부팅 로그가 중간에서 끊긴다.
+     *
+     *    저장된 값이 이 클럭으로 못 내는 값이면 mk_linkbaud_init() 이
+     *    기본값으로 대체한다 — 확정된 값만 저장되므로 정상 경로에서는
+     *    일어나지 않지만, 저장이 깨졌을 때 보드가 벽돌이 되지 않게 하는
+     *    마지막 방어선이다. 그 실패는 굽기로만 풀린다(CLAUDE.md §4). */
+    {
+        MkCfgItem *baud_item = mk_cfg_find(&s_cfg, "link.baud");
+        uint32_t want = baud_item ? baud_item->cur.u : UART_BAUD;
+        mk_linkbaud_init(&s_linkbaud, MK_USART3_KERNEL_HZ, want);
+        if (baud_item != NULL) {
+            baud_item->cur.u = mk_linkbaud_active(&s_linkbaud);
+        }
+        mk_uart_init(mk_linkbaud_active(&s_linkbaud));
+    }
+
     MkHostlink link;
     mk_hostlink_init(&link, emit, NULL, DEVICE_ID, FW_VERSION, BOARD_REV);
 
@@ -356,6 +424,11 @@ int main(void)
      *    "보드가 믿는 값" 이 아니라 "실제로 선 값" 을 싣는다. */
     mk_hostlink_attach_clock(&link, mk_clock_source_name(),
                              mk_clock_sysclk_hz());
+
+    /* 🔴 $BAUD,CONFIRM 을 받을 수 있게 하고(규격 §4.2.3), 확인 대기 중에는
+     *    $CFG,SAVE 를 막는다(§4.2.2 규칙 5). 이것을 안 붙이면 링크 속도를
+     *    바꿀 수는 있는데 확정할 방법이 없어 **반드시 10초 뒤 되돌아간다.** */
+    mk_hostlink_attach_linkbaud(&link, &s_linkbaud);
 
     size_t n_fields = 0;
     const MkFieldBit *fields = mk_cfgtable_fields(&n_fields);
@@ -483,6 +556,18 @@ int main(void)
         }
 
         mk_hostlink_tick(&link, now);
+
+        /* 🔴 링크 속도 (규격 §4.2). **자리가 곧 안전장치다.**
+         *
+         *    여기는 이번 바퀴에 나갈 응답($SACK)과 하트비트($HB)가 전부
+         *    전선으로 빠져나간 뒤다. 그래서 속도를 바꿔도 잘리는 바이트가
+         *    없다. 위(mk_hostlink_feed)로 올리면 응답 한가운데서 속도가
+         *    바뀌어 호스트가 성공했는지조차 모르게 된다.
+         *
+         *    되돌림도 여기서 일어난다 — 확인이 10초 안에 안 오면 옛 속도로
+         *    스스로 돌아간다. 사람이 아무것도 안 해도 링크가 살아나는 것이
+         *    이 한 줄의 값이다. */
+        mk_linkbaud_tick(&s_linkbaud, &s_cfg, now, apply_link_baud, NULL);
 
         /* 🔴 설정을 수집기로 밀어 넣는다.
          *

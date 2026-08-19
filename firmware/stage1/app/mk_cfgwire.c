@@ -66,8 +66,17 @@ void mk_cfgwire_list(const MkConfig *cfg,
      *    막는 것은 `cfg_end` 의 count 다. 선언한 수와 실제로 온 수가 다르면
      *    호스트가 거부한다(규격 §7.3). 실제로 그것이 잡았다 — I2C 종류
      *    항목의 안내문이 길어 6개가 통째로 빠진 것을 대조 시험이 걸렀다
-     *    [2026-08-17]. 안내문을 길게 쓸 때는 이 상한을 기억한다. */
-    char buf[320];
+     *    [2026-08-17]. 안내문을 길게 쓸 때는 이 상한을 기억한다.
+     *
+     * 🔴 320 -> 384 [2026-08-20]. `link.baud`(규격 §4.2)에서 다시 걸렸다 —
+     *    choices 여섯에 한글 라벨·안내문까지 붙어 343 바이트였고, 그 항목이
+     *    조용히 빠졌다(대조 시험이 "선언 111, 수신 110" 으로 잡았다).
+     *
+     *    이번에는 안내문을 줄이지 않고 버퍼를 키운다. 이 항목의 안내문은
+     *    꾸밈말이 아니라 **안전 경고**이고("바꾸면 링크가 끊긴다"), 그것을
+     *    줄여서 자리를 맞추면 가장 위험한 설정에 가장 짧은 설명이 붙는다.
+     *    64바이트는 슈퍼루프 스택에서 무시할 만한 값이다. */
+    char buf[384];
     MkJson j;
 
     for (size_t i = 0; i < cfg->count; i++) {
@@ -181,6 +190,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
+                    const MkLinkStat *link,
                     const MkLcdStat *lcd,
                     char *out, size_t cap)
 {
@@ -298,6 +308,42 @@ int mk_cfgwire_stat(int64_t now_ms,
         mk_json_array_object_end(&j);
     }
     mk_json_array_end(&j);
+
+    /* 🔴 호스트 링크 속도 (규격 §4.2·§7.4).
+     *
+     *    `baud` 와 `confirmed` 가 다르면 **아직 확인되지 않은 상태**이고,
+     *    그때 `$CFG,SAVE` 는 ERR,BUSY 다. 호스트는 이 두 값이 같은지로
+     *    "지금 저장해도 되는가" 를 판단한다 — 그것을 알 다른 통로가 없다.
+     *
+     *    `reverted` 는 "그 속도로는 이 링크가 안 된다" 는 유일한 누적
+     *    실측이다. 선행 프로젝트에서 미해결로 남은 대역폭 문제(CLAUDE.md
+     *    §1.2)가 이 보드에서 어떻게 나타나는지 알려 주는 값이므로,
+     *    `lcd.reinit`·`pps_raw_count` 와 같은 이유로 싣는다.
+     *
+     *    링크 속도를 안 붙인 빌드(호스트 시험·시뮬레이터)에서는 속도를
+     *    **지어내지 않는다** — clock 과 같은 결로 null 이다. */
+    mk_json_object_begin(&j, "link");
+    if (link != NULL) {
+        mk_json_u32(&j, "baud", link->baud);
+        mk_json_u32(&j, "confirmed", link->confirmed);
+    } else {
+        mk_json_null(&j, "baud");
+        mk_json_null(&j, "confirmed");
+    }
+    if (link != NULL && link->pending != 0u) {
+        mk_json_u32(&j, "pending", link->pending);
+    } else {
+        mk_json_null(&j, "pending");
+    }
+    if (link != NULL && link->remaining_ms >= 0) {
+        mk_json_i64(&j, "remaining_ms", link->remaining_ms);
+    } else {
+        mk_json_null(&j, "remaining_ms");
+    }
+    mk_json_u32(&j, "applied",         link != NULL ? link->applied : 0u);
+    mk_json_u32(&j, "confirmed_count", link != NULL ? link->confirmed_count : 0u);
+    mk_json_u32(&j, "reverted",        link != NULL ? link->reverted : 0u);
+    mk_json_object_end(&j);
 
     /* 🔴 화면 회복 계수기 (규격 §7.4). "몇 번 깨졌고 몇 번 되살렸나" 를
      *    모르면 이 문제가 해결됐는지 덮였는지 알 수 없다 — PPS 의

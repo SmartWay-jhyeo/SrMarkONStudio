@@ -52,6 +52,7 @@ C_SRC = \
   app/mk_gnssctl.c \
   app/mk_timeax.c \
   app/mk_lcd.c \
+  app/mk_linkbaud.c \
   app/mk_font5x7.c \
   app/mk_glyph.c \
   app/mk_text.c \

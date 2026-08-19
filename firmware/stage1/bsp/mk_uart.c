@@ -12,19 +12,10 @@ static volatile uint16_t s_head;
 static volatile uint16_t s_tail;
 static volatile uint32_t s_overruns;
 
-void mk_uart_init(uint32_t baud)
+/* 주변장치를 이 속도로 세운다. 수신 링은 건드리지 않는다 —
+ * mk_uart_set_baud() 가 이것을 다시 부르기 때문이다. */
+static void uart_configure(uint32_t baud)
 {
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_USART3_CLK_ENABLE();
-
-    GPIO_InitTypeDef g = {0};
-    g.Pin       = GPIO_PIN_10 | GPIO_PIN_11;   /* PB10=TX, PB11=RX */
-    g.Mode      = GPIO_MODE_AF_PP;
-    g.Pull      = GPIO_PULLUP;
-    g.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
-    g.Alternate = GPIO_AF7_USART3;
-    HAL_GPIO_Init(GPIOB, &g);
-
     s_uart.Instance                    = USART3;
     s_uart.Init.BaudRate               = baud;
     s_uart.Init.WordLength             = UART_WORDLENGTH_8B;
@@ -38,16 +29,69 @@ void mk_uart_init(uint32_t baud)
     s_uart.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
     HAL_UART_Init(&s_uart);
 
+    /* 🔴 HAL 의 수신 API 를 쓰지 않고 RXNE 인터럽트를 직접 켠다.
+     *    HAL_UART_Receive_IT 는 정해진 개수를 받으면 멈추고 콜백에서 다시
+     *    걸어야 하는데, 그 틈에 온 바이트가 사라진다. 줄 단위로 언제 올지
+     *    모르는 명령을 받는 데는 맞지 않는다.
+     *
+     * 🔴 HAL_UART_Init() 이 UE 를 껐다 켜며 CR1 을 다시 쓰므로, 이 한 줄은
+     *    **매번 뒤따라야 한다.** 속도만 바꾸고 이것을 빠뜨리면 보드가
+     *    말은 하는데 아무것도 못 듣는 상태가 된다 — 확인을 못 받으니
+     *    반드시 되돌아간다. */
+    __HAL_UART_ENABLE_IT(&s_uart, UART_IT_RXNE);
+}
+
+void mk_uart_init(uint32_t baud)
+{
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_USART3_CLK_ENABLE();
+
+    GPIO_InitTypeDef g = {0};
+    g.Pin       = GPIO_PIN_10 | GPIO_PIN_11;   /* PB10=TX, PB11=RX */
+    g.Mode      = GPIO_MODE_AF_PP;
+    g.Pull      = GPIO_PULLUP;
+    g.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+    g.Alternate = GPIO_AF7_USART3;
+    HAL_GPIO_Init(GPIOB, &g);
+
     s_head = 0;
     s_tail = 0;
     s_overruns = 0;
 
-    /* 🔴 HAL 의 수신 API 를 쓰지 않고 RXNE 인터럽트를 직접 켠다.
-     *    HAL_UART_Receive_IT 는 정해진 개수를 받으면 멈추고 콜백에서 다시
-     *    걸어야 하는데, 그 틈에 온 바이트가 사라진다. 줄 단위로 언제 올지
-     *    모르는 명령을 받는 데는 맞지 않는다. */
-    __HAL_UART_ENABLE_IT(&s_uart, UART_IT_RXNE);
+    uart_configure(baud);
     HAL_NVIC_SetPriority(USART3_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART3_IRQn);
+}
+
+void mk_uart_set_baud(uint32_t baud)
+{
+    if (baud == s_uart.Init.BaudRate) {
+        return;
+    }
+
+    /* 🔴 **보내던 바이트를 자르지 않는다** (규격 §4.2.2 규칙 1).
+     *
+     *    mk_uart_write() 가 쓰는 HAL_UART_Transmit 은 이미 TC 를 기다리고
+     *    돌아오므로 여기 오면 보통 이미 서 있다. 그래도 확인한다 —
+     *    이 한 줄이 지키는 것은 "응답이 옛 속도로 다 나갔다" 이고,
+     *    그것이 깨지면 호스트는 성공했는지조차 모른 채 링크를 잃는다.
+     *
+     *    🔴 영영 기다리지 않는다. TC 가 안 서는 고장(클럭이 끊겼다든가)
+     *       에서 여기 갇히면 보드가 통째로 멈춘다 — 되돌림 시한도 못
+     *       돈다. 그러면 안전장치가 그 자리에서 벽돌을 만든다.
+     *       64 MHz 에서 이 루프 한 바퀴는 몇 사이클이므로, 2,000,000
+     *       바퀴면 가장 느린 115200 의 한 바이트(87 us)보다 두 자릿수
+     *       길다. */
+    for (uint32_t guard = 0; guard < 2000000u; guard++) {
+        if ((s_uart.Instance->ISR & USART_ISR_TC) != 0u) {
+            break;
+        }
+    }
+
+    /* 재설정하는 동안 ISR 이 링을 건드리지 않게 막는다. 링 자체는 비우지
+     * 않는다 — 아직 처리 안 된 명령이 그 안에 있을 수 있다. */
+    HAL_NVIC_DisableIRQ(USART3_IRQn);
+    uart_configure(baud);
     HAL_NVIC_EnableIRQ(USART3_IRQn);
 }
 

@@ -97,6 +97,22 @@ typedef struct {
     uint8_t  state;          /* 이미 반전된 값 — 1 = 켜짐(신호 있음) */
 } MkDinState;
 
+/* 호스트 링크 속도의 지금 상태 (규격 §4.2·§7.4).
+ *
+ * 🔴 `MkLinkBaud` 를 그대로 넘기지 않는다. 저쪽은 상태기계라 kernel_hz·
+ *    deadline_ms 처럼 전선에 실을 이유가 없는 것을 들고 있고, `remaining_ms`
+ *    는 "지금" 을 알아야 나오는 파생값이다. 무엇을 싣는지는 전선 쪽이
+ *    정한다 — `MkRailState` 와 같은 판단이다. */
+typedef struct {
+    uint32_t baud;             /* 지금 전선에 서 있는 속도 */
+    uint32_t confirmed;        /* $CFG,SAVE 가 Flash 에 쓰는 값 */
+    uint32_t pending;          /* 확인을 기다리는 속도. 0 이면 없다 → null */
+    int64_t  remaining_ms;     /* 되돌아가기까지. 대기 중이 아니면 음수 → null */
+    uint32_t applied;
+    uint32_t confirmed_count;
+    uint32_t reverted;
+} MkLinkStat;
+
 /* 🔴 `time_source`·`time_quality` 는 규격 §7.4 예시에는 없지만 시뮬레이터와
  *    함께 낸다. 규격 §7.1.2 대로 `t` 는 시간 소스에 따라 UTC epoch 이기도
  *    하고 부팅 후 경과 ms 이기도 한데, 명령 응답에는 필드 마스크가 없어
@@ -183,6 +199,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
+                    const MkLinkStat *link,
                     const MkLcdStat *lcd,
                     char *out, size_t cap);
 

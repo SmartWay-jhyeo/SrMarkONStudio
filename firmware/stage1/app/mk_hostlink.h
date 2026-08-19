@@ -100,6 +100,12 @@ typedef struct {
      * 값을 싣는다. 없으면 전부 0 이고 readback 은 null 이다. */
     struct MkLcd *lcd;
 
+    /* 호스트 링크 속도 상태기계 (규격 §4.2). 붙어 있으면
+     * `$BAUD,CONFIRM` 이 동작하고, 확인 대기 중에는 `$CFG,SAVE` 를
+     * 막는다. 없으면 `$BAUD` 가 UNSUPPORTED 이고 `$STAT` 의 `link` 가
+     * null 이다 — 링크 속도를 안 붙인 빌드(1단계·호스트 시험)가 그 자리다. */
+    struct MkLinkBaud *linkbaud;
+
     /* 시스템 클럭 출처(규격 §7.4). `mk_hostlink_attach_clock` 이 채운다.
      *
      * 🔴 `fw`·`board_rev` 와 같은 결로 **문자열을 받는다.** 이 층은 HAL 을
@@ -163,6 +169,14 @@ void mk_hostlink_attach_gnssctl(MkHostlink *h, struct MkGnssCtl *gnssctl);
  * 전부 0 이고 `readback` 은 null 이다 — 화면이 안 붙은 빌드다. */
 struct MkLcd;
 void mk_hostlink_attach_lcd(MkHostlink *h, struct MkLcd *lcd);
+
+/* 호스트 링크 속도 상태기계를 붙인다 (규격 §4.2). 부르지 않으면
+ * `$BAUD,CONFIRM` 이 UNSUPPORTED 이고 `$STAT` 의 `link.baud` 가 null 이다.
+ *
+ * 🔴 전방 선언으로 받는다 — 이 층은 UART 하드웨어를 모르고, 링크 속도를
+ *    안 붙인 채로도 통신 시험이 그대로 돌아야 한다(attach_ads 와 같은 결). */
+struct MkLinkBaud;
+void mk_hostlink_attach_linkbaud(MkHostlink *h, struct MkLinkBaud *lb);
 
 /* 시스템 클럭 출처를 붙인다 (규격 §7.4). 부르지 않으면 $STAT 의 `clock` 이
  * `{"src":null,"sysclk_hz":null}` 로 나간다 — "이 장치는 답할 수 없다"이고,

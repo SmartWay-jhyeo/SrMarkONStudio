@@ -10,6 +10,7 @@
 #include "../app/mk_solctl.h"
 #include "../app/mk_gnssctl.h"
 #include "../app/mk_timeax.h"
+#include "../app/mk_linkbaud.h"
 
 static int failures = 0;
 
@@ -1407,6 +1408,248 @@ static void test_test_mode_does_not_save_outputs(void)
     CHECK(CFG_ITEMS[3].cur.u == 1u, "저장 뒤에도 테스트 값은 그대로");
 }
 
+/* ---- 링크 속도 (규격 §4.2) --------------------------------------------- */
+
+/* 가짜 전선. sink_emit 이 아니라 이쪽을 보는 이유는 아래 순서 시험에 있다. */
+static uint32_t WIRE_BAUD;
+static MkLinkBaud LB;
+
+static void wire_apply(void *ctx, uint32_t baud)
+{
+    (void)ctx;
+    WIRE_BAUD = baud;
+}
+
+/* 🔴 응답이 **어느 속도로** 나갔는지를 기록하는 통. 순서를 시험하려면
+ *    "무엇을 보냈나" 만으로는 부족하고 "보낼 때 전선이 몇이었나" 가
+ *    있어야 한다. */
+#define BAUD_LOG_CAP 8
+static uint32_t BAUD_AT_EMIT[BAUD_LOG_CAP];
+static int      BAUD_LOG_N;
+
+static void sink_emit_logging_baud(void *ctx, const char *line, size_t len)
+{
+    if (BAUD_LOG_N < BAUD_LOG_CAP) {
+        BAUD_AT_EMIT[BAUD_LOG_N++] = WIRE_BAUD;
+    }
+    sink_emit(ctx, line, len);
+}
+
+static const uint32_t LINK_CHOICES[] = { 115200u, 460800u, 921600u,
+                                         1000000u, 1500000u, 2000000u };
+
+/* `link.baud` 항목을 CFG_ITEMS 에 하나 더 붙인 설정표. */
+static MkCfgItem LINK_ITEMS[5];
+static MkConfig  LINK_STORE;
+static int       link_saves;
+
+static int link_save(void *ctx) { (void)ctx; link_saves++; return 0; }
+
+static void setup_link(MkHostlink *h, Sink *s)
+{
+    sink_reset(s);
+    BAUD_LOG_N = 0;
+    link_saves = 0;
+    memset(LINK_ITEMS, 0, sizeof LINK_ITEMS);
+
+    LINK_ITEMS[0] = (MkCfgItem){ .key = "link.baud", .group = "link",
+                                 .vtype = MK_VT_ENUM,
+                                 .choices = LINK_CHOICES, .n_choices = 6,
+                                 .unit = "bps", .label = "호스트 링크 속도" };
+    LINK_ITEMS[0].def.u = MK_LINKBAUD_DEFAULT;
+    LINK_ITEMS[0].cur.u = MK_LINKBAUD_DEFAULT;
+    LINK_ITEMS[1] = (MkCfgItem){ .key = "tx.period_ms", .group = "tx",
+                                 .vtype = MK_VT_U16, .min = 10, .max = 10000,
+                                 .has_min = 1, .has_max = 1,
+                                 .label = "전송 주기" };
+    LINK_ITEMS[1].def.u = 100;
+    LINK_ITEMS[1].cur.u = 100;
+
+    LINK_STORE.items = LINK_ITEMS;
+    LINK_STORE.count = 2;
+    LINK_STORE.dirty = 0;
+
+    WIRE_BAUD = MK_LINKBAUD_DEFAULT;
+    mk_linkbaud_init(&LB, 64000000u, MK_LINKBAUD_DEFAULT);
+
+    mk_hostlink_init(h, sink_emit_logging_baud, s, "1", "0.1.0", "2.0");
+    mk_hostlink_attach_config(h, &LINK_STORE, CFG_FIELDS, 2, link_save, NULL);
+    mk_hostlink_attach_linkbaud(h, &LB);
+}
+
+static void test_sack_goes_out_at_the_old_baud(void)
+{
+    /* 🔴 규격 §4.2.2 규칙 1 — **이 시험이 이 기능의 본체다.**
+     *
+     *    순서를 뒤집으면 응답의 앞부분만 옛 속도로 나가 호스트가 그것을
+     *    읽지 못하고, 성공했는지조차 모르는 채로 링크가 끊긴다. 그리고
+     *    그 상태는 굽기로만 풀린다.
+     *
+     *    순서를 지키는 구조는 "요청을 받는 곳(feed)" 과 "속도를 바꾸는
+     *    곳(tick)" 이 아예 다른 함수라는 것이다. 그래서 여기서는 두
+     *    시점 사이에서 전선을 들여다본다. */
+    MkHostlink h; Sink s;
+    setup_link(&h, &s);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    BAUD_LOG_N = 0;
+
+    feed(&h, "CFG,SET,link.baud,1500000", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "받아들인다");
+    CHECK(BAUD_LOG_N == 1, "응답 한 줄이 나갔다");
+    CHECK(BAUD_AT_EMIT[0] == MK_LINKBAUD_DEFAULT,
+          "🔴 그 줄은 **옛 속도로** 나갔다");
+    CHECK(WIRE_BAUD == MK_LINKBAUD_DEFAULT, "feed 는 절대 속도를 바꾸지 않는다");
+
+    mk_linkbaud_tick(&LB, &LINK_STORE, 1000, wire_apply, NULL);
+    CHECK(WIRE_BAUD == 1500000u, "속도는 그 뒤에 바뀐다");
+}
+
+static void test_confirm_commits_and_unblocks_save(void)
+{
+    MkHostlink h; Sink s;
+    setup_link(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "CFG,SET,link.baud,1500000", 1000);
+    mk_linkbaud_tick(&LB, &LINK_STORE, 1000, wire_apply, NULL);
+
+    /* 확인 전에는 저장이 막힌다 (규격 §4.2.2 규칙 5). */
+    sink_reset(&s);
+    feed(&h, "CFG,SAVE", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,ERR,BUSY"),
+             "🔴 확정 전에는 Flash 에 안 쓴다");
+    CHECK(link_saves == 0, "저장 콜백도 안 불렸다");
+
+    sink_reset(&s);
+    feed(&h, "BAUD,CONFIRM,1500000", 1500);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,BAUD,OK"), "확인이 받아들여진다");
+
+    sink_reset(&s);
+    feed(&h, "CFG,SAVE", 1500);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "확정된 뒤에는 저장된다");
+    CHECK(link_saves == 1, "저장 콜백이 불렸다");
+}
+
+static void test_confirm_works_in_run_mode(void)
+{
+    /* 🔴 규격 §4.2.3 — CONFIG 전용이 아니다.
+     *
+     *    호스트는 포트를 닫았다 새 속도로 다시 여는 동안 $HB 를 못 보내고,
+     *    그것이 3000 ms 를 넘으면 보드는 RUN 으로 떨어진다. CONFIG 전용
+     *    으로 두면 포트를 여는 데 오래 걸린 것만으로 확인이 거부되고,
+     *    그 거부가 곧 우리가 막으려던 되돌림을 부른다. */
+    MkHostlink h; Sink s;
+    setup_link(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "CFG,SET,link.baud,460800", 1000);
+    mk_linkbaud_tick(&LB, &LINK_STORE, 1000, wire_apply, NULL);
+
+    /* 하트비트가 끊겨 RUN 으로 떨어진 뒤에 확인이 온다. */
+    CHECK(mk_hostlink_mode(&h, 6000) == MK_MODE_RUN, "먼저 RUN 으로 떨어졌다");
+    sink_reset(&s);
+    feed(&h, "BAUD,CONFIRM,460800", 6000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,BAUD,OK"), "RUN 에서도 확인된다");
+}
+
+static void test_confirm_rejects_a_different_value(void)
+{
+    MkHostlink h; Sink s;
+    setup_link(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "CFG,SET,link.baud,460800", 1000);
+    mk_linkbaud_tick(&LB, &LINK_STORE, 1000, wire_apply, NULL);
+
+    sink_reset(&s);
+    feed(&h, "BAUD,CONFIRM,921600", 1200);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,BAUD,ERR,RANGE"),
+             "다른 값으로는 확정되지 않는다");
+    CHECK(mk_linkbaud_is_pending(&LB), "여전히 대기 중 — 시한은 계속 흐른다");
+}
+
+static void test_confirm_without_a_pending_change(void)
+{
+    MkHostlink h; Sink s;
+    setup_link(&h, &s);
+    feed(&h, "BAUD,CONFIRM,921600", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,BAUD,ERR,MODE"),
+             "확인할 것이 없으면 MODE");
+}
+
+static void test_baud_is_unsupported_without_a_state_machine(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);                    /* linkbaud 를 안 붙인 빌드 */
+    feed(&h, "BAUD,CONFIRM,921600", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,BAUD,ERR,UNSUPPORTED"),
+             "링크 속도를 안 붙인 빌드는 UNSUPPORTED");
+}
+
+static void test_baud_rejects_garbage(void)
+{
+    MkHostlink h; Sink s;
+    setup_link(&h, &s);
+    feed(&h, "BAUD,CONFIRM,abc", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,BAUD,ERR,RANGE"), "숫자가 아니면 RANGE");
+    sink_reset(&s);
+    feed(&h, "BAUD,CONFIRM", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,BAUD,ERR,RANGE"), "값이 없으면 RANGE");
+    sink_reset(&s);
+    feed(&h, "BAUD,WHAT,921600", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,BAUD,ERR,UNSUPPORTED"),
+             "모르는 하위 명령은 UNSUPPORTED");
+}
+
+static void test_deadline_revert_reopens_save(void)
+{
+    MkHostlink h; Sink s;
+    setup_link(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "CFG,SET,link.baud,2000000", 1000);
+    mk_linkbaud_tick(&LB, &LINK_STORE, 1000, wire_apply, NULL);
+    CHECK(WIRE_BAUD == 2000000u, "일단 바뀌었다");
+
+    mk_linkbaud_tick(&LB, &LINK_STORE, 1000 + MK_LINKBAUD_CONFIRM_MS,
+                     wire_apply, NULL);
+    CHECK(WIRE_BAUD == MK_LINKBAUD_DEFAULT, "시한이 지나 옛 속도로 돌아왔다");
+    CHECK(LINK_ITEMS[0].cur.u == MK_LINKBAUD_DEFAULT, "설정표도 따라 돌아왔다");
+
+    /* 되돌아온 뒤에는 저장이 다시 열린다 — 옛(확정된) 속도가 저장된다. */
+    feed(&h, "HB", 11000);
+    sink_reset(&s);
+    feed(&h, "CFG,SAVE", 11000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,CFG,OK"), "되돌아온 뒤에는 저장된다");
+}
+
+static void test_stat_carries_the_link_state(void)
+{
+    MkHostlink h; Sink s;
+    setup_link(&h, &s);
+    feed(&h, "HB", 1000);
+    feed(&h, "CFG,SET,link.baud,1000000", 1000);
+    mk_linkbaud_tick(&LB, &LINK_STORE, 1000, wire_apply, NULL);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(strstr(s.lines[0], "\"link\":{\"baud\":1000000,"
+                             "\"confirmed\":921600,\"pending\":1000000,"
+                             "\"remaining_ms\":10000,\"applied\":1,"
+                             "\"confirmed_count\":0,\"reverted\":0}") != NULL,
+          "확인 대기 상태가 그대로 나간다");
+}
+
+static void test_stat_link_is_null_without_a_state_machine(void)
+{
+    /* 🔴 속도를 지어내지 않는다 — clock 과 같은 결. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    feed(&h, "STAT", 1000);
+    CHECK(strstr(s.lines[0], "\"link\":{\"baud\":null,\"confirmed\":null,"
+                             "\"pending\":null,\"remaining_ms\":null,"
+                             "\"applied\":0,\"confirmed_count\":0,"
+                             "\"reverted\":0}") != NULL,
+          "안 붙어 있으면 속도가 null 이다");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--scenario") == 0) {
@@ -1478,6 +1721,16 @@ int main(int argc, char **argv)
     test_losing_the_host_ends_the_test();
     test_active_mode_keeps_outputs_when_the_host_leaves();
     test_test_mode_does_not_save_outputs();
+    test_sack_goes_out_at_the_old_baud();
+    test_confirm_commits_and_unblocks_save();
+    test_confirm_works_in_run_mode();
+    test_confirm_rejects_a_different_value();
+    test_confirm_without_a_pending_change();
+    test_baud_is_unsupported_without_a_state_machine();
+    test_baud_rejects_garbage();
+    test_deadline_revert_reopens_save();
+    test_stat_carries_the_link_state();
+    test_stat_link_is_null_without_a_state_machine();
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
     return failures ? 1 : 0;
 }

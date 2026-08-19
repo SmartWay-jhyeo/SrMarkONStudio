@@ -6,6 +6,7 @@
 #include "mk_timeax.h"
 #include "mk_gnssctl.h"
 #include "mk_lcd.h"
+#include "mk_linkbaud.h"
 #include "mk_json.h"
 
 #include <string.h>
@@ -191,6 +192,21 @@ static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
             emit_sack_err(h, "CFG", "BUSY");
             return;
         }
+        /* 🔴 확정되지 않은 링크 속도는 Flash 에 가지 않는다
+         *    (규격 §4.2.2 규칙 5).
+         *
+         *    이 규칙이 없으면 "부팅하자마자 아무도 말을 못 거는 보드" 가
+         *    만들어진다. 다른 잘못된 설정은 다시 고칠 수 있지만 그것은
+         *    못 고친다 — **굽기로만 풀린다.** 그리고 이 저장소에서 굽기는
+         *    하루에 네 번 막힌 적이 있고 매번 보드 전원을 20초 빼야
+         *    풀렸다(CLAUDE.md §4).
+         *
+         *    저장을 미루는 것뿐이라 잃는 것이 없다 — 호스트는 확인을 마친
+         *    뒤 다시 저장하면 된다. */
+        if (h->linkbaud != NULL && mk_linkbaud_is_pending(h->linkbaud)) {
+            emit_sack_err(h, "CFG", "BUSY");
+            return;
+        }
         /* 🔴 바뀐 것이 없으면 쓰지 않는다. Flash 를 지웠다 쓰는 것은
          *    수명을 깎는 일이고, 아무것도 안 바뀐 저장은 순수한 손해다.
          *    사용자에게는 성공으로 보인다 — 실제로 저장된 상태와 같으므로
@@ -368,6 +384,66 @@ void mk_hostlink_attach_clock(MkHostlink *h, const char *src,
     h->clock_sysclk_hz = sysclk_hz;
 }
 
+void mk_hostlink_attach_linkbaud(MkHostlink *h, struct MkLinkBaud *lb)
+{
+    h->linkbaud = lb;
+}
+
+/* `$BAUD,CONFIRM,<baud>` — 링크 속도 확인 (규격 §4.2.3).
+ *
+ * 🔴 **CONFIG 전용이 아니다.** 호스트는 포트를 닫았다 새 속도로 다시 여는
+ *    동안 $HB 를 못 보내고, 그것이 3000 ms 를 넘으면 보드는 RUN 으로
+ *    떨어진다(규격 §6.2). CONFIG 전용으로 두면 **포트를 여는 데 오래
+ *    걸린 것만으로 확인이 거부되고, 그 거부가 곧 우리가 막으려던 되돌림을
+ *    부른다.** 그리고 이 명령은 설정을 바꾸지 않는다 — CONFIG 에서 이미
+ *    허가된 변경을 유지할 뿐이다. */
+static void on_baud(MkHostlink *h, const MkCommand *c)
+{
+    if (h->linkbaud == NULL) {
+        emit_sack_err(h, "BAUD", "UNSUPPORTED");
+        return;
+    }
+    if (c->argc < 1 || strcmp(c->args[0], "CONFIRM") != 0) {
+        emit_sack_err(h, "BAUD", "UNSUPPORTED");
+        return;
+    }
+    if (c->argc < 2) {
+        emit_sack_err(h, "BAUD", "RANGE");
+        return;
+    }
+
+    /* 🔴 값을 함께 받는 이유(규격 §4.2.3): 이 명령은 **새 속도로** 와야
+     *    하므로, 값이 되돌아온다는 것 자체가 "호스트가 무엇을 확인하는지
+     *    알고 그 속도로 말할 수 있다" 는 증거다. */
+    uint32_t baud = 0u;
+    const char *p = c->args[1];
+    if (*p == '\0') {
+        emit_sack_err(h, "BAUD", "RANGE");
+        return;
+    }
+    for (; *p != '\0'; p++) {
+        if (*p < '0' || *p > '9' || baud > 429496729u) {
+            emit_sack_err(h, "BAUD", "RANGE");
+            return;
+        }
+        baud = baud * 10u + (uint32_t)(*p - '0');
+    }
+
+    switch (mk_linkbaud_confirm(h->linkbaud, baud)) {
+    case MK_LINKBAUD_OK:
+        emit_sack_ok(h, "BAUD");
+        break;
+    case MK_LINKBAUD_ERR_RANGE:
+        emit_sack_err(h, "BAUD", "RANGE");
+        break;
+    default:
+        /* 확인할 것이 없다. 규격 §5 의 MODE — "지금 그 명령을 받을 수
+         * 있는 상태가 아니다". */
+        emit_sack_err(h, "BAUD", "MODE");
+        break;
+    }
+}
+
 static void on_stat(MkHostlink *h, int64_t now_ms)
 {
     if (h->cfg == NULL) {
@@ -489,6 +565,20 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         mk_lcd_stat(h->lcd, &ls);
     }
 
+    /* 🔴 호스트 링크 속도(규격 §4.2·§7.4). 안 붙어 있으면 NULL 을 넘겨
+     *    `baud`·`confirmed` 가 null 로 나간다 — clock 과 같은 결로,
+     *    속도를 지어내지 않는다. */
+    MkLinkStat lks;
+    if (h->linkbaud != NULL) {
+        lks.baud            = mk_linkbaud_active(h->linkbaud);
+        lks.confirmed       = mk_linkbaud_confirmed(h->linkbaud);
+        lks.pending         = mk_linkbaud_pending(h->linkbaud);
+        lks.remaining_ms    = mk_linkbaud_remaining_ms(h->linkbaud, now_ms);
+        lks.applied         = h->linkbaud->applied;
+        lks.confirmed_count = h->linkbaud->confirmed_count;
+        lks.reverted        = h->linkbaud->reverted;
+    }
+
     /* 🔴 896 이던 것을 1024 로, 그 뒤 gnss.init_* 세 필드로 더 올렸다.
      *    [신규, 2026-08-19] "pps_raw_age_ms":<i64>,"pps_raw_count":<u32>,
      *    "pps_unpaired_reason":"no_valid_nmea" 가 최악 ~95바이트를 더
@@ -501,8 +591,11 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
      *    [신규, 2026-08-19] `clock` 객체가 최악 ~48바이트를 더 먹는다
      *    ("clock":{"src":"hse_pll","sysclk_hz":4294967295}). 1472 로
      *    올린다 — 이 버퍼가 모자라면 $STAT 이 ERR,BUSY 로 떨어져
-     *    **진단 창구가 통째로 닫힌다**(이 파일 위 실기기 기록). */
-    char body[1472];
+     *    **진단 창구가 통째로 닫힌다**(이 파일 위 실기기 기록).
+     *
+     *    [신규, 2026-08-20] `link` 객체가 최악 ~175바이트를 더 먹는다
+     *    (u32 넷이 각각 10자리 + remaining_ms 가 i64). 1664 로 올린다. */
+    char body[1664];
     int n = mk_cfgwire_stat(
         now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
@@ -517,6 +610,7 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         &rs,
         n_din > 0 ? ds : NULL, n_din,
         n_q > 0 ? qs : NULL, n_q,
+        h->linkbaud != NULL ? &lks : NULL,
         h->lcd != NULL ? &ls : NULL,
         body, sizeof body);
 
@@ -611,6 +705,11 @@ void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
 
     if (strcmp(c.verb, "GNSS") == 0) {
         on_gnss(h, &c, now_ms);
+        return;
+    }
+
+    if (strcmp(c.verb, "BAUD") == 0) {
+        on_baud(h, &c);
         return;
     }
 

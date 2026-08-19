@@ -4,6 +4,7 @@
 
 #include "mk_ws2812.h"      /* MK_LED_COUNT — 정의는 저쪽이 들고 있다 */
 #include "mk_i2c.h"         /* MK_I2C_COUNT · 버스 표 — 정의는 저쪽이 들고 있다 */
+#include "mk_linkbaud.h"    /* 고를 수 있는 링크 속도 — 목록은 저쪽에만 있다 */
 
 /* 이 보드가 가진 것들 (데이터시트 §5).
  *   J18~J20  디지털 입력 3 — 카탈로그에는 sol.debounce_ms 하나만 남는다
@@ -39,6 +40,21 @@
  *    같아야 하고, crosscheck_cfgtable.py 가 그것을 대조한다. */
 static const uint32_t LCD_SPI_KHZ_CHOICES[] = { 2000u, 4000u, 8000u, 16000u };
 
+/* 호스트 링크 속도 (규격 §4.2.6).
+ *
+ * 🔴 값을 여기 손으로 적지 않는다. `MK_LINKBAUD_CHOICE_LIST` 한 곳에만
+ *    있고, main.c 가 **같은 목록으로** 컴파일 때 오차를 검사한다
+ *    (_Static_assert). 두 곳에 적으면 카탈로그에는 있는데 실제로는 못 내는
+ *    속도가 생기고, 그것은 사용자가 고르는 순간에만 드러난다 — 즉 링크가
+ *    끊긴 뒤에 드러난다. */
+#define LINK_BAUD_ITEM(v)  v,
+static const uint32_t LINK_BAUD_CHOICES[] = {
+    MK_LINKBAUD_CHOICE_LIST(LINK_BAUD_ITEM)
+};
+#undef LINK_BAUD_ITEM
+#define LINK_BAUD_CHOICE_COUNT \
+    ((uint8_t)(sizeof LINK_BAUD_CHOICES / sizeof LINK_BAUD_CHOICES[0]))
+
 static const uint32_t I2C_KIND_CHOICES[] = { 0u, 1u, 2u, 3u, 4u };
 static const char *const I2C_KIND_LABELS[] = {
     "없음", "조도", "온습도", "적외 온도", "방수 온도"
@@ -46,12 +62,14 @@ static const char *const I2C_KIND_LABELS[] = {
 
 /* dev 1 + tx 5(마스크 3 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
  * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
+ * + link 1(호스트 링크 속도)
  * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기) */
 #define ITEM_COUNT   (1 + 5 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 5 \
                       + 3 \
+                      + 1 \
                       + 5)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
@@ -458,6 +476,35 @@ static size_t add_gnss(size_t i)
     return i;
 }
 
+/* 호스트 링크 (USART3 → F103 → USB VCP). 규격 §4.2. */
+static size_t add_link(size_t i)
+{
+    /* 🔴 이 항목만 다른 절차를 탄다 — 바꾸는 순간 이 대화가 끊긴다.
+     *    보드는 응답을 옛 속도로 먼저 내보내고, 그 뒤 10초 안에 호스트가
+     *    새 속도로 확인($BAUD,CONFIRM)을 보내지 않으면 스스로 되돌아간다.
+     *    상태기계는 app/mk_linkbaud.c 에 있다.
+     *
+     * 🔴 `out` 이 아니다. TEST 를 벗어날 때 기본값으로 되돌리면 링크 속도가
+     *    사용자 몰래 바뀌어 대화가 끊긴다 — `out` 의 뜻(모드 이탈 시 안전
+     *    상태로 복귀)이 여기서는 정반대로 작용한다. 이 항목의 안전장치는
+     *    제어 모드가 아니라 §4.2 의 확인 시한이다.
+     *
+     * 🔴 note 는 짧게 둔다. choices 가 여섯이라 mk_cfgwire_list 의
+     *    320바이트 줄 상한에 여유가 적다(gnss.baud 와 같은 사정).
+     *
+     * 🔴 값·라벨·note·choices 가 시뮬레이터(tools/simulator/config_store.py
+     *    의 link.baud)와 한 글자도 다르면 안 된다 — crosscheck_cfgtable.py
+     *    가 대조한다. */
+    s_items[i] = (MkCfgItem){
+        .key = "link.baud", .group = "link", .vtype = MK_VT_ENUM,
+        .choices = LINK_BAUD_CHOICES, .n_choices = LINK_BAUD_CHOICE_COUNT,
+        .unit = "bps", .label = "호스트 링크 속도",
+        .note = "바꾸면 링크가 끊긴다 — 10초 안에 확인 못 하면 되돌아간다" };
+    s_items[i].def.u = MK_LINKBAUD_DEFAULT;
+    i++;
+    return i;
+}
+
 /* LCD 화면 (J25, 데이터시트 §5.9). */
 static size_t add_lcd(size_t i)
 {
@@ -699,6 +746,7 @@ void mk_cfgtable_init(MkConfig *cfg)
     i = add_ain(i);
     i = add_sol(i);
     i = add_gnss(i);
+    i = add_link(i);
     i = add_lcd(i);
     i = add_led(i);
     i = add_i2c(i);
