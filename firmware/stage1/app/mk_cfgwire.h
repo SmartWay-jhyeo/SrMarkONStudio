@@ -158,9 +158,21 @@ typedef struct {
  *
  *    NULL 을 넘기면 전부 0 · readback 은 null 이다 — 화면이 안 붙은
  *    빌드다. */
+/* 🔴 [신규, 2026-08-19] `clock_src`·`clock_sysclk_hz` — 시간축 신뢰도의
+ *    일부다(규격 §7.4). 진단 정보가 아니다.
+ *
+ *    시간축은 PPS 로 1초마다 맞추고 **그 사이는 이 클럭으로 보간**한다.
+ *    크리스털이 안 떠서 내부 RC 로 폴백하면(bsp/mk_clock.c) 초 안쪽
+ *    오차가 ±1 % 까지 벌어진다 — 1초 끝에서 10 ms 다. 호스트가 그것을
+ *    모르고 저장하면 안 된다.
+ *
+ *    `clock_src` 가 NULL 이면 `{"src":null,"sysclk_hz":null}` 로 나간다 —
+ *    "이 장치는 답할 수 없다"이고, 시뮬레이터가 그 자리다. 값을 지어내지
+ *    않는다(lcd 를 NULL 로 넘길 때와 같은 결). */
 int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *ctl_mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
+                    const char *clock_src, uint32_t clock_sysclk_hz,
                     const char *time_source, uint32_t time_quality,
                     int64_t gnss_pps_age_ms,
                     int64_t gnss_pps_raw_age_ms, uint32_t gnss_pps_raw_count,

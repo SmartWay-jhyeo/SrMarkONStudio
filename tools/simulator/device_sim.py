@@ -330,6 +330,18 @@ class DeviceSim:
                       "init_exhausted": False,
                       "sentence_seen": bool(self.store.get("gnss.enabled"))},
                 uptime_ms=self._now_ms - self._boot_ms,
+                # 🔴 클럭 출처 (규격 §7.4). `time_source` 와 다른 축이다 —
+                #    저쪽은 `t` 의 절대 기준이고 이것은 그 기준들 **사이**를
+                #    무엇으로 보간하는가다. 보드에서 크리스털이 안 뜨면
+                #    "hsi" 로 나가고, 그때 초 안쪽 오차가 ±1 % 까지 벌어진다.
+                #
+                #    [단순화, 시뮬레이터] 여기에는 발진기가 없다. 그러니
+                #    **지어내지 않는다** — 둘 다 null 이다("이 장치는 답할 수
+                #    없다"). "hse_pll" 로 흉내 내면 호스트는 있지도 않은
+                #    크리스털을 믿고 초 안쪽 정밀도를 가정하게 된다.
+                #    lcd 의 readback=null 과 같은 결이고, 펌웨어도 클럭을
+                #    안 붙인 빌드에서 정확히 이 값을 낸다(mk_cfgwire.c).
+                clock={"src": None, "sysclk_hz": None},
                 rails={
                     "v24": self.store.get("pwr.24v"),
                     "v14v9": self.store.get("pwr.14v9"),

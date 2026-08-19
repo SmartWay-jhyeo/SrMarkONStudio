@@ -123,7 +123,11 @@ SHAPES: dict[str, Shape] = {
                   #    계수기는 실기기 증상("노이즈 타면 픽셀이 다 깨진다")
                   #    을 쫓는 유일한 창구라, 한쪽만 필드를 빠뜨리면 GUI 가
                   #    시뮬레이터에서만 그 수를 보여 준다.
-                  nested=(("stat", "gnss"), ("stat", "lcd"))),
+                  # 🔴 `clock` 도 안쪽까지 본다 [신규, 2026-08-19]. 시간축
+                  #    신뢰도의 일부라(§7.4) 한쪽이 sysclk_hz 를 빠뜨리면
+                  #    호스트가 초 안쪽 정밀도를 판단할 근거를 잃는다.
+                  nested=(("stat", "gnss"), ("stat", "lcd"),
+                          ("stat", "clock"))),
     "CFG,LIST": Shape(["cfg_item+", "cfg_field+", "cfg_end"], "SACK,CFG,OK"),
 }
 

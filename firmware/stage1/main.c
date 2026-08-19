@@ -302,6 +302,15 @@ int main(void)
     MkHostlink link;
     mk_hostlink_init(&link, emit, NULL, DEVICE_ID, FW_VERSION, BOARD_REV);
 
+    /* 🔴 무엇으로 도는지 호스트에 알린다(규격 §7.4). 크리스털이 안 떠서
+     *    내부 RC 로 폴백했으면 초 안쪽 보간이 두 자릿수 나빠지는데, 그것을
+     *    모르고 저장하면 카메라 정렬이 조용히 틀어진다.
+     *
+     *    sysclk 는 상수가 아니라 HAL 이 레지스터에서 읽어 계산한 값이다 —
+     *    "보드가 믿는 값" 이 아니라 "실제로 선 값" 을 싣는다. */
+    mk_hostlink_attach_clock(&link, mk_clock_source_name(),
+                             mk_clock_sysclk_hz());
+
     size_t n_fields = 0;
     const MkFieldBit *fields = mk_cfgtable_fields(&n_fields);
     mk_hostlink_attach_config(&link, &s_cfg, fields, n_fields,

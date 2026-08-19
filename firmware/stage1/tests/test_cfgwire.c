@@ -287,7 +287,8 @@ static void test_stat_shape(void)
     MkQueueStat q[2] = { {0, 3, 9, 0}, {1, 0, 1, 7} };
     MkDinState d[3] = { {18, 0}, {19, 0}, {20, 1} };
     int n = mk_cfgwire_stat(1772200855875LL, "CONFIG", "ACTIVE", "0.1.0", "2.0",
-                            123456u, "device_clock", 0u,
+                            123456u, "hse_pll", 64000000u,
+                            "device_clock", 0u,
                             842, 842, 118u, NULL, 11,
                             1, 0, 1,
                             &RS, d, 3, q, 2, NULL,
@@ -326,7 +327,7 @@ static void test_stat_with_no_queues(void)
     char buf[620];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                            "device_clock", 0u,
+                            "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
                             &RS, NULL, 0, NULL, 0, NULL,
@@ -353,7 +354,7 @@ static void test_stat_pps_raw_present_while_paired_age_is_null(void)
     char buf[720];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                            "device_clock", 0u,
+                            "hse_pll", 64000000u, "device_clock", 0u,
                             -1, 300, 7u, "no_valid_nmea", 3,
                             0, 0, 1,
                             &RS, NULL, 0, NULL, 0, NULL,
@@ -374,7 +375,7 @@ static void test_stat_with_no_din(void)
     char buf[620];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                            "device_clock", 0u,
+                            "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
                             &RS, NULL, 0, NULL, 0, NULL,
@@ -395,7 +396,7 @@ static void test_queue_channel_comes_from_the_struct(void)
     setup();
     MkQueueStat q[2] = { {2, 0, 0, 0}, {6, 0, 0, 41} };
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                    "device_clock", 0u,
+                    "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
                     &RS, NULL, 0, q, 2, NULL, buf, sizeof buf);
@@ -416,7 +417,7 @@ static void test_missing_rail_reads_as_off(void)
      *    설정은 "원하는 것", rails 는 "낸 것" 이다. */
     char buf[620];
     setup();
-    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock", 0u,
+    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0, NULL, NULL, 0, NULL, 0, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"rails\":{\"v24\":false,\"v14v9\":false,\"v5\":false}",
@@ -425,7 +426,7 @@ static void test_missing_rail_reads_as_off(void)
     /* 설정표가 5V 를 켜라고 해도, 아직 안 냈으면 꺼진 것으로 나간다. */
     MkCfgItem *v5 = mk_cfg_find(&CFG, "pwr.5v");
     if (v5 != NULL) { v5->cur.u = 1; }
-    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock", 0u,
+    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0, NULL, NULL, 0, NULL, 0, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"v5\":false",
@@ -444,7 +445,7 @@ static void test_stat_carries_the_lcd_recovery_counters(void)
     setup();
     MkLcdStat ls = { 3u, 2u, 41u, 128u, 2u, 0u, 1 };
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                            "device_clock", 0u,
+                            "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
                             &RS, NULL, 0, NULL, 0, &ls,
@@ -468,7 +469,7 @@ static void test_unknown_readback_goes_out_as_null(void)
     setup();
     MkLcdStat ls = { 1u, 0u, 0u, 0u, 0u, 0u, -1 };
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                    "device_clock", 0u,
+                    "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
                     &RS, NULL, 0, NULL, 0, &ls, buf, sizeof buf);
@@ -477,7 +478,7 @@ static void test_unknown_readback_goes_out_as_null(void)
 
     /* 화면 자체가 안 붙은 빌드. */
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
-                    "device_clock", 0u,
+                    "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
                     &RS, NULL, 0, NULL, 0, NULL, buf, sizeof buf);
@@ -488,11 +489,64 @@ static void test_unknown_readback_goes_out_as_null(void)
               "화면을 안 붙였으면 전부 0 · readback 은 null");
 }
 
+/* 🔴 클럭 출처는 시간축 신뢰도의 일부다(규격 §7.4).
+ *
+ *    크리스털이 안 떠서 내부 RC 로 폴백하면 초 안쪽 보간이 ±1 % 까지
+ *    흔들린다 — 1초 끝에서 10 ms 이고, 이 시스템이 노리는 분해능 전체와
+ *    같은 크기다. 호스트가 그것을 모르고 저장하면 안 된다.
+ *
+ *    그러니 폴백한 보드는 **말할 수 있어야 한다.** 이 시험이 그 경로를
+ *    지킨다 — 누가 `clock` 을 빼거나 "hse_pll" 로 못박으면 여기서 깨진다. */
+static void test_stat_carries_the_clock_source(void)
+{
+    char buf[820];
+    setup();
+    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
+                    "hse_pll", 64000000u, "gnss_pps", 2u,
+                    -1, -1, 0u, NULL, -1,
+                    0, 0, 0,
+                    &RS, NULL, 0, NULL, 0, NULL, buf, sizeof buf);
+    CHECK_HAS(buf, "\"clock\":{\"src\":\"hse_pll\",\"sysclk_hz\":64000000}",
+              "크리스털로 돌면 그렇게 말한다");
+
+    /* 🔴 폴백했어도 `time_quality` 는 그대로 2 다. 낮추면 호스트가
+     *    "PPS 를 못 쓴다" 로 읽어 멀쩡한 절대 시각까지 버린다 — 두 사실은
+     *    다른 축이고, 한 숫자로 합치면 어느 쪽이 나빠졌는지 되물을 방법이
+     *    없어진다(규격 §7.4). */
+    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
+                    "hsi", 64000000u, "gnss_pps", 2u,
+                    -1, -1, 0u, NULL, -1,
+                    0, 0, 0,
+                    &RS, NULL, 0, NULL, 0, NULL, buf, sizeof buf);
+    CHECK_HAS(buf, "\"clock\":{\"src\":\"hsi\",\"sysclk_hz\":64000000}",
+              "폴백했으면 그것도 그대로 말한다");
+    CHECK_HAS(buf, "\"time_quality\":2",
+              "폴백은 time_quality 를 건드리지 않는다 — 다른 축이다");
+}
+
+/* 클럭을 안 붙인 빌드(그리고 시뮬레이터)는 둘 다 null 이다.
+ *
+ * 🔴 0 을 지어내면 "클럭이 0 Hz" 라는 말이 되고, "hsi" 를 지어내면 있지도
+ *    않은 폴백을 보고하는 것이 된다. lcd 의 readback=null 과 같은 결이다. */
+static void test_missing_clock_goes_out_as_null(void)
+{
+    char buf[820];
+    setup();
+    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
+                    NULL, 0u, "device_clock", 0u,
+                    -1, -1, 0u, NULL, -1,
+                    0, 0, 0,
+                    &RS, NULL, 0, NULL, 0, NULL, buf, sizeof buf);
+    CHECK_HAS(buf, "\"clock\":{\"src\":null,\"sysclk_hz\":null}",
+              "답할 수 없으면 null — 값을 지어내지 않는다");
+}
+
 static void test_stat_rejects_small_buffer(void)
 {
     char tiny[24];
     setup();
-    CHECK(mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "device_clock",
+    CHECK(mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u,
+                          "device_clock",
                           0u, -1, -1, 0u, NULL, -1, 0, 0, 0, &RS, NULL, 0, NULL, 0,
                           NULL, tiny, sizeof tiny) < 0,
           "버퍼가 작으면 실패하고 잘린 줄을 내지 않는다");
@@ -532,6 +586,8 @@ int main(int argc, char **argv)
     test_queue_channel_comes_from_the_struct();
     test_missing_rail_reads_as_off();
     test_stat_carries_the_lcd_recovery_counters();
+    test_stat_carries_the_clock_source();
+    test_missing_clock_goes_out_as_null();
     test_unknown_readback_goes_out_as_null();
     test_stat_rejects_small_buffer();
     test_cfg_value();

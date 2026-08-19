@@ -100,6 +100,15 @@ typedef struct {
      * 값을 싣는다. 없으면 전부 0 이고 readback 은 null 이다. */
     struct MkLcd *lcd;
 
+    /* 시스템 클럭 출처(규격 §7.4). `mk_hostlink_attach_clock` 이 채운다.
+     *
+     * 🔴 `fw`·`board_rev` 와 같은 결로 **문자열을 받는다.** 이 층은 HAL 을
+     *    모르므로 bsp/mk_clock.h 를 include 할 수 없고, 그래야 클럭 없이도
+     *    호스트에서 통신만 시험할 수 있다. NULL 이면 `clock` 이
+     *    `{"src":null,"sysclk_hz":null}` 로 나간다. */
+    const char *clock_src;
+    uint32_t    clock_sysclk_hz;
+
     /* 제어 모드 (규격 §6.4). `mk_hostlink_tick` 이 CONFIG->RUN 전이를
      * 보고 스스로 ACTIVE 로 되돌린다. */
     MkCtlMode   ctl_mode;
@@ -154,6 +163,14 @@ void mk_hostlink_attach_gnssctl(MkHostlink *h, struct MkGnssCtl *gnssctl);
  * 전부 0 이고 `readback` 은 null 이다 — 화면이 안 붙은 빌드다. */
 struct MkLcd;
 void mk_hostlink_attach_lcd(MkHostlink *h, struct MkLcd *lcd);
+
+/* 시스템 클럭 출처를 붙인다 (규격 §7.4). 부르지 않으면 $STAT 의 `clock` 이
+ * `{"src":null,"sysclk_hz":null}` 로 나간다 — "이 장치는 답할 수 없다"이고,
+ * 클럭 없이 도는 호스트 시험이 그 자리다.
+ *
+ * `src` 는 계속 살아 있어야 한다(정적 문자열을 넘긴다). */
+void mk_hostlink_attach_clock(MkHostlink *h, const char *src,
+                              uint32_t sysclk_hz);
 
 /* 받은 줄 하나를 처리한다. 응답이 있으면 emit 으로 내보낸다.
  *

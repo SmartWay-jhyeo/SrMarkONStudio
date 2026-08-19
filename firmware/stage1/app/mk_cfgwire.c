@@ -170,6 +170,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *ctl_mode,
                     const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
+                    const char *clock_src, uint32_t clock_sysclk_hz,
                     const char *time_source, uint32_t time_quality,
                     int64_t gnss_pps_age_ms,
                     int64_t gnss_pps_raw_age_ms, uint32_t gnss_pps_raw_count,
@@ -194,6 +195,31 @@ int mk_cfgwire_stat(int64_t now_ms,
     mk_json_str(&j, "time_source", time_source);
     mk_json_u32(&j, "time_quality", time_quality);
     mk_json_u32(&j, "uptime_ms", uptime_ms);
+
+    /* 🔴 클럭 출처 — `time_source` 와 **다른 축**이다(규격 §7.4).
+     *
+     *    저쪽은 "`t` 의 절대 기준이 무엇인가"이고 이것은 "그 기준들
+     *    사이를 무엇으로 보간하는가"다. `time_source` 가 gnss_pps 라도
+     *    내부 RC 로 돌면 초 경계만 정확하고 그 안쪽은 ±1 % 흔들린다.
+     *
+     *    🔴 그렇다고 `time_quality` 를 낮추지 않는다. 낮추면 호스트가
+     *       "PPS 를 못 쓴다"로 읽어 멀쩡한 절대 시각까지 버린다 — 두
+     *       사실을 한 숫자로 합치면 어느 쪽이 나빠졌는지 되물을 방법이
+     *       없어진다. 그래서 필드를 따로 둔다.
+     *
+     *    바로 위(time_source·time_quality) 뒤에 붙인다. 셋이 함께 읽혀야
+     *    뜻이 서는 값들이다. */
+    mk_json_object_begin(&j, "clock");
+    if (clock_src != NULL) {
+        mk_json_str(&j, "src", clock_src);
+        mk_json_u32(&j, "sysclk_hz", clock_sysclk_hz);
+    } else {
+        /* 답할 수 없는 장치(시뮬레이터). 0 을 지어내면 "클럭이 0 Hz" 라는
+         * 말이 되고, "hsi" 를 지어내면 없는 폴백을 보고하는 것이 된다. */
+        mk_json_null(&j, "src");
+        mk_json_null(&j, "sysclk_hz");
+    }
+    mk_json_object_end(&j);
 
     /* 🔴 시간축 진단(Phase 3). `time_source`/`time_quality` 가 "지금 등급"
      *    이면 이 둘은 "그 등급이 얼마나 오래됐나"다 — 헤더 주석 참고.

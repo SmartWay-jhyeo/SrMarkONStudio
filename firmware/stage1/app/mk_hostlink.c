@@ -361,6 +361,13 @@ void mk_hostlink_attach_lcd(MkHostlink *h, struct MkLcd *lcd)
     h->lcd = lcd;
 }
 
+void mk_hostlink_attach_clock(MkHostlink *h, const char *src,
+                              uint32_t sysclk_hz)
+{
+    h->clock_src = src;
+    h->clock_sysclk_hz = sysclk_hz;
+}
+
 static void on_stat(MkHostlink *h, int64_t now_ms)
 {
     if (h->cfg == NULL) {
@@ -489,13 +496,19 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
      *    빠듯해 1280 으로 올려 다시 확보한다.
      *
      *    [신규, 2026-08-19] `lcd` 객체가 최악 ~120바이트를 더 먹는다
-     *    (계수기 여섯이 각각 10자리까지 갈 수 있다). 1408 로 올린다. */
-    char body[1408];
+     *    (계수기 여섯이 각각 10자리까지 갈 수 있다). 1408 로 올린다.
+     *
+     *    [신규, 2026-08-19] `clock` 객체가 최악 ~48바이트를 더 먹는다
+     *    ("clock":{"src":"hse_pll","sysclk_hz":4294967295}). 1472 로
+     *    올린다 — 이 버퍼가 모자라면 $STAT 이 ERR,BUSY 로 떨어져
+     *    **진단 창구가 통째로 닫힌다**(이 파일 위 실기기 기록). */
+    char body[1472];
     int n = mk_cfgwire_stat(
         now_ms,
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
         h->ctl_mode == MK_CTL_TEST ? "TEST" : "ACTIVE",
         h->fw, h->board_rev, (uint32_t)now_ms,
+        h->clock_src, h->clock_sysclk_hz,
         time_source, time_quality,
         gnss_pps_age_ms,
         gnss_pps_raw_age_ms, gnss_pps_raw_count, gnss_pps_unpaired_reason,

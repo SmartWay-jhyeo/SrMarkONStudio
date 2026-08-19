@@ -796,3 +796,47 @@ def test_the_simulator_does_not_invent_lcd_recovery_numbers():
     for key in ("epoch", "reinit", "redraw", "verify_ok", "verify_fail",
                 "rejected"):
         assert lcd[key] == 0, f"{key} 를 지어냈다"
+
+
+# ----------------------- $STAT 의 clock (규격 §7.4) -------------------------
+#
+# 🔴 클럭 출처는 진단 정보가 아니라 **시간축 신뢰도의 일부**다.
+#
+#    시간축은 PPS 로 1초마다 맞추고 그 사이는 보드의 타이머로 채운다. 보드가
+#    크리스털을 못 띄워 내부 RC 로 폴백하면(bsp/mk_clock.c) 초 안쪽 오차가
+#    ±1 % 까지 벌어진다 — 1초 끝에서 10 ms 이고, 이 시스템이 노리는 분해능
+#    전체와 같은 크기다. 호스트가 그것을 모르고 저장하면 안 된다.
+
+
+def test_stat_carries_the_clock_source():
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert set(rec["clock"]) == {"src", "sysclk_hz"}
+
+
+def test_the_simulator_does_not_invent_a_clock():
+    """🔴 여기에는 발진기가 없으므로 둘 다 **null** 이다.
+
+    "hse_pll" 로 흉내 내면 호스트는 있지도 않은 크리스털을 믿고 초 안쪽
+    정밀도를 가정하게 된다. lcd 의 readback=null 과 같은 결이고, 펌웨어도
+    클럭을 안 붙인 빌드에서 정확히 이 값을 낸다(mk_cfgwire.c).
+    """
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert rec["clock"]["src"] is None
+    assert rec["clock"]["sysclk_hz"] is None
+
+
+def test_clock_source_is_a_separate_axis_from_time_quality():
+    """🔴 `clock.src` 와 `time_quality` 를 한 숫자로 합치지 않는다.
+
+    합치면 "PPS 를 못 쓴다"(절대 기준 문제)와 "초 안쪽이 흔들린다"(보간
+    문제)를 구분할 방법이 사라지고, 호스트는 멀쩡한 절대 시각까지 버린다.
+    두 값이 stat 레코드에 **따로** 있는 것 자체가 그 결정이다(규격 §7.4).
+    """
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert "clock" in rec and "time_quality" in rec and "time_source" in rec

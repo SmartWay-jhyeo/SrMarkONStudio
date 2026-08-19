@@ -998,6 +998,51 @@ static void test_gnss_send_failure_is_reported_as_busy(void)
              "전송 실패는 BUSY 로 알린다");
 }
 
+/* ---- $STAT 의 클럭 출처(규격 §7.4) -------------------------------------- */
+
+/* 🔴 크리스털이 안 떠서 폴백한 보드는 **그 사실을 말할 수 있어야 한다.**
+ *
+ *    보드는 HSE 를 100 ms 까지만 기다리고 안 뜨면 내부 RC 로 계속 부팅한다
+ *    (bsp/mk_clock.c) — 거기서 서면 화면도 시리얼도 안 살아나 원인을 알
+ *    방법이 없기 때문이다. 그런데 계속 부팅한 것만으로는 부족하다: 초 안쪽
+ *    보간이 ±1 % 로 나빠졌다는 것을 호스트가 모르면, 그 보드의 데이터는
+ *    아무 표시 없이 저장된다. 이 시험이 그 경로 전체를 지킨다. */
+static void test_stat_reports_the_clock_source(void)
+{
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+
+    /* 안 붙였으면 null 이다 — 호스트 시험처럼 클럭 없이 도는 빌드. */
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"clock\":{\"src\":null,\"sysclk_hz\":null}") != NULL,
+              "클럭을 안 붙였으면 null — 값을 지어내지 않는다");
+    }
+
+    mk_hostlink_attach_clock(&h, "hsi", 64000000u);
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"clock\":{\"src\":\"hsi\",\"sysclk_hz\":64000000}")
+              != NULL,
+              "폴백한 보드는 그것을 그대로 싣는다");
+    }
+
+    mk_hostlink_attach_clock(&h, "hse_pll", 64000000u);
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"clock\":{\"src\":\"hse_pll\",\"sysclk_hz\":64000000}")
+              != NULL,
+              "크리스털로 돌면 그것도 그대로");
+    }
+}
+
 /* ---- $STAT 의 gnss 초기화 진단(규격 §7.4·§4.1.1) ------------------------ */
 
 static void test_stat_gnss_init_fields_default_to_false_without_gnssctl(void)
@@ -1417,6 +1462,7 @@ int main(int argc, char **argv)
     test_gnss_text_over_96_is_silently_dropped();
     test_gnss_unsupported_without_a_send_callback();
     test_gnss_send_failure_is_reported_as_busy();
+    test_stat_reports_the_clock_source();
     test_stat_gnss_init_fields_default_to_false_without_gnssctl();
     test_stat_gnss_init_fields_reflect_gnssctl();
     test_stat_pps_raw_visible_even_when_nmea_never_pairs();
