@@ -80,6 +80,17 @@ class Budget:
 #: 마스크로 끌 수 없는 필드들 (규격 §7.1). 표본에 언제나 들어간다.
 ALWAYS_ON = ("schema_ver", "seq", "t", "type")
 
+#: 레코드 종류별로 **항상** 실리는 잠긴 필드 (마스크 밖, 규격 §7.5·§7.6).
+#: `sample_record` 가 마스크 선택과 무관하게 이 필드들을 얹는다 — 실제
+#: 레코드가 늘 그렇기 때문이다. `host/gui/settings_form.py` 의
+#: `LOCKED_FIELDS` 와 같은 표다(그쪽은 화면에 "잠김" 으로 보여 주는 용도,
+#: 여기는 대역폭 표본을 만드는 용도 — 목적이 달라 따로 둔다).
+_LOCKED_BY_KIND: dict[str, tuple[str, ...]] = {
+    "ain": (),
+    "i2c": ("quantity", "value"),
+    "din": ("connector_id", "state"),
+}
+
 #: 필드 하나가 실을 **넉넉한** 표본값.
 #:
 #: 🔴 좁은 값으로 재면 실제보다 짧게 나오고, 짧게 나온 만큼이 정확히
@@ -95,6 +106,10 @@ _SAMPLE = {
     "status": 0,
     "capture_counter": 4_294_967_295,
     "connector_id": 9,
+    # 🔴 i2c·din 의 잠긴 필드. quantity 는 §7.5.1 어휘 중 가장 긴 것
+    # ("temp_object") — 좁은 값으로 재면 실제보다 짧게 나온다(모듈 머리말).
+    "quantity": "temp_object",
+    "state": 1,
 }
 
 #: 실수 필드 — 자릿수가 `tx.float_digits` 를 따른다.
@@ -104,7 +119,8 @@ _SAMPLE_FLOAT = {"ma": 19.999999, "value": 1234.567891}
 _UNKNOWN_PLACEHOLDER = "00000000"
 
 
-def sample_record(names, *, float_digits: int = 4) -> dict:
+def sample_record(names, *, float_digits: int = 4,
+                  record_type: str = "ain") -> dict:
     """고른 필드들로 **실제로 나갈 만한** 줄 하나를 만든다.
 
     🔴 어림이 아니라 진짜 레코드를 만든다. `measure_line` 이 그것을 재고,
@@ -113,11 +129,18 @@ def sample_record(names, *, float_digits: int = 4) -> dict:
     🔴 모르는 이름도 담는다. 보드가 규격을 올려 필드를 추가하면 호스트는
        그 이름을 모르는데, 그때 빼고 재면 화면이 여유가 있다고 말하면서
        실제로는 없는 상태가 된다.
+
+    🔴 [개정, 2026-08-19] `record_type` 이 `"ain"`이 아니면 그 레코드의
+       **잠긴 필드**(`_LOCKED_BY_KIND`)를 `names` 와 무관하게 항상 얹는다
+       — 실제 `i2c`·`din` 레코드가 마스크와 무관하게 `quantity`·`value`나
+       `connector_id`·`state` 를 늘 싣는 것과 같다. 이것 없이 재면 그
+       레코드의 진짜 크기보다 작게 잡혀, 여유가 있다고 말하는데 실제로는
+       없는 바로 그 실패가 된다(위 문단과 같은 이유).
     """
     rec: dict = {"schema_ver": 3, "seq": 4294967295, "t": 1_700_000_000_000,
-                 "type": "ain"}
-    for name in names:
-        if name in ALWAYS_ON:
+                 "type": record_type}
+    for name in (*_LOCKED_BY_KIND.get(record_type, ()), *names):
+        if name in ALWAYS_ON or name in rec:
             continue
         if name in _SAMPLE_FLOAT:
             rec[name] = round(_SAMPLE_FLOAT[name], float_digits)

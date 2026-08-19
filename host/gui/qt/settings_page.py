@@ -33,13 +33,13 @@ from host.gui.qt.parts import card_title, hairline
 from host.gui.qt.tare_panel import TarePanel
 from host.gui.settings_form import (
     COL_ZERO,
-    KEY_FIELD_MASK,
+    FIELD_MASK_KEYS,
     Row,
     SettingsForm,
     TelemetryShape,
     group_label,
     matrix_of,
-    telemetry_shape,
+    record_shape,
 )
 from host.gui.tare import tare_rows
 from host.gui.theme import Color, Space
@@ -207,11 +207,17 @@ class SettingsPage(QWidget):
         return scroll
 
     def _form_cards(self, rows) -> list[QFrame]:
-        """보통 항목들은 카드 한 장. 🔴 필드 마스크만 따로 뗀다 — 체크박스
-        열 개와 미리보기가 붙어서 한 줄에 담기지 않는다."""
+        """보통 항목들은 카드 한 장. 🔴 필드 마스크 셋(ain·i2c·din)은 따로
+        뗀다 — 체크박스 열 개와 미리보기가 붙어서 한 줄에 담기지 않는다.
+
+        🔴 [개정, 2026-08-19] 마스크 카드가 하나에서 셋으로 늘었다 —
+           `tx.fields` 가 `tx.fields_ain`·`tx.fields_i2c`·`tx.fields_din`
+           으로 나뉘었기 때문이다(규격 §7.2·§7.5·§7.6). `FIELD_MASK_KEYS`
+           순서(ain·i2c·din)대로 그린다."""
         cards: list[QFrame] = []
-        plain = [r for r in rows if r.key != KEY_FIELD_MASK]
-        mask = next((r for r in rows if r.key == KEY_FIELD_MASK), None)
+        mask_keys = set(FIELD_MASK_KEYS.values())
+        plain = [r for r in rows if r.key not in mask_keys]
+        masks = {r.key: r for r in rows if r.key in mask_keys}
 
         if plain:
             card = QFrame()
@@ -220,7 +226,7 @@ class SettingsPage(QWidget):
             lay.setContentsMargins(Space.MD, Space.MD, Space.MD, Space.MD)
             lay.setSpacing(Space.SM)
             # 제목 없음 — 탭이 그룹 이름을 말한다. 마스크 카드만 자기
-            # 제목을 갖는다(같은 탭 안의 두 번째 카드라 구분이 필요하다).
+            # 제목을 갖는다(같은 탭 안의 다른 카드들이라 구분이 필요하다).
             for row in plain:
                 w = self._make_cell(row)
                 # 🔴 한 줄의 폭을 묶는다. 창이 넓어져도 라벨에서 입력까지의
@@ -229,12 +235,17 @@ class SettingsPage(QWidget):
                 lay.addWidget(w)
             cards.append(card)
 
-        if mask is not None and self._form is not None:
-            card = FieldMaskCard(mask, self._form.fields, self._baud,
-                                 self._shape)
-            card.changed.connect(self._on_changed)
-            self._rows[mask.key] = card
-            cards.append(card)
+        if self._form is not None:
+            for kind, key in FIELD_MASK_KEYS.items():
+                row = masks.get(key)
+                if row is None:
+                    continue
+                card = FieldMaskCard(row, self._form.fields, self._baud,
+                                     lambda k=kind: record_shape(self._form, k),
+                                     record_kind=kind)
+                card.changed.connect(self._on_changed)
+                self._rows[row.key] = card
+                cards.append(card)
         return cards
 
     def _make_range(self, zero_row: Row, scale_row: Row) -> RangeFields:
@@ -371,9 +382,12 @@ class SettingsPage(QWidget):
         #    곱해진다. 그래서 **아무 항목이 바뀌어도** 다시 잰다. 필드를
         #    켤 때만 갱신하면, 채널을 하나 더 켜 놓고 필드 화면으로 왔을 때
         #    화면이 옛날 숫자를 말한다.
-        mask_card = self._rows.get(KEY_FIELD_MASK)
-        if isinstance(mask_card, FieldMaskCard):
-            mask_card.refresh()
+        #
+        #    🔴 [개정, 2026-08-19] 카드가 셋(ain·i2c·din)이라 전부 갱신한다.
+        for key in FIELD_MASK_KEYS.values():
+            mask_card = self._rows.get(key)
+            if isinstance(mask_card, FieldMaskCard):
+                mask_card.refresh()
 
         if errors:
             self._status.setText(f"고칠 것 {len(errors)}개 — 보낼 수 없다")

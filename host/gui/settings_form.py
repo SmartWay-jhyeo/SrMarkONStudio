@@ -276,9 +276,52 @@ COL_UNIT = "unit"
 COL_KIND = "kind"
 COL_ENABLED = "enabled"
 
-KEY_FIELD_MASK = "tx.fields"
+#: 🔴 [개정, 2026-08-19] `tx.fields` 하나였던 마스크가 레코드 종류별로
+#:    셋으로 나뉘었다(규격 §7.2·§7.5·§7.6) — `ain` 의 `raw` 를 꺼도 `i2c` 는
+#:    무관해야 하는데 마스크가 하나면 그럴 수 없었다. 키 이름은 규격이
+#:    정한 계약이라 여기 적는다 — 카탈로그 항목을 하드코딩하는 것과는
+#:    다르다(머리말 참고, `KEY_PERIOD_MS` 와 같은 성격).
+KEY_FIELD_MASK_AIN = "tx.fields_ain"
+KEY_FIELD_MASK_I2C = "tx.fields_i2c"
+KEY_FIELD_MASK_DIN = "tx.fields_din"
 KEY_PERIOD_MS = "tx.period_ms"
 KEY_FLOAT_DIGITS = "tx.float_digits"
+
+#: 레코드 종류 → 자기 마스크 설정 키. 화면이 카드를 셋으로 나눠 그릴 때
+#: 이 순서를 따른다(ain·i2c·din — 규격이 절을 나눈 순서와 같다).
+FIELD_MASK_KEYS: dict[str, str] = {
+    "ain": KEY_FIELD_MASK_AIN,
+    "i2c": KEY_FIELD_MASK_I2C,
+    "din": KEY_FIELD_MASK_DIN,
+}
+
+#: 레코드 종류 → 그 종류의 "채널 수" 를 셀 그룹. `din`(J18~J20)은 켜고 끄는
+#: 채널이 없다 — 남는 카탈로그 항목이 `sol.debounce_ms` 하나뿐이라
+#: `matrix_of` 가 표로 접지 못한다(반복 최소 3줄, MATRIX_MIN_ROWS). 그래서
+#: `din` 의 대역폭은 "채널 수 × 주기" 로 어림할 수 없다 — 애초에 이벤트성
+#: 레코드라(규격 §7.6) 지어내지 않는다(설계 원칙 3·4와 같은 결).
+_RECORD_GROUP: dict[str, str] = {"ain": "ain", "i2c": "i2c", "din": "sol"}
+
+#: 이 필드는 잠겨 있다 — 마스크 비트가 아예 없어 항상 실린다(규격 §7.1·
+#: §7.5·§7.6). 카드가 "잠김" 으로 보여 줄 항목들이다. `time_source`는
+#: 모든 레코드에 공통이고, 나머지는 그 레코드가 아니면 뜻이 없는 필드다.
+LOCKED_FIELDS: dict[str, tuple[str, ...]] = {
+    "ain": ("time_source",),
+    "i2c": ("time_source", "quantity", "value"),
+    "din": ("time_source", "connector_id", "state"),
+}
+
+#: 잠긴 필드의 사람이 읽는 이름표. 보드가 이 이름을 알려 주지 않는다 —
+#: 마스크 비트가 없어 `cfg_field` 로도 안 온다. `schema_ver`·`seq`·`t`·
+#: `type` 이 이미 `field_budget.ALWAYS_ON` 으로 하드코딩돼 있는 것과 같은
+#: 성격이다 — 카탈로그 항목이 아니라 **규격이 고정한 이름**이다.
+LOCKED_FIELD_LABELS: dict[str, str] = {
+    "time_source": "시간 소스",
+    "quantity": "측정량",
+    "value": "측정값",
+    "connector_id": "커넥터 번호",
+    "state": "상태",
+}
 
 
 @dataclass(frozen=True)
@@ -290,18 +333,34 @@ class TelemetryShape:
     float_digits: int
 
 
-def telemetry_shape(form: "SettingsForm") -> TelemetryShape:
-    """켜진 채널 수·전송 주기·실수 자릿수를 폼에서 읽는다.
+def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
+    """`kind`(`ain`·`i2c`·`din`) 레코드가 만들어 낼 텔레메트리의 모양.
+
+    🔴 [개정, 2026-08-19] 채널 수는 **그 종류의 그룹 하나만** 센다
+       (`_RECORD_GROUP`). `tx.fields` 가 하나였던 시절에는 모든 그룹의
+       토글 열을 통째로 더해도 우연히 맞았다(꺼진 그룹은 0을 보탤 뿐이라)
+       — 마스크를 셋으로 나눈 지금은 `ain` 카드가 `i2c` 채널까지 세면
+       안 된다.
 
     🔴 값을 정수로 못 읽으면 **기본값으로 돌아간다.** 사용자가 주기를
        지우는 동안 값은 빈 문자열이고, 그때 예외가 나면 숫자 하나 지웠다고
        설정 화면이 통째로 죽는다.
 
     🔴 채널 수는 키 이름을 짐작하지 않고 **반복 그룹의 토글 열**에서 센다
-       (`matrix_of`). 보드가 채널 항목의 이름을 바꿔도 따라간다.
+       (`matrix_of`). 보드가 채널 항목의 이름을 바꿔도 따라간다. `din`은
+       채널을 켜고 끄는 항목이 없어(J18~J20은 항상 감시된다) 표로 접히지
+       않고, `channels`는 항상 0이다 — 이벤트성 레코드라 "채널 수 × 주기"
+       로 대역폭을 어림할 근거 자체가 없다(모듈 위 `_RECORD_GROUP` 주석).
+
+    🔴 `i2c`의 전송 주기도 `ain`과 같은 `tx.period_ms`다(규격 §7.1) —
+       포트마다 다른 `i2cN.period_ms`는 **수집** 주기이지 **송신** 주기가
+       아니다.
     """
+    group_name = _RECORD_GROUP.get(kind, kind)
     channels = 0
     for group in form.groups:
+        if group.name != group_name:
+            continue
         matrix = matrix_of(group)
         if matrix is None:
             continue
@@ -315,6 +374,14 @@ def telemetry_shape(form: "SettingsForm") -> TelemetryShape:
         period_ms=_int_or(form, KEY_PERIOD_MS, 100, minimum=1),
         float_digits=_int_or(form, KEY_FLOAT_DIGITS, 4, minimum=0),
     )
+
+
+def telemetry_shape(form: "SettingsForm") -> TelemetryShape:
+    """`ain` 레코드의 모양 — `record_shape(form, "ain")`의 줄임.
+
+    옛 이름을 그대로 남긴다. 예전에는 마스크가 하나뿐이라 이 함수 하나로
+    충분했고, 지금도 `ain` 카드는 여전히 이 이름으로 부른다."""
+    return record_shape(form, "ain")
 
 
 def channel_ranges(form: "SettingsForm") -> dict[int, tuple[float, float]]:
