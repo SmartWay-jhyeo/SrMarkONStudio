@@ -892,9 +892,10 @@ static void test_gnss_rejects_empty_text(void)
     CHECK(gnss_sent_calls == 0, "모듈로 안 나간다");
 }
 
-static void test_gnss_rejects_embedded_comma(void)
+static void test_gnss_forwards_embedded_comma_verbatim(void)
 {
-    /* 콤마가 들어가면 인자가 둘로 쪼개진다 — argc != 1. */
+    /* 🔴 규격 개정 — $GNSS 는 일반 인자 쪼개기(쉼표 분할)를 거치지
+     * 않는다. 쉼표가 있어도 원문 그대로 한 덩어리로 모듈에 나간다. */
     MkHostlink h; Sink s;
     setup(&h, &s);
     reset_gnss_fake();
@@ -902,22 +903,69 @@ static void test_gnss_rejects_embedded_comma(void)
     feed(&h, "HB", 1000);
     sink_reset(&s);
     feed(&h, "GNSS,LOG,GPRMC", 1000);
-    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,ERR,RANGE"), "콤마가 있으면 RANGE");
-    CHECK(gnss_sent_calls == 0, "모듈로 안 나간다");
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,OK"), "쉼표가 있어도 받는다");
+    CHECK(gnss_sent_calls == 1, "모듈로 나간다");
+    CHECK_EQ(gnss_sent_buf, "LOG,GPRMC\r\n", "쉼표까지 원문 그대로 + CR/LF");
 }
 
-static void test_gnss_text_over_arg_limit_is_silently_dropped(void)
+static void test_gnss_forwards_the_real_um981_pps_command(void)
 {
-    /* 규격 §3.1/§4.1 — 인자 상한(23바이트, MK_ARG_MAX)을 넘으면 verb 조차
-     * 못 읽으므로 SACK 을 만들 재료가 없다 — 조용히 버려진다. */
+    /* 🔴 실기기에서 막혔던 그 명령. "CONFIG PPS ENABLE3"(18자)·
+     * "CONFIG PPS ENABLE2 GPS"(22자) 로 줄여 보냈더니 모듈이 둘 다
+     * "PARSING FAILD FIELD OUT OF RANGE, Too less field!" 로 거부했다 —
+     * 파라미터 전부(47자)가 한 덩어리로 와야 한다(docs/datasheet/
+     * Unicore_N4_Commands.pdf p.21 §4.3 · p.22 Table 4-6). */
     MkHostlink h; Sink s;
     setup(&h, &s);
     reset_gnss_fake();
     mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
     feed(&h, "HB", 1000);
     sink_reset(&s);
-    feed(&h, "GNSS,012345678901234567890123", 1000);   /* 24 바이트 */
-    CHECK(s.n == 0, "23바이트를 넘는 인자는 조용히 버려진다");
+    feed(&h, "GNSS,CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0", 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,OK"), "실제 PPS 설정 명령을 받는다");
+    CHECK(gnss_sent_calls == 1, "모듈로 나간다");
+    CHECK_EQ(gnss_sent_buf, "CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0\r\n",
+             "47자 전체가 그대로 나간다");
+}
+
+static void test_gnss_text_at_96_boundary_is_accepted(void)
+{
+    /* MK_GNSS_TEXT_MAX(96) — 경계는 받는다. */
+    MkHostlink h; Sink s;
+    char payload[6 + 96 + 1];
+    memcpy(payload, "GNSS,", 5);
+    memset(payload + 5, 'A', 96);
+    payload[5 + 96] = '\0';
+
+    setup(&h, &s);
+    reset_gnss_fake();
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, payload, 1000);
+    CHECK_EQ(sack_of(&s), expect_line("SACK,GNSS,OK"), "96바이트 텍스트를 받는다");
+    CHECK(gnss_sent_calls == 1, "모듈로 나간다");
+    CHECK(gnss_sent_len == 98u, "96바이트 + CR/LF");
+}
+
+static void test_gnss_text_over_96_is_silently_dropped(void)
+{
+    /* 규격 §3.1/§4.1 — MK_GNSS_TEXT_MAX(96)를 넘으면 고정폭 버퍼 규칙대로
+     * 조용히 버려진다(mk_framing.c 의 mk_parse_line). 다른 명령의
+     * 23바이트 한도(MK_ARG_MAX)와는 별개의 상한이다. */
+    MkHostlink h; Sink s;
+    char payload[6 + 97 + 1];
+    memcpy(payload, "GNSS,", 5);
+    memset(payload + 5, 'A', 97);
+    payload[5 + 97] = '\0';
+
+    setup(&h, &s);
+    reset_gnss_fake();
+    mk_hostlink_attach_gnss(&h, fake_gnss_send, NULL);
+    feed(&h, "HB", 1000);
+    sink_reset(&s);
+    feed(&h, payload, 1000);
+    CHECK(s.n == 0, "97바이트를 넘는 텍스트는 조용히 버려진다");
     CHECK(gnss_sent_calls == 0, "모듈로도 안 나간다");
 }
 
@@ -1272,8 +1320,10 @@ int main(int argc, char **argv)
     test_gnss_forwards_text_verbatim_and_appends_line_end();
     test_gnss_rejects_control_characters();
     test_gnss_rejects_empty_text();
-    test_gnss_rejects_embedded_comma();
-    test_gnss_text_over_arg_limit_is_silently_dropped();
+    test_gnss_forwards_embedded_comma_verbatim();
+    test_gnss_forwards_the_real_um981_pps_command();
+    test_gnss_text_at_96_boundary_is_accepted();
+    test_gnss_text_over_96_is_silently_dropped();
     test_gnss_unsupported_without_a_send_callback();
     test_gnss_send_failure_is_reported_as_busy();
     test_stat_gnss_init_fields_default_to_false_without_gnssctl();

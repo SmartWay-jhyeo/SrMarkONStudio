@@ -14,6 +14,14 @@ static int failures = 0;
     else         { printf("  ok   %s\n", msg); }                \
 } while (0)
 
+#define CHECK_EQ(got, want, msg) do {                                       \
+    if (strcmp((got), (want)) != 0) {                                       \
+        printf("  FAIL %s\n        got  %s\n        want %s\n",             \
+               msg, (got), (want));                                         \
+        failures++;                                                         \
+    } else { printf("  ok   %s\n", msg); }                                  \
+} while (0)
+
 static void test_checksum_vectors(void)
 {
     /* 규격 §3 — Python 쪽과 동일한 벡터 */
@@ -209,6 +217,95 @@ static void test_parse_rejects_too_many_args(void)
     CHECK(mk_parse_line(line, n, &c) == MK_ERR_MALFORMED, "인자 개수 초과 거부");
 }
 
+/* ---- $GNSS 원문 꼬리(raw tail) — 규격 §4.1, MK_ARG_MAX 를 쓰지 않는다 ----
+ *
+ * 🔴 실기기 근거: UM981 에 PPS 를 켜려면
+ *    "CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0" (46자) 전체가
+ *    필요하다. 줄여서 "CONFIG PPS ENABLE3"(18자)·"CONFIG PPS ENABLE2 GPS"
+ *    (22자) 를 실제로 보내 봤더니 모듈이 둘 다
+ *    "PARSING FAILD FIELD OUT OF RANGE, Too less field!" 로 거부했다 —
+ *    파라미터 전부가 한 덩어리로 와야 한다(docs/datasheet/
+ *    Unicore_N4_Commands.pdf p.21 §4.3 · p.22 Table 4-6). 그런데 옛 파서는
+ *    MK_ARG_MAX(23) 로 쪼개므로 46자를 아예 못 보냈다. */
+
+static void test_parse_gnss_raw_tail_carries_the_real_command(void)
+{
+    /* 실기기에서 막힌 그 46자 명령이 온전히 통과해야 한다. */
+    char line[128];
+    MkCommand c;
+    const char *text = "CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0";
+    /* 🔴 과제 설명은 "46자"라 적었지만 실측하면 47자다(공백 포함 육안
+     * 계산의 오차로 보인다) — MK_GNSS_TEXT_MAX(96)는 어느 쪽으로도
+     * 여유가 있으므로 동작에는 영향이 없다. */
+    CHECK(strlen(text) == 47u, "고정문 길이가 47자다(전제 확인)");
+    size_t n = make_line(line, "GNSS,CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0");
+    CHECK(mk_parse_line(line, n, &c) == MK_OK, "46자 GNSS 명령을 받는다");
+    CHECK(strcmp(c.verb, "GNSS") == 0, "verb=GNSS");
+    CHECK(c.argc == 1, "argc=1");
+    CHECK_EQ(c.gnss_text, text, "원문이 그대로 담긴다");
+}
+
+static void test_parse_gnss_raw_tail_does_not_split_on_comma(void)
+{
+    /* 🔴 $GNSS 는 일반 인자 쪼개기(쉼표 분할)를 거치지 않는다 — 쉼표가
+     * 있어도 한 덩어리로 남는다. */
+    char line[128];
+    MkCommand c;
+    size_t n = make_line(line, "GNSS,LOG,GPRMC ONTIME 1");
+    CHECK(mk_parse_line(line, n, &c) == MK_OK, "쉼표가 있어도 파싱된다");
+    CHECK(c.argc == 1, "argc=1 — 쪼개지지 않는다");
+    CHECK_EQ(c.gnss_text, "LOG,GPRMC ONTIME 1", "쉼표까지 원문 그대로");
+}
+
+static void test_parse_gnss_raw_tail_boundary_96_ok_97_dropped(void)
+{
+    /* 96 바이트(필요한 46자의 두 배)는 받는다. 97 바이트는 조용히
+     * 버려진다 — 고정폭 버퍼 상한(mk_framing.h 머리말)과 같은 계약. */
+    char payload96[6 + 96 + 1], payload97[6 + 97 + 1], line[220];
+    MkCommand c;
+
+    memcpy(payload96, "GNSS,", 5);
+    memset(payload96 + 5, 'A', 96);
+    payload96[5 + 96] = '\0';
+    size_t n96 = make_line(line, payload96);
+    CHECK(mk_parse_line(line, n96, &c) == MK_OK, "96바이트 텍스트는 받는다");
+    CHECK(strlen(c.gnss_text) == 96u, "96바이트가 그대로 담긴다");
+
+    memcpy(payload97, "GNSS,", 5);
+    memset(payload97 + 5, 'A', 97);
+    payload97[5 + 97] = '\0';
+    size_t n97 = make_line(line, payload97);
+    CHECK(mk_parse_line(line, n97, &c) == MK_ERR_MALFORMED, "97바이트는 조용히 버려진다");
+}
+
+static void test_parse_gnss_bad_checksum_is_rejected(void)
+{
+    /* 🔴 체크섬은 원문 전체(꼬리 포함)에 대해 계산된다. 꼬리를 따로 떼어
+     * 내는 경로가 체크섬 검증을 건너뛰면 안 된다 — verb 는 남지만
+     * CHECKSUM 이어야 한다. */
+    MkCommand c;
+    const char *bad = "$GNSS,CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0*00\r\n";
+    CHECK(mk_parse_line(bad, strlen(bad), &c) == MK_ERR_CHECKSUM,
+          "체크섬이 틀리면 CHECKSUM");
+    CHECK(strcmp(c.verb, "GNSS") == 0, "CHECKSUM 이어도 verb 는 남는다");
+}
+
+static void test_parse_other_verbs_still_split_on_comma_at_23(void)
+{
+    /* 🔴 되돌림 검사 반대 방향: $GNSS 가 아닌 명령의 인자 한도는 여전히
+     * MK_ARG_MAX(23)다 — 이번 변경이 새는 곳 없이 GNSS 에만 갇혀 있는지
+     * 확인한다. */
+    char line[128];
+    MkCommand c;
+    size_t n_ok = make_line(line, "CFG,SET,dev.id,01234567890123456789012");  /* 23자 */
+    CHECK(mk_parse_line(line, n_ok, &c) == MK_OK, "23바이트 인자는 CFG 에서도 그대로 받는다");
+    CHECK(strcmp(c.args[2], "01234567890123456789012") == 0, "23바이트 인자 내용");
+
+    size_t n_over = make_line(line, "CFG,SET,dev.id,012345678901234567890123"); /* 24자 */
+    CHECK(mk_parse_line(line, n_over, &c) == MK_ERR_MALFORMED,
+          "24바이트 인자는 CFG 에서 여전히 조용히 버려진다");
+}
+
 /* 🔴 Python 과 기계로 대조하기 위한 출력. 눈으로 두 표를 맞춰보면
  *    조용히 어긋난다. crosscheck.py 가 이 출력을 그대로 비교한다. */
 static const char *const VECTORS[] = {
@@ -318,6 +415,11 @@ int main(int argc, char **argv)
     test_parse_rejects_oversized_verb();
     test_parse_rejects_oversized_arg();
     test_parse_rejects_too_many_args();
+    test_parse_gnss_raw_tail_carries_the_real_command();
+    test_parse_gnss_raw_tail_does_not_split_on_comma();
+    test_parse_gnss_raw_tail_boundary_96_ok_97_dropped();
+    test_parse_gnss_bad_checksum_is_rejected();
+    test_parse_other_verbs_still_split_on_comma_at_23();
     printf(failures ? "\nFAILED (%d)\n" : "\nPASSED\n", failures);
     return failures ? 1 : 0;
 }

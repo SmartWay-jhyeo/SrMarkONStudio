@@ -107,34 +107,73 @@ MkParseResult mk_parse_line(const char *line, size_t len, MkCommand *out)
      *   MK_ERR_CHECKSUM  → out->verb 유효 → SACK 을 보낸다
      *   MK_ERR_MALFORMED → verb 를 못 읽었다 → 조용히 버린다 */
     memset(out, 0, sizeof *out);
-    size_t field = 0u;
-    char *dst = out->verb;
-    size_t dst_cap = MK_VERB_MAX;
-    size_t w = 0u;
 
-    for (size_t i = 1u; i < star; i++) {
-        if (line[i] == ',') {
-            dst[w] = '\0';
-            if (field >= MK_ARGS_MAX) {
-                return MK_ERR_MALFORMED;
-            }
-            dst = out->args[field];
-            dst_cap = MK_ARG_MAX;
-            w = 0u;
-            field++;
-            continue;
-        }
-        if (w >= dst_cap) {
+    /* verb 부터 홀로 읽는다. $GNSS 인지 알아야 이어지는 필드 파싱이
+     * 갈린다(아래) — 그래서 verb 파싱을 나머지와 분리해 뒀다. */
+    size_t i = 1u;
+    size_t vw = 0u;
+    while (i < star && line[i] != ',') {
+        if (vw >= MK_VERB_MAX) {
             return MK_ERR_MALFORMED;     /* 고정폭 초과 — 잘라 담지 않는다 */
         }
-        dst[w++] = line[i];
+        out->verb[vw++] = line[i++];
     }
-    dst[w] = '\0';
-
+    out->verb[vw] = '\0';
     if (out->verb[0] == '\0') {
         return MK_ERR_MALFORMED;
     }
-    out->argc = (int)field;
+
+    if (strcmp(out->verb, "GNSS") == 0) {
+        /* 🔴 $GNSS 는 일반 인자 쪼개기(쉼표 분할)를 거치지 않는다 — payload
+         * 의 나머지 전부를 하나의 원문으로 가져간다. Unicore 명령은
+         * 공백으로 나뉘고 쉼표를 안 쓰므로 원문 그대로 넘기는 편이,
+         * 나중에 어떤 명령이 와도 안전하다(규격 §4.1, mk_framing.h 의
+         * MK_GNSS_TEXT_MAX 주석 — 실기기 "Too less field!" 근거).
+         *
+         * 상한을 넘으면 다른 필드 초과와 똑같이 조용히 버린다(고정폭
+         * 버퍼 계약, 이 파일 머리말) — verb 는 이미 유효해도 마찬가지다.
+         * 호스트가 보내기 전에 이미 이 상한을 확인하므로(host/core/
+         * limits.py), 여기까지 오는 초과는 방어선일 뿐이다. */
+        size_t tail_start = i;
+        if (tail_start < star) {
+            tail_start++;                 /* line[i] == ',' 를 건너뛴다 */
+        }
+        size_t tail_len = star - tail_start;
+        if (tail_len > MK_GNSS_TEXT_MAX) {
+            return MK_ERR_MALFORMED;
+        }
+        memcpy(out->gnss_text, line + tail_start, tail_len);
+        out->gnss_text[tail_len] = '\0';
+        out->argc = (tail_len > 0u) ? 1 : 0;
+    } else {
+        size_t field = 0u;
+        if (i < star) {
+            i++;                          /* line[i] == ',' 를 건너뛴다 */
+            char *dst = out->args[0];
+            size_t dst_cap = MK_ARG_MAX;
+            size_t w = 0u;
+            for (; i < star; i++) {
+                if (line[i] == ',') {
+                    dst[w] = '\0';
+                    field++;
+                    if (field >= MK_ARGS_MAX) {
+                        return MK_ERR_MALFORMED;
+                    }
+                    dst = out->args[field];
+                    dst_cap = MK_ARG_MAX;
+                    w = 0u;
+                    continue;
+                }
+                if (w >= dst_cap) {
+                    return MK_ERR_MALFORMED; /* 고정폭 초과 — 잘라 담지 않는다 */
+                }
+                dst[w++] = line[i];
+            }
+            dst[w] = '\0';
+            field++;                      /* 마지막 필드도 센다 */
+        }
+        out->argc = (int)field;
+    }
 
     /* '*' 뒤 전부를 기대값과 비교한다.
      * Python 쪽도 given.upper() != expected 로 뒤쪽 전체를 비교하므로,

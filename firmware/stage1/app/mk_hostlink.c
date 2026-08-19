@@ -280,14 +280,15 @@ static void on_gnss(MkHostlink *h, const MkCommand *c, int64_t now_ms)
         return;
     }
 
-    /* 🔴 인자가 정확히 하나여야 한다. 콤마가 섞였으면 이미 둘로 쪼개진
-     *    뒤다(mk_parse_line) — 그것을 다시 합쳐 보내지 않는다. 빈
-     *    문자열도 거부한다(규격 §4.1). */
-    if (c->argc != 1 || c->args[0][0] == '\0') {
+    /* 🔴 텍스트가 있어야 한다(argc==1). mk_parse_line 이 이미 $GNSS 를
+     *    원문 꼬리(raw tail)로 파싱해 뒀다 — 쉼표로 다시 쪼개지 않는다
+     *    (mk_framing.h 의 MK_GNSS_TEXT_MAX 주석). 빈 문자열도 거부한다
+     *    (규격 §4.1). */
+    if (c->argc != 1 || c->gnss_text[0] == '\0') {
         emit_sack_err(h, "GNSS", "RANGE");
         return;
     }
-    for (const char *p = c->args[0]; *p != '\0'; p++) {
+    for (const char *p = c->gnss_text; *p != '\0'; p++) {
         if (!is_gnss_text_char(*p)) {
             emit_sack_err(h, "GNSS", "RANGE");
             return;
@@ -301,12 +302,12 @@ static void on_gnss(MkHostlink *h, const MkCommand *c, int64_t now_ms)
 
     /* 🔴 줄 끝 CR/LF 는 여기서 붙인다 — bsp 의 send 콜백은 받은 바이트를
      *    그대로 내보내기만 하는 얇은 관이다(mk_gnss.h 의 MkGnssSend 주석).
-     *    그래야 이 로직이 호스트에서 시험된다. 인자는 MK_ARG_MAX(23)
-     *    바이트 이하이므로 +2(CR/LF)가 이 버퍼를 넘지 않는다. */
-    char buf[MK_ARG_MAX + 2];
+     *    그래야 이 로직이 호스트에서 시험된다. 텍스트는 MK_GNSS_TEXT_MAX
+     *    (96) 바이트 이하이므로 +2(CR/LF)가 이 버퍼를 넘지 않는다. */
+    char buf[MK_GNSS_TEXT_MAX + 2];
     size_t tlen = 0;
-    while (c->args[0][tlen] != '\0') {
-        buf[tlen] = c->args[0][tlen];
+    while (c->gnss_text[tlen] != '\0') {
+        buf[tlen] = c->gnss_text[tlen];
         tlen++;
     }
     buf[tlen]     = '\r';
