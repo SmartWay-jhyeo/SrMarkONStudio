@@ -31,7 +31,8 @@ $suites = @(
     @{ exe = "test_i2c.exe";      src = "test_i2c.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ws2812.c ..\app\mk_solctl.c ..\app\mk_queue.c" },
     @{ exe = "test_gnss.exe";     src = "test_gnss.c ..\app\mk_gnss.c" },
     @{ exe = "test_gnssctl.exe";  src = "test_gnssctl.c ..\app\mk_gnssctl.c" },
-    @{ exe = "test_timeax.exe";   src = "test_timeax.c ..\app\mk_timeax.c ..\app\mk_gnss.c" }
+    @{ exe = "test_timeax.exe";   src = "test_timeax.c ..\app\mk_timeax.c ..\app\mk_gnss.c" },
+    @{ exe = "test_lcd.exe";      src = "test_lcd.c ..\app\mk_lcd.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c ..\app\mk_ws2812.c ..\app\mk_solctl.c ..\app\mk_queue.c" }
 )
 
 # 빌드와 실행을 나눈다. 한 사슬로 묶으면 컴파일 실패와 시험 실패가 같은
