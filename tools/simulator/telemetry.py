@@ -34,7 +34,25 @@ FULL_SCALE_V = 2.0 * VREF_V
 #: AIN0 은 J3 에 대응 (데이터시트 §5.3)
 CONNECTOR_OFFSET = 3
 
-_BIT_OF = {name: bit for bit, name, _d, _l in FIELD_BITS}
+_BIT_OF = {name: bit for bit, name, _d, _l, _r in FIELD_BITS}
+#: 비트 이름 → 이 비트가 속한 레코드 종류들. field_on() 의 방어선이다.
+_RECORDS_OF = {name: records for _b, name, _d, _l, records in FIELD_BITS}
+
+
+def _field_on(mask: int, name: str, kind: str) -> bool:
+    """이 필드가 `kind` 레코드의 마스크에서 켜져 있는가.
+
+    🔴 [개정, 2026-08-19] 이름만 비교하지 않고 **이 비트가 이 레코드에
+       해당하는지도 함께 본다** — 펌웨어(mk_telem.c field_on())와 같은
+       방어선이다. `tx.fields` 를 셋으로 나누며 마스크만 갈아 끼우고
+       이름 비교만 남겨 두면, 해당 없는 비트가 마스크에 서 있어도(예:
+       손상된 저장값) 조용히 새는 자리가 남는다."""
+    if kind not in _RECORDS_OF.get(name, ()):
+        return False
+    bit = _BIT_OF.get(name)
+    if bit is None:
+        return False
+    return bool(mask & (1 << bit))
 
 
 def raw_to_ma(raw: int) -> float:
@@ -64,11 +82,11 @@ def build_ain_record(
     `time_source`·`time_quality` 는 Phase 3 GNSS/PPS 시간축의 등급이다.
     기본값(device_clock/0)은 GNSS 가 없던 예전 동작 그대로다 —
     `DeviceSim._gnss_time_state()` 가 실제 등급을 계산해 넘긴다."""
-    mask = store.field_mask
+    mask = store.field_mask("ain")
     digits = int(store.get("tx.float_digits"))
 
     def on(name: str) -> bool:
-        return bool(mask & (1 << _BIT_OF[name]))
+        return _field_on(mask, name, "ain")
 
     # 규격 §7.1 — 이 넷은 마스크와 무관하게 항상 들어간다.
     rec: dict = {
@@ -142,29 +160,31 @@ def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
                      value: float | None, status: int = 0,
                      time_source: str = "device_clock",
                      time_quality: int = 0) -> dict:
-    """규격 §7.5 의 i2c 레코드. 마스크는 ain 과 **같은** `tx.fields` 다.
+    """규격 §7.5 의 i2c 레코드.
+
+    🔴 [개정, 2026-08-19] 마스크는 `tx.fields_i2c` 로 `ain`·`din` 과 독립이다.
 
     status: 0=정상 · 1=응답 없음 · 2=데이터 오류 · 3=지원하지 않는 종류
     """
-    mask = store.field_mask
+    mask = store.field_mask("i2c")
     digits = int(store.get("tx.float_digits"))
 
     rec: dict = {"schema_ver": SCHEMA_VER, "seq": seq, "t": t_ms,
                  "type": "i2c"}
-    if mask & (1 << _BIT_OF["connector_id"]):
+    if _field_on(mask, "connector_id", "i2c"):
         rec["connector_id"] = connector_id
     # 🔴 quantity·value 는 마스크로 끌 수 없다 (규격 §7.5). 둘이 빠지면
     #    레코드가 아무 말도 안 한다.
     rec["quantity"] = quantity
     rec["value"] = None if value is None else round(value, digits)
     # 🔴 `unit` 을 싣지 않는다 (규격 §7.5) — quantity 가 이미 정한다.
-    if mask & (1 << _BIT_OF["status"]):
+    if _field_on(mask, "status", "i2c"):
         rec["status"] = status
-    if mask & (1 << _BIT_OF["device_id"]):
+    if _field_on(mask, "device_id", "i2c"):
         rec["device_id"] = str(store.get("dev.id"))
     # 🔴 time_source 는 마스크로 못 끈다 — build_ain_record 와 같은 근거.
     rec["time_source"] = time_source
-    if mask & (1 << _BIT_OF["time_quality"]):
+    if _field_on(mask, "time_quality", "i2c"):
         rec["time_quality"] = time_quality
     return rec
 
@@ -176,7 +196,9 @@ def build_din_record(store: ConfigStore, *, connector_id: int, state: int,
                      seq: int, t_ms: int,
                      time_source: str = "device_clock",
                      time_quality: int = 0) -> dict:
-    """규격 §7.6 의 din 레코드. 마스크는 ain·i2c 와 **같은** `tx.fields` 다.
+    """규격 §7.6 의 din 레코드.
+
+    🔴 [개정, 2026-08-19] 마스크는 `tx.fields_din` 으로 `ain`·`i2c` 와 독립이다.
 
     🔴 `connector_id`·`state` 는 마스크로 끌 수 없다 — 둘이 빠지면 레코드가
        아무 말도 안 한다(i2c 의 quantity·value 와 같은 이유).
@@ -185,14 +207,14 @@ def build_din_record(store: ConfigStore, *, connector_id: int, state: int,
        옵토의 로우 액티브를 이미 뒤집어 `state` 를 건넨다 — "1 = 켜짐" 이
        전선에 나가는 유일한 뜻이다.
     """
-    mask = store.field_mask
+    mask = store.field_mask("din")
     rec: dict = {"schema_ver": SCHEMA_VER, "seq": seq, "t": t_ms, "type": "din"}
     rec["connector_id"] = connector_id
     rec["state"] = state
-    if mask & (1 << _BIT_OF["device_id"]):
+    if _field_on(mask, "device_id", "din"):
         rec["device_id"] = str(store.get("dev.id"))
     # 🔴 time_source 는 마스크로 못 끈다 — build_ain_record 와 같은 근거.
     rec["time_source"] = time_source
-    if mask & (1 << _BIT_OF["time_quality"]):
+    if _field_on(mask, "time_quality", "din"):
         rec["time_quality"] = time_quality
     return rec

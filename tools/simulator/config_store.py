@@ -34,17 +34,33 @@ from host.core.records import SCHEMA_VER
 #:    저장하는 사고가 되돌아온다. `i2c` 의 `quantity`·`value`, `din` 의
 #:    `connector_id`·`state` 와 같은 자리로 옮겼다(항상 실린다, telemetry.py
 #:    참고). bit=1 자리는 비워 둔다 — 다른 필드가 새로 쓰지 않는다.
-FIELD_BITS: tuple[tuple[int, str, bool, str], ...] = (
-    (0, "device_id", False, "보드 식별자"),
-    (2, "time_quality", False, "시간 품질"),
-    (3, "raw", True, "ADS1256 원시 카운트"),
-    (4, "ma", True, "전류 (mA)"),
-    (5, "value", True, "물리량 환산"),
-    (6, "unit", False, "단위"),
-    (7, "status", True, "채널 상태"),
-    (8, "capture_counter", False, "획득 카운터"),
-    (9, "connector_id", True, "커넥터 번호"),
+#:
+#: 🔴 [개정, 2026-08-19] 다섯 번째 자리(`records`)가 늘었다 — 이 비트가
+#:    어느 레코드(`ain`·`i2c`·`din`)의 마스크에 해당하는가다. `tx.fields`
+#:    하나가 셋을 전부 묶던 것을 나누며(사용자 확정 2026-08-18) 생겼다.
+#:    비트 번호는 이 표 하나를 셋이 공유하지만 해당 레코드는 비트마다
+#:    다르다 — mk_cfgtable.c 의 FIELDS 와 한 글자도 다르면 안 된다
+#:    (crosscheck_cfgtable.py 가 대조한다).
+FIELD_BITS: tuple[tuple[int, str, bool, str, tuple[str, ...]], ...] = (
+    (0, "device_id", False, "보드 식별자", ("ain", "i2c", "din")),
+    (2, "time_quality", False, "시간 품질", ("ain", "i2c", "din")),
+    (3, "raw", True, "ADS1256 원시 카운트", ("ain",)),
+    (4, "ma", True, "전류 (mA)", ("ain",)),
+    (5, "value", True, "물리량 환산", ("ain",)),
+    (6, "unit", False, "단위", ("ain",)),
+    (7, "status", True, "채널 상태", ("ain", "i2c")),
+    (8, "capture_counter", False, "획득 카운터", ("ain",)),
+    (9, "connector_id", True, "커넥터 번호", ("ain", "i2c")),
 )
+
+#: 레코드 종류 → 자기 마스크 설정 키. `tx.fields` 를 나눈 세 항목이다
+#: (규격 §7.2·§7.5·§7.6). `gnss_raw` 는 전용 키가 없다 — `ain` 을 빌려
+#: 쓴다(§7.7, mk_telem.c build_gnss_raw_record 와 같은 판단).
+FIELD_MASK_KEYS: dict[str, str] = {
+    "ain": "tx.fields_ain",
+    "i2c": "tx.fields_i2c",
+    "din": "tx.fields_din",
+}
 
 #: 전선 위 JSON 형식. 🔴 보드가 쓰는 것과 같아야 한다.
 #:
@@ -163,9 +179,12 @@ class ConfigStore:
             raise ConfigError(Reason.UNKNOWN_KEY, key)
         return item.current
 
-    @property
-    def field_mask(self) -> int:
-        return int(self.items["tx.fields"].current)
+    def field_mask(self, kind: str) -> int:
+        """`kind`(`ain`·`i2c`·`din`) 레코드가 쓸 마스크 값.
+
+        🔴 [개정, 2026-08-19] `tx.fields` 하나였던 것을 셋으로 나눴다 —
+           `ain` 의 마스크를 바꿔도 `i2c`·`din` 은 그대로여야 한다."""
+        return int(self.items[FIELD_MASK_KEYS[kind]].current)
 
     # ------------------------------------------------------------------ 변경
     def set(self, key: str, raw: str) -> None:
@@ -366,7 +385,7 @@ class ConfigStore:
                     rec["choice_labels"] = list(item.choice_labels)
             yield json.dumps(rec, ensure_ascii=False, separators=_COMPACT)
 
-        for bit, name, default, label in FIELD_BITS:
+        for bit, name, default, label, records in FIELD_BITS:
             yield json.dumps(
                 {
                     "schema_ver": SCHEMA_VER,
@@ -377,6 +396,9 @@ class ConfigStore:
                     "name": name,
                     "default": default,
                     "label": label,
+                    # 🔴 규격 §7.3 개정 — 이 비트가 어느 레코드에 해당하는지
+                    #    호스트가 이것으로 마스크 카드를 셋으로 나눠 그린다.
+                    "records": list(records),
                 },
                 ensure_ascii=False,
                 separators=_COMPACT,
@@ -466,25 +488,31 @@ def _coerce(item: SimConfigItem, raw: str) -> object:
     return value
 
 
-def _default_field_mask() -> int:
+def _default_field_mask(kind: str) -> int:
+    """`kind` 에 해당하는 비트만으로 기본 마스크를 만든다.
+
+    🔴 [개정, 2026-08-19] `tx.fields` 를 셋으로 나누며 `kind` 를 받는다 —
+       손으로 상수를 적지 않고 FIELD_BITS 표에서 끌어낸다(펌웨어
+       mk_cfgtable.c 의 field_mask_bounds() 와 같은 계산)."""
     mask = 0
-    for bit, _name, default, _label in FIELD_BITS:
-        if default:
+    for bit, _name, default, _label, records in FIELD_BITS:
+        if kind in records and default:
             mask |= 1 << bit
     return mask
 
 
-def _all_field_mask() -> int:
-    """정의된 **모든** 비트. `tx.fields` 의 상한이다.
+def _all_field_mask(kind: str) -> int:
+    """`kind` 에 해당하는 **모든** 비트. `tx.fields_<kind>` 의 상한이다.
 
     🔴 0xFFFFFFFF 를 상한으로 두면 호스트가 뜻 없는 비트를 켤 수 있고,
        보드는 그것을 수락한 뒤 무시한다 — 화면에는 켜진 것으로 남는다.
-       그렇다고 손으로 1023 을 적으면 비트를 하나 더 붙이는 순간 새 비트를
+       그렇다고 손으로 상수를 적으면 비트를 하나 더 붙이는 순간 새 비트를
        켤 수 없게 되는데, 그 사실이 코드 어디에도 드러나지 않는다.
     """
     mask = 0
-    for bit, _name, _default, _label in FIELD_BITS:
-        mask |= 1 << bit
+    for bit, _name, _default, _label, records in FIELD_BITS:
+        if kind in records:
+            mask |= 1 << bit
     return mask
 
 
@@ -508,13 +536,24 @@ def _margin_of(store: "ConfigStore", previous_value: object,
 
 def default_store(path: Path | None = None) -> ConfigStore:
     """스펙 §6.1 의 설정 항목 전체를 담은 저장소를 만든다."""
-    mask = _default_field_mask()
+    # 🔴 [개정, 2026-08-19] `tx.fields` 하나였던 것을 ain·i2c·din 셋으로
+    #    나눴다(규격 §7.2·§7.5·§7.6) — `ain` 의 `raw` 를 꺼도 `i2c` 와는
+    #    무관해야 하는데, 마스크가 하나면 그럴 수 없었다.
+    mask_ain = _default_field_mask("ain")
+    mask_i2c = _default_field_mask("i2c")
+    mask_din = _default_field_mask("din")
     items: list[SimConfigItem] = [
         SimConfigItem("dev.id", "dev", "str", "1", "1", maximum=15,
                       label="장치 ID"),
-        SimConfigItem("tx.fields", "tx", "u32", mask, mask,
-                      minimum=0, maximum=_all_field_mask(),
-                      label="NDJSON 필드 마스크"),
+        SimConfigItem("tx.fields_ain", "tx", "u32", mask_ain, mask_ain,
+                      minimum=0, maximum=_all_field_mask("ain"),
+                      label="NDJSON 필드 마스크 (아날로그)"),
+        SimConfigItem("tx.fields_i2c", "tx", "u32", mask_i2c, mask_i2c,
+                      minimum=0, maximum=_all_field_mask("i2c"),
+                      label="NDJSON 필드 마스크 (I2C)"),
+        SimConfigItem("tx.fields_din", "tx", "u32", mask_din, mask_din,
+                      minimum=0, maximum=_all_field_mask("din"),
+                      label="NDJSON 필드 마스크 (디지털 입력)"),
         SimConfigItem("tx.period_ms", "tx", "u16", 100, 100,
                       minimum=10, maximum=10000, unit="ms", label="전송 주기"),
         SimConfigItem("tx.float_digits", "tx", "u8", 4, 4,
