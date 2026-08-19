@@ -607,11 +607,15 @@ def test_gnss_command_rejects_empty_text():
     assert ack.args == ("GNSS", "ERR", Reason.RANGE)
 
 
-def test_gnss_command_rejects_embedded_comma():
-    """콤마가 있으면 인자가 둘로 쪼개진다 — 정확히 하나가 아니다."""
+def test_gnss_command_preserves_embedded_comma():
+    """🔴 규격 개정 — $GNSS 는 일반 인자 쪼개기(쉼표 분할)를 거치지
+    않는다. `build_command("GNSS", "LOG", "GPRMC")` 는 전선 위에서
+    "GNSS,LOG,GPRMC" 가 되는데, 쉼표가 있어도 한 덩어리 텍스트로 남아야
+    한다."""
     sim = _config_sim()
     ack = _sack(sim.feed(build_command("GNSS", "LOG", "GPRMC")))
-    assert ack.args == ("GNSS", "ERR", Reason.RANGE)
+    assert ack.args == ("GNSS", "OK")
+    assert sim._last_gnss_cmd == "LOG,GPRMC"
 
 
 def test_gnss_command_rejects_control_characters():
@@ -623,19 +627,51 @@ def test_gnss_command_rejects_control_characters():
     assert ack.args == ("GNSS", "ERR", Reason.RANGE)
 
 
-def test_gnss_command_over_arg_limit_is_rejected():
-    """규격 §3.1/§4.1 — 인자 상한은 23바이트다.
+def test_gnss_command_forwards_the_real_um981_pps_command():
+    """🔴 실기기에서 막혔던 명령. 46/47자짜리 전체 파라미터를 요구한다
+    (docs/datasheet/Unicore_N4_Commands.pdf p.21 §4.3 · p.22 Table 4-6).
+    줄인 "CONFIG PPS ENABLE3"·"CONFIG PPS ENABLE2 GPS" 는 실기기에서
+    "PARSING FAILD FIELD OUT OF RANGE, Too less field!" 로 거부됐다."""
+    text = "CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0"
+    sim = _config_sim()
+    ack = _sack(sim.feed(build_command("GNSS", text)))
+    assert ack.args == ("GNSS", "OK")
+    assert sim._last_gnss_cmd == text
+
+
+def test_gnss_command_preserves_spaces_verbatim():
+    """공백이 포함된 원문이 쪼개지지 않고 그대로 전달된다."""
+    text = "LOG GPRMC ONTIME 1"
+    sim = _config_sim()
+    ack = _sack(sim.feed(build_command("GNSS", text)))
+    assert ack.args == ("GNSS", "OK")
+    assert sim._last_gnss_cmd == text
+
+
+def test_gnss_command_accepts_exactly_96_bytes():
+    from host.core.limits import MAX_GNSS_TEXT_BYTES
+
+    sim = _config_sim()
+    text = "A" * MAX_GNSS_TEXT_BYTES
+    ack = _sack(sim.feed(build_command("GNSS", text)))
+    assert ack.args == ("GNSS", "OK")
+    assert sim._last_gnss_cmd == text
+
+
+def test_gnss_command_over_96_bytes_is_rejected():
+    """규격 §3.1/§4.1 — $GNSS 전용 상한은 96바이트(MAX_GNSS_TEXT_BYTES)다.
 
     🔴 `build_command` 는 이미 보내기 전에 막는다(host.core.framing) — 이
     시험은 그 관문을 `build_line` 으로 우회해 시뮬레이터 자신이 길이를
     검사하는지 본다. C 펌웨어는 고정 버퍼라 이 경우 파싱 단계에서 조용히
-    버려지지만(verb 조차 못 읽어 SACK 를 만들 재료가 없다), 파이썬
-    문자열에는 그런 하드웨어적 한계가 없으므로 시뮬레이터가 스스로
-    거부해야 한다 — 조용히 받아들이면 안 된다."""
+    버려지지만(mk_framing.c 의 mk_parse_line), 파이썬 문자열에는 그런
+    하드웨어적 한계가 없으므로 시뮬레이터가 스스로 거부해야 한다 —
+    조용히 받아들이면 안 된다."""
     from host.core.framing import build_line
+    from host.core.limits import MAX_GNSS_TEXT_BYTES
 
     sim = _config_sim()
-    ack = _sack(sim.feed(build_line("GNSS," + "0" * 24)))
+    ack = _sack(sim.feed(build_line("GNSS," + "0" * (MAX_GNSS_TEXT_BYTES + 1))))
     assert ack.args == ("GNSS", "ERR", Reason.RANGE)
 
 

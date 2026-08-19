@@ -12,7 +12,7 @@ import math
 
 from host.core.errors import ConfigError, ProtocolError, Reason
 from host.core.framing import build_command, parse_line
-from host.core.limits import MAX_ARG_BYTES
+from host.core.limits import MAX_GNSS_TEXT_BYTES
 from host.core.records import SCHEMA_VER
 from tools.simulator.config_store import I2C_PORTS, I2C_QUANTITIES, ConfigStore
 from tools.simulator.telemetry import (
@@ -93,7 +93,9 @@ _ALLOWED_VERB_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
 #: $GNSS 로 보낼 수 있는 텍스트에 허용되는 문자(규격 §4.1) — 인쇄 가능
 #: ASCII 뿐이다. 제어문자·개행이 섞여 들어오면 GNSS 모듈이 이상하게
-#: 반응할 수 있다. 콤마는 이미 args 분리 단계에서 걸러진다(len(args)!=1).
+#: 반응할 수 있다. 🔴 콤마는 걸러지지 않는다 — $GNSS 는 원문 꼬리(raw
+#: tail)라 쉼표도 인쇄 가능 문자 하나로 그대로 통과한다(host.core.framing
+#: 의 GNSS 분기 참고).
 _GNSS_TEXT_CHARS = frozenset(chr(c) for c in range(0x20, 0x7F))
 
 
@@ -201,20 +203,26 @@ class DeviceSim:
         🔴 CONFIG 전용이다 — 모듈의 동작을 바꾸는 설정 변경과 같은 결.
         모드 검사를 내용 검사보다 먼저 한다(§4.1 이 §5.2 의 관례를 그대로
         따른다 — mk_hostlink.c 의 on_gnss 와 같은 순서).
+
+        🔴 `args` 는 이미 `parse_line` 이 원문 꼬리(raw tail)로 만들어 뒀다
+        — 쉼표가 섞여 있어도 하나로 합쳐진 채로 온다(host.core.framing 의
+        GNSS 분기). 여기서 다시 쪼갤 필요가 없다.
         """
         if self.mode != Mode.CONFIG:
             return [self._sack("GNSS", "ERR", Reason.MODE)]
 
-        # 🔴 인자가 정확히 하나여야 한다 — 콤마가 섞였으면 이미 둘로
-        #    쪼개진 뒤다(parse_line). 빈 문자열도 거부한다.
+        # 🔴 인자가 정확히 하나여야 한다. 빈 문자열은 args 가 아예 비어
+        #    온다(parse_line 의 GNSS 분기 — text 가 비면 args=()).
         if len(args) != 1 or not args[0]:
             return [self._sack("GNSS", "ERR", Reason.RANGE)]
 
         text = args[0]
         # 🔴 `build_command` 는 보내기 전에 이미 이 길이를 막지만
-        #    (host.core.limits.MAX_ARG_BYTES), 파이썬 문자열에는 C 의
+        #    (host.core.limits.MAX_GNSS_TEXT_BYTES), 파이썬 문자열에는 C 의
         #    고정 버퍼 같은 물리적 한계가 없다 — 여기서도 확인한다.
-        if len(text.encode("utf-8")) > MAX_ARG_BYTES:
+        #    MAX_ARG_BYTES(23) 가 아니다 — $GNSS 는 원문 꼬리라 전용
+        #    상한을 쓴다(실기기 근거는 host/core/limits.py 참고).
+        if len(text.encode("utf-8")) > MAX_GNSS_TEXT_BYTES:
             return [self._sack("GNSS", "ERR", Reason.RANGE)]
         if any(c not in _GNSS_TEXT_CHARS for c in text):
             return [self._sack("GNSS", "ERR", Reason.RANGE)]

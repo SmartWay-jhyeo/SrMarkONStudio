@@ -32,6 +32,8 @@ PAIRS = {
     "MAX_VERB_BYTES": "MK_VERB_MAX",
     "MAX_ARG_BYTES": "MK_ARG_MAX",
     "MAX_ARGS": "MK_ARGS_MAX",
+    # $GNSS 전용 원문 꼬리 상한(규격 §4.1) — MK_ARG_MAX 와 별개다.
+    "MAX_GNSS_TEXT_BYTES": "MK_GNSS_TEXT_MAX",
 }
 
 

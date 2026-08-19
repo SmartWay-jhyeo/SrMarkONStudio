@@ -27,6 +27,21 @@ MAX_ARG_BYTES = 23
 # MK_ARGS_MAX — verb 는 개수에 들어가지 않는다
 MAX_ARGS = 4
 
+# MK_GNSS_TEXT_MAX — $GNSS 전용 원문 꼬리(raw tail) 상한(규격 §4.1).
+#
+# 🔴 MAX_ARG_BYTES(23)를 못 쓴다. UM981 에 PPS 를 켜는 실제 명령이 47자다
+#    ("CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0"). 줄여서 보내 봤더니
+#    ("CONFIG PPS ENABLE3", "CONFIG PPS ENABLE2 GPS") 모듈이 둘 다
+#    "PARSING FAILD FIELD OUT OF RANGE, Too less field!" 로 거부했다 —
+#    파라미터 전부가 한 덩어리로 와야 한다.
+#
+#    MAX_ARG_BYTES 를 올려서 해결하지 않는다 — 그 값은 보드 설정 저장소의
+#    항목 배치 크기(MK_CFG_KEY_MAX·MK_CFG_STR_MAX)와 같아서, 올리면 이미
+#    플래시에 저장된 설정이 깨진다. $GNSS 만 별도 상한을 쓴다.
+#
+#    96 인 이유: 필요한 47자의 두 배로 여유를 뒀다.
+MAX_GNSS_TEXT_BYTES = 96
+
 
 #: 보드와 호스트가 쓰는 UART 속도.
 #:

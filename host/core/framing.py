@@ -10,6 +10,7 @@ from host.core.errors import ChecksumError, MalformedLineError
 from host.core.limits import (
     MAX_ARG_BYTES,
     MAX_ARGS,
+    MAX_GNSS_TEXT_BYTES,
     MAX_PAYLOAD_BYTES,
     MAX_VERB_BYTES,
 )
@@ -92,11 +93,18 @@ def build_command(verb: str, *args: str) -> str:
     vlen = len(verb.encode("utf-8"))
     if not verb or vlen > MAX_VERB_BYTES:
         raise MalformedLineError(f"verb 는 1~{MAX_VERB_BYTES} 바이트, 받음 {vlen}")
+    # 🔴 $GNSS 는 원문 꼬리(raw tail)를 통째로 보낸다 — MK_ARG_MAX(23)가
+    #    아니라 MK_GNSS_TEXT_MAX(96)를 쓴다. UM981 에 PPS 를 켜는 실제
+    #    명령이 47자라 23바이트로는 애초에 보낼 수 없었다(host/core/
+    #    limits.py 의 MAX_GNSS_TEXT_BYTES 주석 — 실기기 "Too less
+    #    field!" 근거). firmware/stage1/app/mk_framing.c 의 mk_parse_line
+    #    과 같은 분기.
+    arg_limit = MAX_GNSS_TEXT_BYTES if verb == "GNSS" else MAX_ARG_BYTES
     for i, arg in enumerate(args):
         alen = len(arg.encode("utf-8"))
-        if alen > MAX_ARG_BYTES:
+        if alen > arg_limit:
             raise MalformedLineError(
-                f"인자 {i} 는 최대 {MAX_ARG_BYTES} 바이트, 받음 {alen}: {arg!r}"
+                f"인자 {i} 는 최대 {arg_limit} 바이트, 받음 {alen}: {arg!r}"
             )
 
     payload = ",".join((verb, *args))
@@ -133,4 +141,16 @@ def parse_line(line: str) -> Command:
         raise ChecksumError(f"체크섬 불일치: 받음 {given!r}, 계산 {expected!r}")
 
     tokens = payload.split(",")
-    return Command(verb=tokens[0], args=tuple(tokens[1:]))
+    verb = tokens[0]
+    if verb == "GNSS":
+        # 🔴 $GNSS 는 일반 인자 쪼개기(쉼표 분할)를 거치지 않는다 — 나머지
+        #    전부를 원문 그대로 하나의 인자로 되돌린다. Unicore 명령은
+        #    공백으로 나뉘고 쉼표를 안 쓰므로, 쉼표가 섞여 들어와도 다시
+        #    합쳐 두는 편이 안전하다(규격 §4.1). split 이 없앤 구분자를
+        #    같은 문자로 다시 이으면 원문이 그대로 복원된다.
+        #    firmware/stage1/app/mk_framing.c 의 mk_parse_line 과 같은 분기.
+        text = ",".join(tokens[1:])
+        args: tuple[str, ...] = (text,) if text else ()
+    else:
+        args = tuple(tokens[1:])
+    return Command(verb=verb, args=args)
