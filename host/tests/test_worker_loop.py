@@ -311,3 +311,76 @@ def test_raw_lines_default_to_empty_when_the_service_lacks_them():
     조용히 빈 목록이다. 예외로 워커 전체가 죽으면 안 된다."""
     w = WorkerLoop(FakeService(), CommandQueue())
     assert w.step(0.0).raw_lines == []
+
+
+# ------------------------------------------------------------- $STAT 주기 조회
+
+class WithStat(FakeService):
+    """`fetch_stat()` 을 가진 서비스. 몇 번 불렸는지 센다."""
+
+    def __init__(self):
+        super().__init__()
+        self.stat_calls = 0
+        self.stat_raises = None
+
+    def fetch_stat(self):
+        self.stat_calls += 1
+        if self.stat_raises is not None:
+            raise self.stat_raises
+        return {"type": "stat", "mode": "CONFIG"}
+
+
+def test_stat_is_fetched_on_the_first_step():
+    """🔴 연결 직후 화면이 비어 있으면 안 된다 — 첫 바퀴에 한 번 묻는다."""
+    svc = WithStat()
+    r = WorkerLoop(svc, CommandQueue()).step(0.0)
+    assert svc.stat_calls == 1
+    assert r.stat == {"type": "stat", "mode": "CONFIG"}
+
+
+def test_stat_is_not_refetched_before_the_interval():
+    """🔴 `$STAT` 은 명령·응답 왕복이라 자주 부르면 링크를 먹는다.
+
+    워커는 100 ms 마다 도는데 매 바퀴 묻는다면 초당 열 번이다. 사람이 보는
+    화면에 그만한 신선도는 필요 없고, 그 대역은 텔레메트리가 써야 한다.
+    """
+    svc = WithStat()
+    w = WorkerLoop(svc, CommandQueue(), stat_interval_s=1.5)
+    w.step(0.0)
+    for t in (0.1, 0.5, 1.0, 1.4):
+        assert w.step(t).stat is None
+    assert svc.stat_calls == 1
+
+
+def test_stat_is_refetched_after_the_interval():
+    svc = WithStat()
+    w = WorkerLoop(svc, CommandQueue(), stat_interval_s=1.5)
+    w.step(0.0)
+    assert w.step(1.5).stat is not None
+    assert svc.stat_calls == 2
+
+
+def test_a_failed_stat_is_reported_and_backs_off():
+    """🔴 링크가 죽으면 `send()` 는 타임아웃까지 기다린다. 실패한 채로 계속
+    같은 주기로 다시 물으면 워커가 그 대기에 붙들려 하트비트가 늦고, 보드는
+    3초 뒤 RUN 으로 떨어진다 — 진단을 보려다 링크를 더 망친다.
+    """
+    svc = WithStat()
+    svc.stat_raises = ProtocolError("응답 없음: STAT")
+    w = WorkerLoop(svc, CommandQueue(), stat_interval_s=1.5,
+                   stat_retry_s=5.0)
+    r = w.step(0.0)
+    assert r.stat is None
+    assert "응답 없음" in r.stat_error
+
+    assert w.step(2.0).stat_error is None       # 아직 재시도할 때가 아니다
+    assert svc.stat_calls == 1
+    w.step(5.0)
+    assert svc.stat_calls == 2
+
+
+def test_a_service_without_fetch_stat_does_not_break_the_loop():
+    """구형 스텁·다른 트랜스포트에도 워커는 계속 돌아야 한다."""
+    r = WorkerLoop(FakeService(), CommandQueue()).step(0.0)
+    assert r.stat is None
+    assert r.stat_error is None

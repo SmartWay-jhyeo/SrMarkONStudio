@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 
 from host.gui.command_queue import CommandQueue, Result
+from host.gui.diagnostics import STAT_INTERVAL_S, STAT_RETRY_S
 
 
 @dataclass
@@ -34,6 +35,15 @@ class StepResult:
     #: 커서 대체 경로가 없다. 원문 스트림이 없던 시절부터 있던 서비스
     #: 스텁까지 조용히 지원해야 하므로, 이 필드만은 없으면 없는 대로 둔다.
     raw_lines: list[str] = field(default_factory=list)
+    #: 이번 스텝에 새로 읽은 `$STAT` 응답. 물어보지 않은 스텝에서는 `None`
+    #: 이다 — "물어봤는데 비었다" 와 구분해야 화면이 낡은 값을 지금 값으로
+    #: 그리지 않는다.
+    stat: dict | None = None
+    #: `$STAT` 조회가 실패한 경우.
+    #:
+    #: 🔴 `pump_error`·`heartbeat_error` 와 따로 담는다. 셋은 다른 고장이고,
+    #: 합치면 하나가 나머지를 영원히 가린다(위 `pump_error` 주석과 같은 이유).
+    stat_error: str | None = None
 
     @property
     def error(self) -> str | None:
@@ -45,10 +55,15 @@ class WorkerLoop:
     def __init__(self, service, queue: CommandQueue, *,
                  hb_interval_s: float = 1.0,
                  max_commands_per_step: int = 4,
+                 stat_interval_s: float = STAT_INTERVAL_S,
+                 stat_retry_s: float = STAT_RETRY_S,
                  monotonic=time.monotonic):
         self.service = service
         self.queue = queue
         self.hb_interval_s = hb_interval_s
+        #: `$STAT` 을 다시 묻는 주기. 근거는 `diagnostics.STAT_INTERVAL_S`.
+        self.stat_interval_s = stat_interval_s
+        self.stat_retry_s = stat_retry_s
         #: 🔴 한 스텝에 보낼 명령 수 상한.
         #: send() 는 응답까지 최대 2초 기다린다. 큐에 20개가 쌓여 있으면
         #: 40초 동안 텔레메트리를 한 줄도 못 걷는다. 수집이 굶으면 안 된다.
@@ -57,6 +72,9 @@ class WorkerLoop:
         self._monotonic = monotonic
 
         self._last_hb: float | None = None
+        self._last_stat: float | None = None
+        #: 직전 `$STAT` 이 실패했는가. 실패했으면 다음 시도까지 더 기다린다.
+        self._stat_failed = False
         self._records_seen = 0
         self._records_id: int | None = None
 
@@ -111,7 +129,10 @@ class WorkerLoop:
 
         out.results = self.queue.take_results()
 
-        # 3) 텔레메트리를 걷는다.
+        # 3) 주기적으로 `$STAT` 을 물어 진단 화면에 먹인다.
+        self._fetch_stat(now, out)
+
+        # 4) 텔레메트리를 걷는다.
         try:
             self.service.pump()
         except Exception as exc:                          # noqa: BLE001
@@ -125,6 +146,44 @@ class WorkerLoop:
         out.mode = getattr(self.service, "mode", "RUN")
         out.ctl_mode = getattr(self.service, "ctl_mode", "ACTIVE")
         return out
+
+    def _fetch_stat(self, now: float, out: StepResult) -> None:
+        """`$STAT` 을 주기적으로 한 번씩 묻는다 (규격 §7.4).
+
+        🔴 **텔레메트리를 굶기지 않는다.** 두 가지가 그것을 보장한다 —
+
+           (1) 주기가 워커 주기(100 ms)가 아니라 `stat_interval_s`(1.5 초)다.
+               클럭 출처·유실 건수·LCD 계수기는 사람이 눈으로 읽는 값이라
+               1~2 초 늦어도 판단이 달라지지 않는다. 실시간 계측은 텔레메트리가
+               따로 한다.
+           (2) `BoardService.send()` 는 응답을 기다리는 동안에도 `pump()` 를
+               계속 돌린다. 그 사이 도착한 텔레메트리는 버려지는 것이 아니라
+               서비스의 대기열에 쌓이고, 바로 아래 `_collect_records()` 가
+               같은 스텝에서 걷어 간다.
+
+        🔴 **`din` 초기 조회(app._load_din_state)를 대신하지 않는다.** 저쪽은
+           연결 직후 화면을 세우는 일회성 호출이고, 이것은 주기 조회다. 둘을
+           합치면 재연결 흐름이 생겼을 때 어느 쪽 책임인지 흐려진다.
+        """
+        fetch = getattr(self.service, "fetch_stat", None)
+        if not callable(fetch):
+            # 구형 스텁·다른 트랜스포트. 워커는 계속 돌아야 한다.
+            return
+
+        interval = self.stat_retry_s if self._stat_failed else self.stat_interval_s
+        if self._last_stat is not None and now - self._last_stat < interval:
+            return
+
+        # 🔴 성공·실패 어느 쪽이든 시각을 찍는다. 실패했을 때 안 찍으면
+        #    다음 스텝(100 ms 뒤)에 곧바로 또 시도하게 되고, 링크가 죽은
+        #    동안 워커가 타임아웃 대기에만 매달린다.
+        self._last_stat = now
+        try:
+            out.stat = fetch()
+            self._stat_failed = False
+        except Exception as exc:                      # noqa: BLE001
+            out.stat_error = str(exc)
+            self._stat_failed = True
 
     def _collect_records(self) -> tuple[list, bool]:
         """서비스가 모아둔 텔레메트리를 가져온다.
