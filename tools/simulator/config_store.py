@@ -72,6 +72,12 @@ I2C_PORTS: tuple[int, ...] = (10, 11, 12, 13, 14, 15)
 #: ADS1256 지원 DRATE (SPS)
 DRATE_CHOICES = (2, 5, 10, 15, 25, 30, 50, 60, 100, 500, 1000, 2000, 3750, 7500)
 
+#: GNSS UART 통신속도(Phase 3). 업계에서 흔히 쓰는 NMEA 보율 상수다 — UM981
+#: 자체의 공장 기본값은 데이터시트를 확보하지 못해 **확인 필요**다(§5).
+#: firmware/stage1/app/mk_cfgtable.c 의 GNSS_BAUD_CHOICES 와 값이 같아야
+#: 한다 — crosscheck_cfgtable.py 가 대조한다.
+GNSS_BAUD_CHOICES = (4800, 9600, 19200, 38400, 57600, 115200, 230400)
+
 _TRUE_WORDS = ("true", "1", "on", "yes")
 _FALSE_WORDS = ("false", "0", "off", "no")
 _INT_TYPES = ("u8", "u16", "u32")
@@ -545,6 +551,27 @@ def default_store(path: Path | None = None) -> ConfigStore:
         SimConfigItem("sol.debounce_ms", "sol", "u16", 5, 5,
                       minimum=0, maximum=1000, unit="ms", label="디바운스",
                       note="이보다 짧게 흔들리는 신호는 상태 변화로 보지 않는다"),
+
+        # ── GNSS/PPS 시간축 (J16, 데이터시트 §5.5, Phase 3) ─────────────
+        #
+        # 🔴 값·라벨·note·범위가 펌웨어(firmware/stage1/app/mk_cfgtable.c
+        #    의 add_gnss())와 한 글자도 다르면 안 된다 — crosscheck_
+        #    cfgtable.py 가 대조한다.
+        SimConfigItem(
+            "gnss.enabled", "gnss", "bool", False, False,
+            label="GNSS 사용",
+            note="J16 에 GNSS 모듈이 꽂혀 있을 때만 켠다 — 없으면 NMEA 가 "
+                 "안 와서 시간 등급이 device_clock 에 머문다",
+        ),
+        # 🔴 note 를 짧게 둔다 — 펌웨어 쪽(mk_cfgtable.c 의 add_gnss())이
+        #    mk_cfgwire_list 의 320바이트 줄 상한을 넘기지 않으려 note 를
+        #    줄였다. 여기서 길게 두면 "있는지 없는지"는 같아도 실제로
+        #    읽을 문구가 갈린다.
+        SimConfigItem(
+            "gnss.baud", "gnss", "enum", 115200, 115200,
+            choices=GNSS_BAUD_CHOICES, unit="bps", label="GNSS 통신속도",
+            note="UM981 기본값 확인 필요",
+        ),
 
         # ── WS2812 LED 체인 (데이터시트 §5.8) ──────────────────────
         SimConfigItem(

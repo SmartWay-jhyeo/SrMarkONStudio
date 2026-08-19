@@ -402,11 +402,11 @@ def test_sol_debounce_ms_replaces_the_removed_outputs():
     assert item.out is False           # 출력이 아니다 — TEST 이탈에 안 걸린다
 
 
-def test_catalog_item_count_is_ninety_one():
-    """93 (sol.j18~j20 셋) + 1 (sol.debounce_ms) = 91.
+def test_catalog_item_count_is_ninety_three():
+    """91 + 2 (gnss.enabled · gnss.baud, Phase 3) = 93.
 
     이 수가 흔들리면 십중팔구 항목을 늘리거나 줄인 것이다 — 실수인지
     의도인지 이 시험이 먼저 묻는다.
     """
     store = default_store()
-    assert len(store.items) == 91
+    assert len(store.items) == 93

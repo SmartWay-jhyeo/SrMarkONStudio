@@ -35,6 +35,15 @@ AIN_CHANNELS = 7
 #: 입력이다 — 옵토커플러가 붙고 보드는 그 신호를 읽는다.
 DIN_CONNECTORS: tuple[int, ...] = (18, 19, 20)
 
+#: GNSS 데모가 "잠겼다"(gnss_pps)로 보이기까지 걸리는 시간(Phase 3).
+#:
+#: 🔴 실기기 콜드스타트 TTFF 를 흉내 낸 것이 **아니다** — `gnss.enabled` 를
+#:    켜자마자 gnss_pps 로 뛰면 등급이 오르내리는 모습을 화면에서 한 번도
+#:    못 본다. 그래서 일부러 넣은 시연용 지연이다(사용자 지시 —
+#:    "가짜 fix 를 진짜처럼 내지 마라"). 이 시간·이후의 위성 수·pps_age
+#:    는 전부 고정값/톱니 패턴이지 실제 수신기의 흔들림이 아니다.
+GNSS_DEMO_WARMUP_MS = 5000
+
 #: 🔴 시뮬레이터에는 옵토가 없다 — 실기기는 사람이 신호선을 흔들어야
 #:    상태가 바뀐다. 이 주기는 화면 확인용 **데모**일 뿐이다. `ain` 처럼
 #:    매 주기 값을 내면 규격 §7.6 이 금지하는 "주기 송신"이 돼 버리므로,
@@ -108,6 +117,10 @@ class DeviceSim:
         #: 데모 토글이 마지막으로 넘긴 구간 번호. 커넥터마다 위상이 달라
         #: 따로 센다 — DIN_DEMO_PERIOD_MS 주석·`_emit_din` 참조.
         self._din_slot: dict[int, int] = dict.fromkeys(DIN_CONNECTORS, 0)
+        #: GNSS 데모가 `gnss.enabled` 를 언제부터 켠 채였는지(Phase 3).
+        #: None 이면 꺼져 있다 — `_gnss_time_state()` 가 이 값으로
+        #: 워밍업 경과를 잰다.
+        self._gnss_enabled_at_ms: int | None = None
         self._boot_ms = 0
         # 🔴 부팅 기본값은 ACTIVE 다 (규격 §6.4). 보드는 혼자서도 제 일을
         #    해야 하고, 테스트는 사람이 명시적으로 들어가는 상태다.
@@ -203,6 +216,12 @@ class DeviceSim:
         ]
 
     def _on_stat(self, _args: tuple[str, ...]) -> list[str]:
+        # 🔴 `t` 의 기준점을 호스트가 알 수 있게 여기서 알려준다.
+        # 규격 §7.1.2 대로 `t` 는 time_source 에 따라 UTC epoch 이거나
+        # 부팅 후 경과 ms 다. 텔레메트리는 필드 마스크로 time_source 를
+        # 실어 보낼 수 있지만 명령 응답에는 그 자리가 없다. $STAT 이
+        # 그 답을 주는 곳이다 — 호스트는 연결 직후 한 번 물어보면 된다.
+        time_source, time_quality, pps_age_ms, sats = self._gnss_time_state(self._now_ms)
         return [
             self._json(
                 type="stat",
@@ -210,13 +229,11 @@ class DeviceSim:
                 ctl_mode=self.ctl_mode,
                 fw=self.fw,
                 board_rev=self.board_rev,
-                # 🔴 `t` 의 기준점을 호스트가 알 수 있게 여기서 알려준다.
-                # 규격 §7.1.2 대로 `t` 는 time_source 에 따라 UTC epoch 이거나
-                # 부팅 후 경과 ms 다. 텔레메트리는 필드 마스크로 time_source 를
-                # 실어 보낼 수 있지만 명령 응답에는 그 자리가 없다. $STAT 이
-                # 그 답을 주는 곳이다 — 호스트는 연결 직후 한 번 물어보면 된다.
-                time_source="device_clock",
-                time_quality=0,
+                time_source=time_source,
+                time_quality=time_quality,
+                # 🔴 펌웨어(mk_cfgwire_stat)와 같은 모양 — 중첩 객체,
+                #    모를 때는 null(0 을 지어내지 않는다).
+                gnss={"pps_age_ms": pps_age_ms, "sats": sats},
                 uptime_ms=self._now_ms - self._boot_ms,
                 rails={
                     "v24": self.store.get("pwr.24v"),
@@ -281,10 +298,39 @@ class DeviceSim:
         return [self._sack("CFG", "ERR", Reason.UNKNOWN_KEY)]
 
     # --------------------------------------------------------------- 주기 처리
+    def _gnss_time_state(self, now_ms: int) -> tuple[str, int, int | None, int | None]:
+        """GNSS/PPS 시간축 등급을 흉내 낸다(Phase 3).
+
+        반환: (time_source, time_quality, pps_age_ms, sats). pps_age_ms·
+        sats 는 모를 때 None이다(0을 지어내지 않는다 — 설계 원칙 3·4).
+
+        🔴 `GNSS_DEMO_WARMUP_MS` 주석 참고 — 시뮬레이터임이 값에서도
+           드러나야 한다는 지시에 따라 고정된 진행만 흉내 낸다."""
+        if not self.store.get("gnss.enabled"):
+            return "device_clock", 0, None, None
+
+        since = self._gnss_enabled_at_ms
+        if since is None or now_ms - since < GNSS_DEMO_WARMUP_MS:
+            # 켜는 중 — NMEA 문장은 오는데 아직 PPS 짝을 못 지은 상태로
+            # 흉내 낸다.
+            return "gnss_nmea", 1, None, 4
+
+        # 🔴 1 Hz PPS 톱니를 흉내 낸다 — 실제 지터가 아니다.
+        pps_age_ms = now_ms % 1000
+        return "gnss_pps", 2, pps_age_ms, 9
+
     def tick(self, now_ms: int) -> list[str]:
         """시각을 진행시키고 이번에 내보낼 줄들을 반환한다."""
         self._now_ms = now_ms
         out: list[str] = []
+
+        # 🔴 켜고 끄는 시점을 여기서 잡는다 — `_gnss_time_state()` 는
+        #    순수 조회라 상태를 바꾸지 않는다.
+        if self.store.get("gnss.enabled"):
+            if self._gnss_enabled_at_ms is None:
+                self._gnss_enabled_at_ms = now_ms
+        else:
+            self._gnss_enabled_at_ms = None
 
         # 🔴 호스트가 사라지면 테스트도 끝난다 (규격 §6.4). 하트비트가 이미
         #    데드맨이므로 방아쇠를 새로 만들지 않는다 — 그리고 그것이 옳은
@@ -363,6 +409,7 @@ class DeviceSim:
 
     def _emit_telemetry(self, now_ms: int) -> list[str]:
         lines: list[str] = []
+        time_source, time_quality, _age, _sats = self._gnss_time_state(now_ms)
         for ch in range(AIN_CHANNELS):
             # 🔴 [2026-08-19] "지금 값을 만든다"가 아니라 "마지막 값을
             #    읽는다"다 — 새 수집이 없었으면 같은 raw·t_ms 가 그대로
@@ -383,10 +430,12 @@ class DeviceSim:
                         t_ms=t_ms,
                         raw=raw,
                         capture_counter=t_ms * 1000,
+                        time_source=time_source,
+                        time_quality=time_quality,
                     )
                 )
             )
-        lines += self._emit_i2c()
+        lines += self._emit_i2c(now_ms)
         lines += self._emit_din(now_ms)
         return lines
 
@@ -402,6 +451,7 @@ class DeviceSim:
         §7.6)를 시뮬레이터도 지킨다.
         """
         lines: list[str] = []
+        time_source, time_quality, _age, _sats = self._gnss_time_state(now_ms)
         slot_period = DIN_DEMO_PERIOD_MS // len(DIN_CONNECTORS)
         for idx, cid in enumerate(DIN_CONNECTORS):
             phase_ms = idx * slot_period
@@ -414,10 +464,11 @@ class DeviceSim:
             lines.append(render(build_din_record(
                 self.store, connector_id=cid, state=self._din_state[cid],
                 seq=self._seq, t_ms=now_ms,
+                time_source=time_source, time_quality=time_quality,
             )))
         return lines
 
-    def _emit_i2c(self) -> list[str]:
+    def _emit_i2c(self, now_ms: int) -> list[str]:
         """규격 §7.5 — tx.period_ms 마다 **마지막 값**을 낸다(수집·송신
         분리, 사용자 설계 2026-08-19). 값 자체는 `_collect_i2c` 가
         `i2cN.period_ms` 마다 미리 만들어 둔다 — 여기서는 그것을 읽기만
@@ -425,6 +476,7 @@ class DeviceSim:
         `_last_i2c_t` 에 자리가 없으므로 조용히 건너뛴다(설계 원칙 3).
         """
         lines: list[str] = []
+        time_source, time_quality, _age, _sats = self._gnss_time_state(now_ms)
         for cid in I2C_PORTS:
             if cid not in self._last_i2c_t:
                 continue
@@ -434,6 +486,7 @@ class DeviceSim:
                 lines.append(render(build_i2c_record(
                     self.store, connector_id=cid, quantity=quantity,
                     seq=self._seq, t_ms=t_ms, value=value,
+                    time_source=time_source, time_quality=time_quality,
                 )))
         return lines
 

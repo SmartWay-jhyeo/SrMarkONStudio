@@ -56,8 +56,14 @@ def build_ain_record(
     t_ms: int,
     raw: int,
     capture_counter: int,
+    time_source: str = "device_clock",
+    time_quality: int = 0,
 ) -> dict:
-    """마스크에 따라 필드를 골라 담은 ain 레코드를 만든다."""
+    """마스크에 따라 필드를 골라 담은 ain 레코드를 만든다.
+
+    `time_source`·`time_quality` 는 Phase 3 GNSS/PPS 시간축의 등급이다.
+    기본값(device_clock/0)은 GNSS 가 없던 예전 동작 그대로다 —
+    `DeviceSim._gnss_time_state()` 가 실제 등급을 계산해 넘긴다."""
     mask = store.field_mask
     digits = int(store.get("tx.float_digits"))
 
@@ -91,9 +97,9 @@ def build_ain_record(
     if on("device_id"):
         rec["device_id"] = store.get("dev.id")
     if on("time_source"):
-        rec["time_source"] = "device_clock"
+        rec["time_source"] = time_source
     if on("time_quality"):
-        rec["time_quality"] = 0
+        rec["time_quality"] = time_quality
     if on("capture_counter"):
         rec["capture_counter"] = capture_counter
 
@@ -132,7 +138,9 @@ def synthetic_i2c_value(connector_id: int, quantity: str,
 
 def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
                      seq: int, t_ms: int,
-                     value: float | None, status: int = 0) -> dict:
+                     value: float | None, status: int = 0,
+                     time_source: str = "device_clock",
+                     time_quality: int = 0) -> dict:
     """규격 §7.5 의 i2c 레코드. 마스크는 ain 과 **같은** `tx.fields` 다.
 
     status: 0=정상 · 1=응답 없음 · 2=데이터 오류 · 3=지원하지 않는 종류
@@ -154,9 +162,9 @@ def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
     if mask & (1 << _BIT_OF["device_id"]):
         rec["device_id"] = str(store.get("dev.id"))
     if mask & (1 << _BIT_OF["time_source"]):
-        rec["time_source"] = "device_clock"
+        rec["time_source"] = time_source
     if mask & (1 << _BIT_OF["time_quality"]):
-        rec["time_quality"] = 0
+        rec["time_quality"] = time_quality
     return rec
 
 
@@ -164,7 +172,9 @@ def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
 
 
 def build_din_record(store: ConfigStore, *, connector_id: int, state: int,
-                     seq: int, t_ms: int) -> dict:
+                     seq: int, t_ms: int,
+                     time_source: str = "device_clock",
+                     time_quality: int = 0) -> dict:
     """규격 §7.6 의 din 레코드. 마스크는 ain·i2c 와 **같은** `tx.fields` 다.
 
     🔴 `connector_id`·`state` 는 마스크로 끌 수 없다 — 둘이 빠지면 레코드가
@@ -181,7 +191,7 @@ def build_din_record(store: ConfigStore, *, connector_id: int, state: int,
     if mask & (1 << _BIT_OF["device_id"]):
         rec["device_id"] = str(store.get("dev.id"))
     if mask & (1 << _BIT_OF["time_source"]):
-        rec["time_source"] = "device_clock"
+        rec["time_source"] = time_source
     if mask & (1 << _BIT_OF["time_quality"]):
-        rec["time_quality"] = 0
+        rec["time_quality"] = time_quality
     return rec
