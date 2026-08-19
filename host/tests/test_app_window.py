@@ -147,5 +147,4 @@ def test_step_result_feeds_the_stream_view(window):
     line = ('{"schema_ver":3,"seq":1,"t":0,"type":"ain","connector_id":3,'
             '"raw":0,"ma":0,"value":0,"status":0}')
     window._on_step(StepResult(raw_lines=[line]))
-    assert window._stream_view._table.rowCount() == 1
-    assert window._stream_view._table.item(0, 0).text() == line
+    assert line in window._stream_view._console.toPlainText()

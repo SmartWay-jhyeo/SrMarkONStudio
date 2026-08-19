@@ -10,6 +10,33 @@
    뷰들은 `ScreenState` 에 실려 오는 텔레메트리 값만 보고 시각을 스스로
    재지 않는다. `tare_panel`(설정 화면의 영점 패널)도 같은 이유로 목록
    밖에서 직접 불린다.
+
+🔴 **표(`QTableWidget`)가 아니라 `QPlainTextEdit` 콘솔이다.**
+
+   예전에는 워커가 100ms 마다 표를 통째로 다시 채웠다. 시뮬레이터가
+   초당 수십 줄을 내는 것만으로 이미 무거웠고(줄마다 8열 × `QTableWidgetItem`
+   을 새로 만든다), 실기기에서 아날로그 7채널을 다 켜면 더 빨라진다.
+
+   오프스크린으로 재현해 실측했다 — 워커는 100ms 마다 착실히 도는데,
+   GUI 스레드가 그 표 재구성을 못 따라가면서 두 스레드 사이의 신호 처리
+   간격이 5초 → 8초 → 11초 → 23초 → 47초+ 로 계속 벌어졌다(발산). 표
+   재구성 자체가 다음 프레임이 오기 전에 안 끝나니 큐가 영원히 밀리는
+   것이다. 사용자가 본 "GUI 가 스스로 죽었다" 는 이 발산이 응답 없음으로
+   이어진 것으로 보인다(자세한 재현·계측은 stream-console-report.md).
+
+   콘솔은 줄을 추가할 때 위젯을 새로 안 만든다 — 문자열 append 라 비용이
+   행 수와 무관하게 상수에 가깝고, `setMaximumBlockCount` 로 오래된 줄이
+   위젯 내부에서 자동으로 잘려 나간다(별도의 링버퍼 관리가 필요 없다).
+
+   그래도 **매 프레임 전체를 다시 그리면 같은 문제가 재발한다.** 그래서
+   `_last_ordinal_shown` 로 "어디까지 그렸는지" 를 들고 새로 온 줄만
+   append 한다. 이 경계를 `StreamState`(Qt 를 모르는 층) 에 두지 않은
+   이유: "무엇이 진짜로 일어났는가" 와 "화면에 이미 무엇을 그렸는가" 는
+   다른 질문이다. 후자는 순전히 이 위젯 인스턴스의 그리기 상태이지
+   스트림의 사실이 아니다 — 창을 새로 띄우거나 필터를 바꿔 다시 그려야
+   할 때도 스트림 자체는 달라진 게 없다. `StreamRow.ordinal`(Qt 를 모르는
+   층에서 매기는, deque 가 밀려나도 흔들리지 않는 번호)만 빌려 오면
+   충분하다.
 """
 
 from __future__ import annotations
@@ -18,32 +45,25 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from host.gui.qt.parts import card_title, hairline
-from host.gui.stream import StreamRow, StreamState, staleness_level
+from host.gui.stream import (
+    DEFAULT_HIDDEN_TYPES,
+    DISPLAY_MAXLEN,
+    StreamRow,
+    StreamState,
+    format_header,
+    format_row,
+    staleness_level,
+)
 from host.gui.theme import Color, Font, Space
 from host.gui.widgets.status_chip import Level, Verification, chip_style
-
-#: 표에 그릴 최근 줄 수. `StreamState` 의 분석 버퍼(`DISPLAY_MAXLEN`)와는
-#: 다른 상한이다 — 저건 창 계산·전체 저장을 위한 것이고, 이건 **화면에
-#: 그리는** 상한이다. 워커가 100ms 마다 표를 통째로 다시 채우므로, 2000줄
-#: 전부를 매번 그리면 눈에 띄게 느려진다(`screen.py` 의 `TRACE_LEN` 주석과
-#: 같은 "화면에서 안 보이면 의미 없다" 판단).
-DISPLAY_ROWS = 300
-
-_HEADERS = ("원문", "seq", "t", "type", "커넥터", "value", "raw", "ma")
-
-
-def _fmt(v) -> str:
-    return "" if v is None else str(v)
 
 
 class StreamView(QWidget):
@@ -51,6 +71,10 @@ class StreamView(QWidget):
         super().__init__(parent)
         self._state: StreamState | None = None
         self._last_now_s = 0.0
+        #: 콘솔에 이미 찍은 줄 중 가장 큰 `StreamRow.ordinal`. `-1` 은
+        #: "아직 아무것도 안 찍었다" 는 뜻이다 — 모든 ordinal(0부터 시작)
+        #: 보다 작아 첫 render() 에서 지금 보이는 줄이 전부 새 줄로 잡힌다.
+        self._last_ordinal_shown = -1
         #: 타입별 필터 체크박스. 고정 목록을 미리 두지 않는다 — 어떤
         #: type 이 실리는지는 프로토콜이 정하지 규격 문자열을 여기서
         #: 다시 아는 척하지 않는다(CLAUDE.md 설계 원칙 1과 같은 결).
@@ -93,23 +117,33 @@ class StreamView(QWidget):
         control_row.addWidget(self._pause_btn)
         control_row.addWidget(self._save_btn)
 
-        # ---- 표 ----------------------------------------------------------
-        self._table = QTableWidget(0, len(_HEADERS))
-        self._table.setHorizontalHeaderLabels(_HEADERS)
-        self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setStyleSheet(f"font-family: {Font.MONO};")
-        self._table.horizontalHeader().setStretchLastSection(False)
-        # 🔴 원문(0열)이 고정 420px 라 NDJSON 한 줄(보통 150~250B)이 "…" 로
-        #    잘려 정작 원문을 못 읽었다. 나머지 열(seq·t·type·커넥터·value·
-        #    raw·ma)은 내용에 맞춰 좁게, 원문 열만 남는 폭을 전부 가져가게
-        #    한다 — 창을 넓히면 원문도 함께 넓어진다.
-        header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for c in range(1, len(_HEADERS)):
-            header.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
-        # 🔴 그래도 창이 좁으면 여전히 잘릴 수 있다 — 행을 고르면(호버해도)
-        #    전체를 볼 수 있게 툴팁에 원문을 그대로 싣는다(`_update_table`).
+        # ---- 콘솔 ----------------------------------------------------------
+        #: 열 이름표. 스크롤되는 콘솔 **안에 찍지 않는다** — 안에 찍으면
+        #: `setMaximumBlockCount` 가 오래된 줄을 잘라낼 때 헤더까지 함께
+        #: 사라진다. 항상 보여야 하므로 고정 라벨로 따로 둔다.
+        self._header_label = QLabel(format_header())
+        self._header_label.setStyleSheet(
+            f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
+            f" color: {Color.INK_DIM};"
+        )
+
+        self._console = QPlainTextEdit()
+        self._console.setReadOnly(True)
+        self._console.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        # 🔴 근거: `host/gui/stream.py` 의 `DISPLAY_MAXLEN` 을 그대로
+        #    쓴다 — 그 값 자체가 "7채널 × 100Hz" 이론적 상한에서 나온
+        #    수치(머리말 참조)라, 화면에 남겨 둘 줄 수도 같은 근거를 쓰는
+        #    것이 새 매직 넘버를 만드는 것보다 낫다. `QPlainTextEdit` 은
+        #    `QTableWidget` 과 달리 이 상한을 유지하는 비용이 줄 수와
+        #    무관하게 낮다(내부적으로 링버퍼처럼 동작하도록 설계된
+        #    위젯이다) — 표에서 겪은 문제가 콘솔 크기 자체 때문이 아니라
+        #    "매 프레임 통째로 다시 만드는 것" 때문이었다는 뜻이다.
+        self._console.setMaximumBlockCount(DISPLAY_MAXLEN)
+        self._console.setStyleSheet(
+            f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
+            f" background: {Color.SURFACE}; color: {Color.INK};"
+            f" border: 1px solid {Color.LINE};"
+        )
 
         col = QVBoxLayout(self)
         col.setContentsMargins(Space.MD, Space.MD, Space.MD, Space.MD)
@@ -119,7 +153,8 @@ class StreamView(QWidget):
         col.addLayout(summary_row)
         col.addWidget(hairline())
         col.addLayout(control_row)
-        col.addWidget(self._table, 1)
+        col.addWidget(self._header_label)
+        col.addWidget(self._console, 1)
 
     # ------------------------------------------------------------- 그리기
     def render(self, state: StreamState, now_s: float) -> None:
@@ -157,56 +192,81 @@ class StreamView(QWidget):
         self._pause_btn.setChecked(state.paused)
         self._pause_btn.setText("재생" if state.paused else "일시정지")
 
-        self._update_table(state.visible_rows())
+        self._append_new_rows(state.visible_rows())
 
-    def _update_table(self, rows: tuple[StreamRow, ...]) -> None:
-        shown = rows[-DISPLAY_ROWS:]
-        self._table.setRowCount(len(shown))
-        for r, row in enumerate(shown):
-            cells = (
-                row.line, _fmt(row.seq), _fmt(row.t), row.type,
-                _fmt(row.connector), _fmt(row.value), _fmt(row.raw_count),
-                _fmt(row.ma),
-            )
-            for c, text in enumerate(cells):
-                item = QTableWidgetItem(text)
-                if c == 0:
-                    # 🔴 열이 좁아 "…" 로 잘려도 마우스를 올리면(또는
-                    #    행을 골라도) 전체 원문을 볼 수 있게 한다.
-                    item.setToolTip(row.line)
-                self._table.setItem(r, c, item)
+    def _append_new_rows(self, rows: tuple[StreamRow, ...]) -> None:
+        """새로 온 줄만 콘솔에 이어붙인다.
+
+        🔴 여기가 성능의 핵심이다 — `rows` 전체가 아니라
+           `_last_ordinal_shown` 보다 큰 것만 골라 찍는다. `rows` 는 이미
+           `StreamState.visible_rows()` 가 일시정지·필터를 반영해 돌려준
+           것이라, 정지 중이면 새 줄이 없어 아무것도 안 찍히고(화면이
+           얼어붙은 것처럼 보이는 게 맞다), 필터가 걸려 있으면 걸러진
+           타입은 애초에 `rows` 에 없어 나타나지 않는다.
+        """
+        new_rows = [r for r in rows if r.ordinal > self._last_ordinal_shown]
+        if not new_rows:
+            return
+        for row in new_rows:
+            self._console.appendPlainText(format_row(row))
+        self._last_ordinal_shown = new_rows[-1].ordinal
+
+    def _redraw_all(self) -> None:
+        """콘솔을 비우고 지금 보이는 줄을 처음부터 다시 찍는다.
+
+        🔴 **필터가 바뀔 때만** 부른다. 새로 체크(또는 해제)하면 이미
+           찍힌 줄 중 일부가 소급해서 보이거나 숨어야 하는데, append-only
+           로는 이미 그린 줄을 지울 수 없다. 매 프레임 부르면 표 시절과
+           같은 문제가 재발하므로, 필터 토글처럼 드문 사용자 동작에서만
+           쓴다(`_on_filter_toggled`).
+        """
+        if self._state is None:
+            return
+        self._console.clear()
+        self._last_ordinal_shown = -1
+        self._append_new_rows(self._state.visible_rows())
 
     # -------------------------------------------------------------- 필터
     def _ensure_filter_checks(self, state: StreamState) -> None:
-        """새로 본 타입마다 체크박스를 만든다. 기본은 체크됨(=숨기지 않음)."""
+        """새로 본 타입마다 체크박스를 만든다.
+
+        🔴 카탈로그 타입(`DEFAULT_HIDDEN_TYPES`)은 기본이 꺼짐이다 — 연결
+           직후 `$CFG,LIST` 카탈로그 91줄이 텔레메트리를 파묻는다
+           (`host/gui/stream.py` 머리말). 그 밖은 기본이 켜짐(=숨기지 않음).
+
+           이 시점(같은 `render()` 안, `_append_new_rows` 보다 먼저)에
+           필터를 정하므로 새 타입의 첫 줄은 이미 올바른 필터를 통과해
+           그려진다 — 카탈로그 타입이 처음 나타난 바로 그 틱에서도 소급
+           다시 그리기(`_redraw_all`)가 필요 없다.
+        """
         new_types = [t for t in sorted(state.type_counts)
                      if t not in self._filter_checks]
         if not new_types:
             return
         for t in new_types:
             cb = QCheckBox(t)
-            cb.setChecked(True)
+            cb.setChecked(t not in DEFAULT_HIDDEN_TYPES)
             cb.toggled.connect(self._on_filter_toggled)
             self._filter_row.addWidget(cb)
             self._filter_checks[t] = cb
-        if state.filter_types is not None:
-            # 🔴 이미 필터링 중이었다면 새 타입도 그 규칙을 따라야 한다.
-            #    체크박스는 기본이 체크됨이므로 새로 추가된 타입은 그대로
-            #    보여야 하고, 그러려면 필터 집합에 지금 즉시 넣어야 한다.
-            state.set_filter(self._checked_types())
+        self._apply_filter_from_checks(state)
 
     def _checked_types(self) -> set[str]:
         return {t for t, cb in self._filter_checks.items() if cb.isChecked()}
 
-    def _on_filter_toggled(self, _checked: bool) -> None:
-        if self._state is None:
-            return
+    def _apply_filter_from_checks(self, state: StreamState) -> None:
         checked = self._checked_types()
         # 전부 체크 = 아무것도 거르지 않는다와 같다. `None` 으로 되돌려야
         # 나중에 나타날 타입도(아직 체크박스가 없는 것도) 계속 보인다.
-        self._state.set_filter(
+        state.set_filter(
             None if len(checked) == len(self._filter_checks) else checked
         )
+
+    def _on_filter_toggled(self, _checked: bool) -> None:
+        if self._state is None:
+            return
+        self._apply_filter_from_checks(self._state)
+        self._redraw_all()
         self.render(self._state, self._last_now_s)
 
     # ------------------------------------------------------------- 조작
