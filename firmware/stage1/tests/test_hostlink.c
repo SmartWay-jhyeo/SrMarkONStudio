@@ -378,8 +378,8 @@ static int       saves;
 static int       save_fails;
 
 static const MkFieldBit CFG_FIELDS[] = {
-    { 0, "device_id", 0, "보드 식별자" },
-    { 3, "raw",       1, "ADS1256 원시 카운트" },
+    { 0, "device_id", 0, "보드 식별자", 0 },
+    { 3, "raw",       1, "ADS1256 원시 카운트", 0 },
 };
 
 /* 🔴 저장되는 **순간의** 값을 붙든다. 저장이 끝나면 화면 값으로 되돌아

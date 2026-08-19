@@ -34,10 +34,15 @@ static MkConfig CFG;
 /* 레일 명령 상태. 이제 설정표가 아니라 이것이 실린다. */
 static MkRailState RS = { 1, 0, 1 };
 
+/* 🔴 이 표는 mk_cfgtable.c 의 실제 FIELDS 와 무관한 시험용 6항목 표다 —
+ *    mk_cfgwire 의 줄 조립 자체만 본다. `kinds` 는 이 파일의 시험이 보지
+ *    않으므로 아무 레코드에도 안 속한다는 뜻으로 0 을 명시한다. */
 static const MkFieldBit FIELDS[] = {
-    { 0, "device_id",   0, "보드 식별자" },
-    { 1, "time_source", 1, "시간 소스" },
-    { 3, "raw",         1, "ADS1256 원시 카운트" },
+    { 0, "device_id",   0, "보드 식별자", 0 },
+    { 1, "time_source", 1, "시간 소스",   0 },
+    /* 🔴 [신규, 2026-08-19] raw 만 kinds 를 채운다 — test_field_bits_carry_
+     *    records() 가 이 값으로 cfg_field 의 records 배열을 확인한다. */
+    { 3, "raw",         1, "ADS1256 원시 카운트", MK_FIELD_AIN | MK_FIELD_I2C },
 };
 
 static void setup(void)
@@ -218,6 +223,20 @@ static void test_field_bits(void)
     CHECK_HAS(ln, "\"type\":\"cfg_field\"", "cfg_field");
     CHECK_HAS(ln, "\"bit\":1", "비트 번호");
     CHECK_HAS(ln, "\"default\":true", "기본값이 참/거짓");
+}
+
+/* 🔴 [신규, 2026-08-19] `records` 가 규격 §7.3 개정대로 실리는지 본다 —
+ *    호스트가 이것으로 마스크 카드를 ain·i2c·din 셋으로 나눠 그린다. */
+static void test_field_bits_carry_records(void)
+{
+    run_list();
+    const char *raw_ln = find("raw");
+    CHECK_HAS(raw_ln, "\"records\":[\"ain\",\"i2c\"]",
+              "raw 는 ain·i2c 두 레코드에 해당한다");
+    /* device_id 는 kinds=0 으로 등록했다 — 빈 배열이어야 한다. */
+    const char *id_ln = find("device_id");
+    CHECK_HAS(id_ln, "\"records\":[]",
+              "해당 레코드가 없으면 빈 배열이지 생략되지 않는다");
 }
 
 static void test_cfg_value(void)
@@ -401,6 +420,7 @@ int main(int argc, char **argv)
     test_range_only_when_it_exists();
     test_unit_and_label();
     test_field_bits();
+    test_field_bits_carry_records();
     test_stat_shape();
     test_stat_with_no_queues();
     test_stat_with_no_din();

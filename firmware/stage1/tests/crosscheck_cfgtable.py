@@ -161,10 +161,16 @@ def main() -> int:
                         f"    시뮬레이터에만: {only_sim_bits or '없음'}")
     for bit in sorted(set(fw.fields) & set(sim.fields)):
         a, b = fw.fields[bit], sim.fields[bit]
-        if (a.name, a.default) != (b.name, b.default):
+        # 🔴 [개정, 2026-08-19] records 도 대조한다 — tx.fields 를 ain·i2c·
+        #    din 셋으로 나누며 "이 비트가 어느 레코드에 해당하는가" 가
+        #    새로 생긴 계약이다. 여기가 어긋나면 GUI 가 마스크 카드를
+        #    엉뚱하게 나눠 그린다(시뮬레이터에서는 멀쩡한 채로).
+        a_records = tuple(sorted(a.records))
+        b_records = tuple(sorted(b.records))
+        if (a.name, a.default, a_records) != (b.name, b.default, b_records):
             problems.append(f"  비트 {bit} 가 다르다\n"
-                            f"      펌웨어={a.name!r}/{a.default} "
-                            f"시뮬레이터={b.name!r}/{b.default}")
+                            f"      펌웨어={a.name!r}/{a.default}/{a_records} "
+                            f"시뮬레이터={b.name!r}/{b.default}/{b_records}")
 
     if problems:
         print("펌웨어 표와 시뮬레이터 카탈로그가 어긋난다:", file=sys.stderr)

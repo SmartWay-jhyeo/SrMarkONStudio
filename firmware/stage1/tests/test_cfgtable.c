@@ -230,6 +230,53 @@ static void test_time_source_is_not_a_maskable_field_bit(void)
     CHECK(!found, "time_source 는 필드 비트 표에 없다 — 항상 실린다");
 }
 
+/* 🔴 [신규, 2026-08-19] tx.fields 를 ain·i2c·din 셋으로 나눈 계약을 확인한다.
+ *    최댓값·기본값은 FIELDS 표에서 "이 kind 에 해당하는 비트" 만으로
+ *    다시 계산해 각 항목의 값과 대조한다 — 손으로 숫자를 적지 않는다
+ *    (add_tx() 의 field_mask_bounds() 와 같은 계산을 시험에서도 한다). */
+static void bounds_for_kind(uint8_t kind, uint32_t *out_max, uint32_t *out_def)
+{
+    size_t n = 0;
+    const MkFieldBit *f = mk_cfgtable_fields(&n);
+    uint32_t all = 0u, def = 0u;
+    for (size_t i = 0; i < n; i++) {
+        if ((f[i].kinds & kind) == 0u) { continue; }
+        all |= (1u << f[i].bit);
+        if (f[i].def) { def |= (1u << f[i].bit); }
+    }
+    *out_max = all;
+    *out_def = def;
+}
+
+static void test_field_masks_are_split_per_record_kind(void)
+{
+    setup();
+    struct { const char *key; uint8_t kind; } cases[] = {
+        { "tx.fields_ain", MK_FIELD_AIN },
+        { "tx.fields_i2c", MK_FIELD_I2C },
+        { "tx.fields_din", MK_FIELD_DIN },
+    };
+    for (size_t c = 0; c < sizeof cases / sizeof *cases; c++) {
+        MkCfgItem *it = mk_cfg_find(&CFG, cases[c].key);
+        CHECK(it != NULL, cases[c].key);
+        if (it == NULL) { continue; }
+        uint32_t want_max, want_def;
+        bounds_for_kind(cases[c].kind, &want_max, &want_def);
+        CHECK((uint32_t)it->max == want_max, "최댓값이 표에서 그대로 나온다");
+        CHECK(it->def.u == want_def, "기본값이 표에서 그대로 나온다");
+        CHECK(it->cur.u == it->def.u, "초기값은 기본값과 같다");
+    }
+}
+
+/* 🔴 `tx.fields` 라는 옛 키는 더는 없다 — 있으면 세 마스크로 나눈 것이
+ *    되돌아간 것이다(브리프의 "다시 묻지 마라" 항목 1). */
+static void test_the_old_combined_field_mask_key_is_gone(void)
+{
+    setup();
+    CHECK(mk_cfg_find(&CFG, "tx.fields") == NULL,
+          "tx.fields 는 없다 — tx.fields_ain/i2c/din 으로 나뉘었다");
+}
+
 /* 🔴 카탈로그의 버스 이름표와 드라이버가 쓰는 버스 번호가 갈리면, 화면에는
  *    I2C3 이라고 뜨는데 보드는 I2C1 을 두드린다. 한 곳에서 나오는지 본다. */
 static void test_bus_table_matches_the_catalog(void)
@@ -330,6 +377,8 @@ int main(int argc, char **argv)
     test_five_volt_rail_is_settable_but_warns();
     test_all_channels_are_present();
     test_time_source_is_not_a_maskable_field_bit();
+    test_field_masks_are_split_per_record_kind();
+    test_the_old_combined_field_mask_key_is_gone();
     test_bus_table_matches_the_catalog();
     test_pack_unpack_round_trips();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);

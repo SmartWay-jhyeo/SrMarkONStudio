@@ -236,14 +236,14 @@ static void enable_time_quality_field(void)
 {
     size_t n = 0;
     const MkFieldBit *f = mk_cfgtable_fields(&n);
-    MkCfgItem *mask_item = mk_cfg_find(&CFG, "tx.fields");
+    MkCfgItem *mask_item = mk_cfg_find(&CFG, "tx.fields_ain");
     uint32_t mask = mask_item ? mask_item->cur.u : 0u;
     for (size_t i = 0; i < n; i++) {
         if (strcmp(f[i].name, "time_quality") == 0) {
             mask |= (1u << f[i].bit);
         }
     }
-    set_u32("tx.fields", mask);
+    set_u32("tx.fields_ain", mask);
 }
 
 static void test_time_source_defaults_to_device_clock_without_timeax(void)
@@ -402,13 +402,13 @@ static void test_time_source_field_cannot_be_masked_off(void)
      *    부팅 후 경과 ms 인지)을 구분할 길이 없어진다 — device_clock 의
      *    t 를 호스트가 UTC 로 오해해 저장하는 바로 그 사고가 재발한다.
      *    i2c 의 quantity·value, din 의 connector_id·state 와 같은 이유로
-     *    tx.fields 밖에 둔다(마스크로 못 끈다). */
+     *    tx.fields_ain 밖에 둔다(마스크로 못 끈다). */
     setup();
-    set_u32("tx.fields", 0u);      /* 전부 끈다 */
+    set_u32("tx.fields_ain", 0u);      /* 전부 끈다 */
     set_last(0, 1000, 4000000);
     mk_telem_tick(&T, 100, sink, NULL);
     CHECK_HAS(LINES[0], "\"time_source\":\"device_clock\"",
-              "tx.fields 를 전부 꺼도 time_source 는 실린다");
+              "tx.fields_ain 을 전부 꺼도 time_source 는 실린다");
 }
 
 static void test_seq_increases_so_the_host_can_find_gaps(void)
@@ -531,7 +531,7 @@ static void test_field_mask_selects(void)
     for (size_t i = 0; i < n; i++) {
         if (strcmp(f[i].name, "ma") == 0) { only_ma = (1u << f[i].bit); }
     }
-    set_u32("tx.fields", only_ma);
+    set_u32("tx.fields_ain", only_ma);
 
     set_last(0, 1000, 4026531);
     mk_telem_tick(&T, 100, sink, NULL);
@@ -541,6 +541,72 @@ static void test_field_mask_selects(void)
     CHECK(strstr(LINES[0], "\"connector_id\":") == NULL, "끈 필드는 안 실린다");
     CHECK_HAS(LINES[0], "\"seq\":", "seq 는 마스크로 못 끈다 (규격 §7.1)");
     CHECK_HAS(LINES[0], "\"type\":\"ain\"", "type 도 마찬가지");
+}
+
+/* 🔴 [신규, 2026-08-19] tx.fields 를 셋으로 나눈 핵심 계약 — ain 마스크를
+ *    꺼도 i2c 마스크는 그대로다. 하나였던 시절에는 이 시험이 성립할 수
+ *    없었다(같은 비트를 같이 껐다). */
+static void test_i2c_mask_is_independent_of_ain_mask(void)
+{
+    setup();
+    static MkI2c I2C;
+    MkI2cIo io = { fake_xfer_ok, NULL };
+    mk_i2c_init(&I2C, &io);
+    mk_telem_attach_i2c(&T, &I2C);
+
+    set_u32("tx.fields_ain", 0u);        /* ain 쪽을 다 꺼도 */
+    set_last(0, 1000, 4000000);          /* ain 표본 하나 */
+
+    I2C.last[0][0] = (MkI2cOut){ .connector_id = 10u, .quantity = "lux",
+                                 .value = 401.5f, .have_value = 1,
+                                 .status = 0u, .t_ms = 1000 };
+    I2C.last_valid[0][0] = 1u;
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    int ain_idx = -1, i2c_idx = -1;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"ain\"")) { ain_idx = k; }
+        if (strstr(LINES[k], "\"type\":\"i2c\"")) { i2c_idx = k; }
+    }
+    CHECK(ain_idx >= 0 && i2c_idx >= 0, "두 레코드가 함께 나간다");
+    if (ain_idx >= 0) {
+        CHECK(strstr(LINES[ain_idx], "\"connector_id\":") == NULL,
+              "tx.fields_ain 을 껐으면 ain 의 connector_id 는 안 나온다");
+    }
+    if (i2c_idx >= 0) {
+        CHECK_HAS(LINES[i2c_idx], "\"connector_id\":10",
+                  "tx.fields_i2c 는 기본대로 살아 있다 — ain 마스크와 무관");
+    }
+}
+
+/* mk_telem.c 의 내부 함수 — 헤더에는 없다. 이 시험이 kind 판정 계약을
+ * 직접 겨누려고 extern 으로 끌어온다(field_on() 위 주석 참고). */
+extern int field_on(const MkTelem *t, uint32_t mask, const char *name,
+                    uint8_t kind);
+
+/* 🔴 [신규, 2026-08-19] field_on() 을 직접 겨눈 단위 시험이다 — 이름만
+ *    비교하고 kind 를 안 보면, 해당 없는 비트가 마스크에 서 있어도
+ *    조용히 새는 방어선 없는 상태가 된다. build_i2c_record 등은 애초에
+ *    자기 kind 밖의 이름을 묻지 않으므로, mk_telem_tick() 을 거쳐서는
+ *    이 분기가 드러나지 않는다 — 그래서 함수를 직접 부른다. */
+static void test_field_on_ignores_a_bit_not_applicable_to_the_kind(void)
+{
+    setup();
+    size_t n = 0;
+    const MkFieldBit *f = mk_cfgtable_fields(&n);
+    uint32_t raw_bit = 0u;               /* raw 는 ain 전용 비트다 */
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(f[i].name, "raw") == 0) { raw_bit = (1u << f[i].bit); }
+    }
+    uint32_t mask = raw_bit;
+
+    CHECK(field_on(&T, mask, "raw", MK_FIELD_AIN) != 0,
+          "raw 는 ain 에 해당하니 마스크에 서 있으면 켜진다");
+    CHECK(field_on(&T, mask, "raw", MK_FIELD_I2C) == 0,
+          "raw 는 i2c 전용이 아니다 — 마스크에 서 있어도 무시해야 한다");
+    CHECK(field_on(&T, mask, "raw", MK_FIELD_DIN) == 0,
+          "raw 는 din 에도 해당 없다");
 }
 
 static void test_value_follows_the_spec_formula(void)
@@ -790,7 +856,7 @@ static void test_i2c_time_source_field_cannot_be_masked_off(void)
     MkI2cIo io = { fake_xfer_ok, NULL };
     mk_i2c_init(&I2C, &io);
     mk_telem_attach_i2c(&T, &I2C);
-    set_u32("tx.fields", 0u);
+    set_u32("tx.fields_i2c", 0u);
 
     I2C.last[0][0] = (MkI2cOut){ .connector_id = 10u, .quantity = "lux",
                                  .value = 401.5f, .have_value = 1,
@@ -910,7 +976,7 @@ static void test_din_time_source_field_cannot_be_masked_off(void)
     static MkSolCtl SOL;
     mk_solctl_init(&SOL, NULL, NULL);
     mk_telem_attach_sol(&T, &SOL);
-    set_u32("tx.fields", 0u);
+    set_u32("tx.fields_din", 0u);
 
     SOL.out[0] = (MkSolOut){ .connector_id = 18u, .state = 1u, .t_ms = 1000 };
     SOL.n_out = 1;
@@ -999,7 +1065,9 @@ static void test_gnss_raw_time_source_field_cannot_be_masked_off(void)
     mk_gnss_init(&G);
     mk_telem_attach_gnss(&T, &G);
     set_u32("gnss.echo", 1u);
-    set_u32("tx.fields", 0u);
+    /* 🔴 gnss_raw 는 전용 마스크가 없다 — tx.fields_ain 을 빌려 쓴다
+     *    (규격 §7.7, mk_telem.c build_gnss_raw_record 주석). */
+    set_u32("tx.fields_ain", 0u);
     feed_gnss_line(&G,
         "$GNRMC,235959.999,A,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*73\r\n");
 
@@ -1171,6 +1239,8 @@ int main(int argc, char **argv)
     test_drops_rise_when_send_stalls_long_enough_to_overflow();
     test_changing_tx_period_ms_changes_the_interval();
     test_field_mask_selects();
+    test_i2c_mask_is_independent_of_ain_mask();
+    test_field_on_ignores_a_bit_not_applicable_to_the_kind();
     test_value_follows_the_spec_formula();
     test_float_digits_is_honoured();
     test_every_active_channel_sends_exactly_one_line_per_period();

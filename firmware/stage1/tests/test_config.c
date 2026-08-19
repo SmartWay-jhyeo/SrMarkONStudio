@@ -91,7 +91,12 @@ static void setup(void)
     put(ITEMS[6].def.s, sizeof ITEMS[6].def.s, "2.0");
     put(ITEMS[6].cur.s, sizeof ITEMS[6].cur.s, "2.0");
 
-    ITEMS[7] = (MkCfgItem){ .key = "tx.fields", .group = "tx",
+    /* 🔴 키 이름은 mk_cfgtable 의 실제 카탈로그와 무관하다 — mk_config 는
+     *    이 시험 표를 직접 짓는 일반 모듈이라, U32 넘침 검사만 보면 된다.
+     *    실제 카탈로그의 마스크 항목은 2026-08-19 개정으로 tx.fields_ain
+     *    등 셋으로 나뉘었지만(mk_cfgtable.c), 여기서는 그 이름을 그대로
+     *    가져다 쓰지 않는다 — 존재하지 않는 키처럼 보이면 혼동만 커진다. */
+    ITEMS[7] = (MkCfgItem){ .key = "tx.mask_u32_test", .group = "tx",
                             .vtype = MK_VT_U32, .min = 0, .max = 4294967295.0f,
                             .has_min = 1, .has_max = 1,
                             .label = "NDJSON 필드 마스크" };
@@ -182,11 +187,11 @@ static void test_integer_overflow_is_rejected(void)
     /* 🔴 넘침을 검사하지 않으면 4294967296 이 0 이 되어 범위 검사를
      *    통과한다 — 사용자가 넣은 값과 저장된 값이 달라진다. */
     setup();
-    CHECK_R(mk_cfg_set(&CFG, "tx.fields", "4294967295"), MK_CFG_OK, "U32 최대");
+    CHECK_R(mk_cfg_set(&CFG, "tx.mask_u32_test", "4294967295"), MK_CFG_OK, "U32 최대");
     CHECK(ITEMS[7].cur.u == 4294967295u, "U32 최대가 그대로 들어간다");
-    CHECK_R(mk_cfg_set(&CFG, "tx.fields", "4294967296"), MK_CFG_RANGE,
+    CHECK_R(mk_cfg_set(&CFG, "tx.mask_u32_test", "4294967296"), MK_CFG_RANGE,
             "U32 를 넘으면 거부");
-    CHECK_R(mk_cfg_set(&CFG, "tx.fields", "99999999999999999999"),
+    CHECK_R(mk_cfg_set(&CFG, "tx.mask_u32_test", "99999999999999999999"),
             MK_CFG_RANGE, "훨씬 큰 값도 거부");
 }
 
