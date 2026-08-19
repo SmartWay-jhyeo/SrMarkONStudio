@@ -84,6 +84,52 @@ def test_only_the_listed_files_touch_gpiod():
     )
 
 
+#: 🔴 목록으로 완화하면서 **잃은 것**을 여기서 메운다 (2026-08-19 점검).
+#:
+#:    예전 `test_only_one_file_touches_gpiod` 는 "mk_rails.c 말고는 아무도
+#:    GPIOD 를 쓰지 않는다" 였다. 그 한 줄이 아래 것들을 **전부** 막고
+#:    있었다 — 목록으로 바꾸면서 남은 검사는 `GPIO_PIN_8`~`GPIO_PIN_11`
+#:    이라는 **토큰**만 본다. 즉 다음은 아무도 안 잡는다:
+#:
+#:      GPIO_PIN_All        HAL_GPIO_Init(GPIOD, {.Pin = GPIO_PIN_All}) 한 줄이
+#:                          레일 셋과 상태 LED 를 통째로 다시 설정한다
+#:      HAL_GPIO_DeInit     같은 일을 반대 방향으로 한다 (핀이 입력으로 뜬다)
+#:      GPIOD->BSRR 등      숫자 마스크(1u << 8)로 쓰면 토큰 검사를 그냥 지나간다
+#:      CLK_DISABLE         클럭을 끄면 레일 제어가 조용히 안 먹는다.
+#:                          출력 래치는 남으므로 "켜져 있는데 못 끄는" 상태가 된다
+#:
+#:    셋 다 증상이 "24V 가 저 혼자 움직인다" 뿐이라 코드에서 되짚기 가장
+#:    어려운 종류다. 소유자(mk_rails.c)는 이 도구들을 써도 된다 — 그것이
+#:    그 파일의 일이다.
+GPIOD_WIPERS = (
+    ("GPIO_PIN_All", "포트의 모든 핀을 한꺼번에 설정한다"),
+    ("HAL_GPIO_DeInit", "핀 설정을 되돌린다 — 레일이 입력으로 뜬다"),
+    ("GPIOD->", "레지스터를 직접 쓴다 — 핀 번호 검사를 지나간다"),
+    ("__HAL_RCC_GPIOD_CLK_DISABLE", "포트 클럭을 끈다 — 레일 제어가 안 먹는다"),
+)
+
+
+@pytest.mark.parametrize("path", _sources(), ids=lambda p: p.name)
+def test_no_one_but_the_rail_owner_wipes_gpiod(path: Path):
+    """GPIOD 를 함께 쓰는 파일이 포트 전체를 건드리지 않는지.
+
+    🔴 핀 번호 검사(test_rail_pins_only_appear_in_the_owner)의 사각지대다.
+       그 검사는 `GPIO_PIN_8` 같은 **이름**을 찾으므로, 포트 전체를 한
+       번에 다루는 표현은 하나도 안 걸린다.
+    """
+    if path.name == RAIL_OWNER:
+        pytest.skip("레일을 소유한 파일 — 이 도구들을 쓰는 것이 그 파일의 일이다")
+    code = _strip_comments(path.read_text(encoding="utf-8"))
+    if "GPIOD" not in code:
+        pytest.skip("GPIOD 를 건드리지 않는다 — 레일과 무관하다")
+    for token, what in GPIOD_WIPERS:
+        assert token not in code, (
+            f"{path.name} 이 GPIOD 를 쓰면서 {token} 을 쓴다 ({what}). "
+            f"전원 레일(PD8~PD10)과 상태 LED(PD11)가 같은 포트에 있다 — "
+            f"포트 전체를 다루는 것은 {RAIL_OWNER} 만 한다."
+        )
+
+
 @pytest.mark.parametrize("path", _sources(), ids=lambda p: p.name)
 def test_rail_pins_only_appear_in_the_owner(path: Path):
     """레일 핀 상수가 소유 파일 밖에 나타나지 않는지.
@@ -517,11 +563,80 @@ def test_the_lcd_test_still_exists():
         assert name in t, f"{name} 이 사라졌다"
 
 
+def test_the_screen_test_still_exists():
+    """부분 갱신·주기·미연결 표시를 보는 C 시험이 지워지지 않았는지.
+
+    🔴 "값이 안 바뀌면 안 그린다" 가 빠져도 **화면은 멀쩡히 나온다.**
+       그래서 눈으로는 절대 못 잡고, 대신 SPI2 가 초당 4번 460,800 바이트를
+       밀면서 수집이 밀린다 — 증상이 "가끔 표본이 밀린다" 라 원인을 화면에서
+       찾기까지 오래 걸린다. 시험이 사라지면 그 자리로 조용히 되돌아간다.
+
+    🔴 사용자가 못박은 선 (2026-08-19): "뭘 하던지 센서 수집에는 방해가
+       안된다면 뭐든지 해도 돼" / "무조건 수집을 정상적으로 타임스탬프
+       찍어서 가지고 있어야해." → 판정 기준은 큐의 drops 가 0 인지다.
+    """
+    t = (FW / "tests" / "test_screen.c").read_text(encoding="utf-8")
+    for name in ("test_the_drawing_code_does_not_know_the_font_table",
+                 "test_nothing_is_drawn_when_nothing_changed",
+                 "test_one_changed_value_repaints_only_its_own_cell",
+                 "test_the_refresh_period_is_honoured",
+                 "test_missing_sensors_are_drawn_as_none",
+                 "test_a_long_number_never_spills_into_the_next_cell",
+                 "test_the_layout_fits_the_panel_and_never_overlaps",
+                 "test_a_tick_starts_at_most_one_transfer_and_never_waits",
+                 "test_no_sample_is_lost_while_the_screen_redraws",
+                 "test_the_screen_and_the_wire_round_numbers_the_same_way",
+                 "test_the_catalog_has_the_refresh_period"):
+        assert name in t, f"{name} 이 사라졌다"
+
+
+def test_the_font_table_and_the_drawing_code_stay_apart():
+    """글꼴 표를 그리기 코드가 직접 읽지 않는지.
+
+    🔴 사용자 확정(2026-08-19): "글꼴 표와 그리기 코드를 분리해서, 나중에
+       한글 부분집합을 얹을 때 구조를 뜯지 않아도 되게 해라."
+
+       한 번 섞이면 되돌리기 어렵다 — 그리기가 표의 배치를 알게 되면
+       폭이 다른 글꼴(한글 16x16)을 얹을 때 그리기부터 고쳐야 한다.
+       규약(MkFont)만 보는 상태를 여기서 못박는다.
+    """
+    glyph = (FW / "app" / "mk_glyph.c").read_text(encoding="utf-8")
+    assert "mk_font_ascii5x7" not in _strip_comments(glyph), (
+        "mk_glyph.c 가 특정 글꼴을 직접 부른다 — MkFont 만 봐야 한다"
+    )
+    assert "mk_font5x7" not in _strip_comments(glyph), (
+        "mk_glyph.c 가 글꼴 표 파일을 안다"
+    )
+
+    table = (FW / "app" / "mk_font5x7.c").read_text(encoding="utf-8")
+    assert "mk_glyph" not in _strip_comments(table), (
+        "글꼴 표가 그리기 코드를 부른다 — 표는 자료뿐이어야 한다"
+    )
+
+
+def test_the_screen_layer_does_not_touch_the_hardware():
+    """화면 내용을 만드는 층이 HAL 도 libc stdio 도 모르는지.
+
+    🔴 이 경계가 곧 "화면 내용을 호스트에서 시험한다" 의 전제다
+       (CLAUDE.md §0 의 host/gui 원칙과 같은 결).
+    """
+    for name in ("mk_screen.c", "mk_glyph.c", "mk_text.c", "mk_font5x7.c",
+                 "mk_lcd.c"):
+        code = (FW / "app" / name).read_text(encoding="utf-8")
+        assert "stm32h7xx_hal.h" not in code, f"{name} 이 HAL 을 include 한다"
+        assert "<stdio.h>" not in code, f"{name} 이 stdio 를 include 한다"
+        assert "sprintf" not in _strip_comments(code), (
+            f"{name} 이 sprintf 를 쓴다 — app/ 은 손으로 만든다 (mk_text)"
+        )
+
+
 def test_makefile_builds_the_tested_sources():
     """보드에 굽는 것이 호스트에서 시험한 바로 그 파일들인지.
 
     🔴 보드용으로 따로 고친 판이 생기면 시험이 아무것도 보증하지 않는다.
     """
     mk = (FW / "Makefile").read_text(encoding="utf-8")
-    for src in ("app/mk_framing.c", "app/mk_json.c", "app/mk_hostlink.c"):
+    for src in ("app/mk_framing.c", "app/mk_json.c", "app/mk_hostlink.c",
+                "app/mk_screen.c", "app/mk_glyph.c", "app/mk_text.c",
+                "app/mk_font5x7.c"):
         assert src in mk, f"Makefile 이 {src} 를 빌드하지 않는다"
