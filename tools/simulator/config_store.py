@@ -644,6 +644,16 @@ def default_store(path: Path | None = None) -> ConfigStore:
             note="J25 에 LCD 가 꽂혀 있을 때만 켠다 — 한 장 그리는 데 "
                  "230 ms 를 쓴다",
         ),
+        # 🔴 갱신 주기. 사람이 읽는 화면이라 초당 2~4번이면 넘친다 —
+        #    텔레메트리 주기(tx.period_ms)를 따라갈 이유가 없다. 값이 바뀐
+        #    칸만 다시 그리므로, 화면이 조용하면 이 주기가 짧아도 전송이
+        #    아예 없다.
+        SimConfigItem(
+            "lcd.period_ms", "lcd", "u16", 250, 250,
+            minimum=50, maximum=10000, unit="ms", label="화면 갱신 주기",
+            note="값이 바뀐 칸만 다시 그린다 — 짧게 잡아도 화면이 조용하면 "
+                 "전송이 없다",
+        ),
 
         # ── WS2812 LED 체인 (데이터시트 §5.8) ──────────────────────
         SimConfigItem(

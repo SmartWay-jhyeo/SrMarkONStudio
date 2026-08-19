@@ -34,13 +34,13 @@ static const char *const I2C_KIND_LABELS[] = {
 
 /* dev 1 + tx 5(마스크 3 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
  * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
- * + lcd 1(사용) */
+ * + lcd 2(사용·갱신 주기) */
 #define ITEM_COUNT   (1 + 5 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 5 \
                       + 3 \
-                      + 1)
+                      + 2)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
 #define GEN_COUNT    (MK_AIN_COUNT * 5 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 5)
@@ -465,6 +465,23 @@ static size_t add_lcd(size_t i)
         .label = "화면 사용",
         .note = "J25 에 LCD 가 꽂혀 있을 때만 켠다 — 한 장 그리는 데 "
                 "230 ms 를 쓴다" };
+    i++;
+
+    /* 🔴 갱신 주기. 사람이 읽는 화면이라 초당 2~4번이면 넘친다 —
+     *    텔레메트리 주기(tx.period_ms, 기본 100 ms)를 따라갈 이유가 없다.
+     *    250 ms 면 초당 4번이고, 값이 안 바뀌면 그때도 한 바이트도 안
+     *    나간다(부분 갱신).
+     *
+     * 🔴 하한을 50 ms 로 둔다. 그보다 짧게 두면 값을 다시 읽는 일 자체가
+     *    잦아져 슈퍼루프를 갉아먹는데, 사람 눈에는 아무 차이가 없다.
+     *    상한 10초는 "거의 안 바뀌는 설비를 지켜볼 때" 를 위한 것이다. */
+    s_items[i] = (MkCfgItem){
+        .key = "lcd.period_ms", .group = "lcd", .vtype = MK_VT_U16,
+        .min = 50, .max = 10000, .has_min = 1, .has_max = 1, .unit = "ms",
+        .label = "화면 갱신 주기",
+        .note = "값이 바뀐 칸만 다시 그린다 — 짧게 잡아도 화면이 조용하면 "
+                "전송이 없다" };
+    s_items[i].def.u = 250;
     i++;
     return i;
 }
