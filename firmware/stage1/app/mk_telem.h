@@ -68,12 +68,14 @@ void mk_telem_init(MkTelem *t, MkConfig *cfg, MkAds *ads,
                    const MkFieldBit *fields, size_t n_fields,
                    const char *device_id);
 
-/* I2C 층을 물린다. 🔴 seq 와 tx.fields 를 ain 과 나눠 쓰기 위해서다.
- *    따로 내보내면 두 곳이 갈린다 (규격 §7.5). */
+/* I2C 층을 물린다. 🔴 `seq` 는 ain 과 같은 MkTelem 카운터를 함께 쓴다 —
+ *    따로 세면 두 곳이 갈린다 (규격 §7.5). 필드 마스크는 반대로
+ *    `tx.fields_i2c` 로 ain 과 **독립**이다(2026-08-19 개정, 규격 §7.5). */
 void mk_telem_attach_i2c(MkTelem *t, MkI2c *i2c);
 
 /* 디지털 입력(J18~J20) 층을 물린다. 붙이지 않으면 `din` 을 내지 않는다.
- * i2c 와 같은 이유로 seq·tx.fields 를 나눠 쓴다 (규격 §7.6). */
+ * `seq` 는 i2c 와 같은 이유로 공유하지만, 마스크는 `tx.fields_din` 으로
+ * 독립이다(규격 §7.6). */
 void mk_telem_attach_sol(MkTelem *t, MkSolCtl *sol);
 
 /* GNSS/PPS 시간축(Phase 3)을 물린다. 붙이면 ain·i2c·din 레코드의

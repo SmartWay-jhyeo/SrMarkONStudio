@@ -32,9 +32,9 @@ static const char *const I2C_KIND_LABELS[] = {
     "없음", "조도", "온습도", "적외 온도", "방수 온도"
 };
 
-/* dev 1 + tx 3 + pwr 4 + adc 2 + ain 5×7 + sol 1(디바운스) + led 3+3×4
- * + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코) */
-#define ITEM_COUNT   (1 + 3 + 4 + 2 + MK_AIN_COUNT * 5 \
+/* dev 1 + tx 5(마스크 3 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
+ * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코) */
+#define ITEM_COUNT   (1 + 5 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 5 \
@@ -91,16 +91,29 @@ static size_t s_gen;              /* 다음에 쓸 자리 */
  *    비트가 아예 없고 항상 실린다. bit=1 자리는 다른 필드가 새로 쓰지
  *    않는다(예전에 이 값을 저장했던 보드의 `tx.fields` 에 그 비트가 서
  *    있어도 이제는 조용히 무시될 뿐이다). */
+/* 🔴 [개정, 2026-08-19] `records` 열(kinds)이 늘었다 — 이 비트가 실제로
+ *    실리는 레코드 종류다(규격 §7.2 "해당 레코드"). `tx.fields` 하나를
+ *    ain·i2c·din 세 마스크로 나누면서, "비트 번호는 표 하나를 공유하되
+ *    어느 레코드에 해당하는지는 비트마다 다르다"는 결정이 났다(사용자
+ *    확정 2026-08-18) — 번호를 셋이 따로 쓰면 사람이 못 읽는다.
+ *
+ *    add_tx() 가 여기서 `tx.fields_ain`·`tx.fields_i2c`·`tx.fields_din`
+ *    각각의 최댓값·기본값을 끌어내고, mk_cfgwire.c 가 여기서 `cfg_field`
+ *    의 `records` 배열을 만들고, mk_telem.c 의 field_on() 이 여기서
+ *    "해당 없는 비트는 마스크에 서 있어도 무시" 를 판정한다. */
 static const MkFieldBit FIELDS[] = {
-    { 0, "device_id",       0, "보드 식별자" },
-    { 2, "time_quality",    0, "시간 품질" },
-    { 3, "raw",             1, "ADS1256 원시 카운트" },
-    { 4, "ma",              1, "전류 (mA)" },
-    { 5, "value",           1, "물리량 환산" },
-    { 6, "unit",            0, "단위" },
-    { 7, "status",          1, "채널 상태" },
-    { 8, "capture_counter", 0, "획득 카운터" },
-    { 9, "connector_id",    1, "커넥터 번호" },
+    { 0, "device_id",       0, "보드 식별자",
+      MK_FIELD_AIN | MK_FIELD_I2C | MK_FIELD_DIN },
+    { 2, "time_quality",    0, "시간 품질",
+      MK_FIELD_AIN | MK_FIELD_I2C | MK_FIELD_DIN },
+    { 3, "raw",             1, "ADS1256 원시 카운트",  MK_FIELD_AIN },
+    { 4, "ma",              1, "전류 (mA)",            MK_FIELD_AIN },
+    { 5, "value",           1, "물리량 환산",          MK_FIELD_AIN },
+    { 6, "unit",            0, "단위",                 MK_FIELD_AIN },
+    { 7, "status",          1, "채널 상태",  MK_FIELD_AIN | MK_FIELD_I2C },
+    { 8, "capture_counter", 0, "획득 카운터",          MK_FIELD_AIN },
+    { 9, "connector_id",    1, "커넥터 번호",
+      MK_FIELD_AIN | MK_FIELD_I2C },
 };
 
 const MkFieldBit *mk_cfgtable_fields(size_t *count)
@@ -182,29 +195,63 @@ static size_t add_dev(size_t i)
     return i;
 }
 
-/* 전송. */
+/* FIELDS 를 훑어 kind 에 해당하는 비트만으로 마스크의 최댓값·기본값을
+ * 만든다. mk_cfgtable_pack/unpack 이 값만 저장하듯, 여기도 "표에서 끌어낸
+ * 것" 과 "손으로 적은 것" 이 갈리면 안 되는 자리다(add_tx() 원래 주석과
+ * 같은 근거, 2026-08-19 셋으로 나누며 함수로 뽑았다). */
+static void field_mask_bounds(uint8_t kind, uint32_t *out_max, uint32_t *out_def)
+{
+    uint32_t all = 0u;
+    uint32_t def = 0u;
+    for (size_t f = 0; f < sizeof FIELDS / sizeof *FIELDS; f++) {
+        if ((FIELDS[f].kinds & kind) == 0u) {
+            continue;                    /* 이 레코드에는 해당 없는 비트 */
+        }
+        all |= (1u << FIELDS[f].bit);
+        if (FIELDS[f].def) {
+            def |= (1u << FIELDS[f].bit);
+        }
+    }
+    *out_max = all;
+    *out_def = def;
+}
+
+/* 전송.
+ *
+ * 🔴 [개정, 2026-08-19] `tx.fields` 하나가 ain·i2c·din 을 전부 묶던 것을
+ *    셋으로 나눴다(규격 §7.2·§7.5·§7.6) — `ain` 의 `raw` 를 꺼도 `i2c` 와는
+ *    무관해야 하는데, 마스크가 하나면 그럴 수 없었다. 비트 번호는
+ *    FIELDS 표 하나를 공유하고, 마스크마다 자기 kind 에 해당하는 비트만
+ *    켤 수 있다(field_mask_bounds()). */
 static size_t add_tx(size_t i)
 {
-    s_items[i] = (MkCfgItem){ .key = "tx.fields", .group = "tx",
+    uint32_t max_u, def_u;
+
+    field_mask_bounds(MK_FIELD_AIN, &max_u, &def_u);
+    s_items[i] = (MkCfgItem){ .key = "tx.fields_ain", .group = "tx",
                               .vtype = MK_VT_U32, .min = 0,
                               .has_min = 1, .has_max = 1,
-                              .label = "NDJSON 필드 마스크" };
-    /* 기본 마스크 = FIELDS 의 def 가 1 인 비트들.
-     * 최대 = FIELDS 에 있는 **모든** 비트.
-     *
-     * 🔴 둘 다 손으로 적지 않는다. 최대를 1023 으로 박아 두었더니 비트를
-     *    하나 더 붙이는 순간 새 비트를 켤 수 없게 되는데, 그 사실이
-     *    코드 어디에도 드러나지 않는다. 표에서 끌어내면 못 어긋난다. */
-    {
-        uint32_t all = 0u;
-        for (size_t f = 0; f < sizeof FIELDS / sizeof *FIELDS; f++) {
-            all |= (1u << FIELDS[f].bit);
-            if (FIELDS[f].def) {
-                s_items[i].def.u |= (1u << FIELDS[f].bit);
-            }
-        }
-        s_items[i].max = (float)all;
-    }
+                              .label = "NDJSON 필드 마스크 (아날로그)" };
+    s_items[i].def.u = def_u;
+    s_items[i].max = (float)max_u;
+    i++;
+
+    field_mask_bounds(MK_FIELD_I2C, &max_u, &def_u);
+    s_items[i] = (MkCfgItem){ .key = "tx.fields_i2c", .group = "tx",
+                              .vtype = MK_VT_U32, .min = 0,
+                              .has_min = 1, .has_max = 1,
+                              .label = "NDJSON 필드 마스크 (I2C)" };
+    s_items[i].def.u = def_u;
+    s_items[i].max = (float)max_u;
+    i++;
+
+    field_mask_bounds(MK_FIELD_DIN, &max_u, &def_u);
+    s_items[i] = (MkCfgItem){ .key = "tx.fields_din", .group = "tx",
+                              .vtype = MK_VT_U32, .min = 0,
+                              .has_min = 1, .has_max = 1,
+                              .label = "NDJSON 필드 마스크 (디지털 입력)" };
+    s_items[i].def.u = def_u;
+    s_items[i].max = (float)max_u;
     i++;
 
     s_items[i] = (MkCfgItem){ .key = "tx.period_ms", .group = "tx",

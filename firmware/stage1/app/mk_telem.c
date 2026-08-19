@@ -71,11 +71,30 @@ static MkCfgItem *ain_item(MkConfig *cfg, int ch, const char *suffix)
  *
  * 🔴 비트 번호를 여기 적지 않는다. 필드 표(mk_cfgtable 의 FIELDS)가 유일한
  *    출처이고, 그것을 카탈로그로도 보낸다 — 두 곳에 적으면 화면이 켠 것과
- *    보드가 싣는 것이 갈린다. */
-static int field_on(const MkTelem *t, uint32_t mask, const char *name)
+ *    보드가 싣는 것이 갈린다.
+ *
+ * 🔴 [개정, 2026-08-19] `kind` 를 받아 **이 비트가 이 레코드에 해당하는지도
+ *    함께 본다.** `tx.fields` 를 셋으로 나누며 마스크만 갈아 끼우고 이름
+ *    비교만 남겨 두면, 해당 없는 비트가 마스크에 서 있어도(예: 손상된
+ *    저장값, 또는 나중에 실수로 상한 계산이 어긋난 경우) 조용히 무시되는
+ *    대신 엉뚱하게 실릴 위험이 남는다 — 화면에서 켠 적 없는 필드가
+ *    나오거나, 반대로 켠 필드가 안 나오는 상태다. 각 마스크의 상한이
+ *    field_mask_bounds() 로 이미 kind 안에서만 계산되므로 정상 경로에서는
+ *    걸릴 일이 없지만, 방어선을 이름 비교 하나에만 맡기지 않는다. */
+/* 🔴 static 이 아니다 — 헤더에는 안 올리지만(내부 구현이라 다른 .c 는
+ *    안 쓴다) test_telem.c 가 이 함수의 kind 판정 계약을 직접 겨눠 시험한다
+ *    (extern 선언). 레코드 조립 경로만으로는 이 분기가 드러나지 않는다 —
+ *    지금 build_i2c_record 등은 애초에 자기 kind 밖의 이름을 묻지 않으므로,
+ *    함수를 직접 부르지 않으면 이 계약이 무엇에도 걸리지 않는 죽은 코드로
+ *    보인다. */
+int field_on(const MkTelem *t, uint32_t mask, const char *name,
+             uint8_t kind)
 {
     for (size_t i = 0; i < t->n_fields; i++) {
         if (strcmp(t->fields[i].name, name) == 0) {
+            if ((t->fields[i].kinds & kind) == 0u) {
+                return 0;         /* 이름은 맞지만 이 레코드에는 해당 없다 */
+            }
             return (mask & (1u << t->fields[i].bit)) != 0u;
         }
     }
@@ -134,8 +153,11 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
                         char *out, size_t cap)
 {
     MkConfig *cfg = t->cfg;
-    uint32_t mask = cfg_u32(cfg, "tx.fields", 0u);
+    /* 🔴 [개정, 2026-08-19] ain 전용 마스크다 — tx.fields_i2c·tx.fields_din
+     *    과 독립이다(규격 §7.2). */
+    uint32_t mask = cfg_u32(cfg, "tx.fields_ain", 0u);
     uint32_t digits = cfg_u32(cfg, "tx.float_digits", 4u);
+    const uint8_t kind = MK_FIELD_AIN;
 
     MkJson j;
     mk_json_begin(&j, out, cap);
@@ -151,20 +173,20 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
 
     /* 순서는 규격 §7.2 의 표 순서 = 시뮬레이터가 담는 순서다. 두 카탈로그를
      * 나란히 놓고 볼 일이 많으므로 맞춰 둔다. */
-    if (field_on(t, mask, "connector_id")) {
+    if (field_on(t, mask, "connector_id", kind)) {
         mk_json_u32(&j, "connector_id", (uint32_t)(ch + CONNECTOR_OFFSET));
     }
-    if (field_on(t, mask, "raw")) {
+    if (field_on(t, mask, "raw", kind)) {
         /* 🔴 원본이다. ma·value 는 반올림된 파생값이므로, 정밀도가 필요한
          *    분석은 이것을 쓴다 (규격 §7.2). */
         mk_json_i64(&j, "raw", (int64_t)s->raw);
     }
 
     float ma = mk_telem_raw_to_ma(s->raw);
-    if (field_on(t, mask, "ma")) {
+    if (field_on(t, mask, "ma", kind)) {
         mk_json_f32(&j, "ma", ma, (int)digits);
     }
-    if (field_on(t, mask, "value")) {
+    if (field_on(t, mask, "value", kind)) {
         /* 규격 §7.2.1 — value = (ma - zero) * scale */
         MkCfgItem *z = ain_item(cfg, ch, ".zero");
         MkCfgItem *sc = ain_item(cfg, ch, ".scale");
@@ -172,17 +194,17 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
         float scale = sc ? sc->cur.f : 1.0f;
         mk_json_f32(&j, "value", (ma - zero) * scale, (int)digits);
     }
-    if (field_on(t, mask, "unit")) {
+    if (field_on(t, mask, "unit", kind)) {
         MkCfgItem *u = ain_item(cfg, ch, ".unit");
         mk_json_str(&j, "unit", u ? u->cur.s : "");
     }
-    if (field_on(t, mask, "status")) {
+    if (field_on(t, mask, "status", kind)) {
         /* 🔴 0 = 정상. 지금은 채널 상태를 따로 세지 않는다 — 타임아웃은
          *    mk_ads_timeouts 가 들고 있고 $STAT 이 보고한다. 여기에 0 이
          *    아닌 값을 지어 넣지 않는다. */
         mk_json_u32(&j, "status", 0u);
     }
-    if (field_on(t, mask, "device_id")) {
+    if (field_on(t, mask, "device_id", kind)) {
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
     /* 🔴 [판단, 2026-08-19] time_source 는 마스크로 못 끈다 — `t` 가
@@ -193,10 +215,10 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
      *    같은 자리다 — timeax 가 없으면(1단계 빌드) "device_clock" 고정,
      *    붙어 있으면 실제 등급(gnss_pps/gnss_nmea/device_clock)이다. */
     mk_json_str(&j, "time_source", time_source_of(t));
-    if (field_on(t, mask, "time_quality")) {
+    if (field_on(t, mask, "time_quality", kind)) {
         mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
-    if (field_on(t, mask, "capture_counter")) {
+    if (field_on(t, mask, "capture_counter", kind)) {
         /* 🔴 `t` 와 달리 이것은 **변환하지 않은** 원시 획득 카운터다 —
          *    `t` 가 등급에 따라 UTC 로 바뀌는 것과 별개로, capture_counter
          *    는 항상 장치 카운터(지금은 s->t_ms, 곧 mk_time_ms() 값) 그대로
@@ -215,7 +237,12 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
 static int build_gnss_raw_record(MkTelem *t, const char *line, int64_t now_ms,
                                  char *out, size_t cap)
 {
-    uint32_t mask = cfg_u32(t->cfg, "tx.fields", 0u);
+    /* 🔴 [판단, 2026-08-19] 전용 마스크를 새로 만들지 않고 tx.fields_ain 을
+     *    빌려 쓴다 — 이 레코드가 쓰는 device_id·time_quality 비트는 ain
+     *    에도 있고(규격 §7.2 표), gnss_raw 는 진단용이라 항목을 늘릴
+     *    만큼 자주 쓰지 않는다(규격 §7.7). */
+    uint32_t mask = cfg_u32(t->cfg, "tx.fields_ain", 0u);
+    const uint8_t kind = MK_FIELD_AIN;
 
     MkJson j;
     mk_json_begin(&j, out, cap);
@@ -235,13 +262,13 @@ static int build_gnss_raw_record(MkTelem *t, const char *line, int64_t now_ms,
      *    `"` `\` 와 제어문자를 이스케이프하므로 원문에 그런 바이트가
      *    섞여도 줄이 깨지지 않는다. */
     mk_json_str(&j, "line", line);
-    if (field_on(t, mask, "device_id")) {
+    if (field_on(t, mask, "device_id", kind)) {
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
     /* 🔴 time_source 는 마스크로 못 끈다 — ain 의 build_record 와 같은
      *    근거. */
     mk_json_str(&j, "time_source", time_source_of(t));
-    if (field_on(t, mask, "time_quality")) {
+    if (field_on(t, mask, "time_quality", kind)) {
         mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
     return mk_json_end(&j);
@@ -253,8 +280,11 @@ static int build_gnss_raw_record(MkTelem *t, const char *line, int64_t now_ms,
 static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
                             char *out, size_t cap)
 {
-    uint32_t mask = cfg_u32(t->cfg, "tx.fields", 0u);
+    /* 🔴 [개정, 2026-08-19] i2c 전용 마스크 — tx.fields_ain·tx.fields_din 과
+     *    독립이다(규격 §7.5). */
+    uint32_t mask = cfg_u32(t->cfg, "tx.fields_i2c", 0u);
     uint32_t digits = cfg_u32(t->cfg, "tx.float_digits", 4u);
+    const uint8_t kind = MK_FIELD_I2C;
 
     MkJson j;
     mk_json_begin(&j, out, cap);
@@ -265,7 +295,7 @@ static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
     mk_json_i64(&j, "t", acquired_epoch_ms(t, o->t_ms));
     mk_json_str(&j, "type", "i2c");
 
-    if (field_on(t, mask, "connector_id")) {
+    if (field_on(t, mask, "connector_id", kind)) {
         mk_json_u32(&j, "connector_id", (uint32_t)o->connector_id);
     }
     /* 🔴 quantity·value 는 마스크로 끌 수 없다 (규격 §7.5). 둘이 빠지면
@@ -277,16 +307,16 @@ static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
         mk_json_null(&j, "value");
     }
     /* 🔴 unit 을 싣지 않는다 — quantity 가 단위를 이미 정한다 (규격 §7.5). */
-    if (field_on(t, mask, "status")) {
+    if (field_on(t, mask, "status", kind)) {
         mk_json_u32(&j, "status", o->status);
     }
-    if (field_on(t, mask, "device_id")) {
+    if (field_on(t, mask, "device_id", kind)) {
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
     /* 🔴 time_source 는 마스크로 못 끈다 — ain 의 build_record 와 같은
      *    근거(위 주석 참고). */
     mk_json_str(&j, "time_source", time_source_of(t));
-    if (field_on(t, mask, "time_quality")) {
+    if (field_on(t, mask, "time_quality", kind)) {
         mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
     return mk_json_end(&j);
@@ -298,7 +328,10 @@ static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
 static int build_din_record(MkTelem *t, const MkSolOut *o,
                             char *out, size_t cap)
 {
-    uint32_t mask = cfg_u32(t->cfg, "tx.fields", 0u);
+    /* 🔴 [개정, 2026-08-19] din 전용 마스크 — tx.fields_ain·tx.fields_i2c 와
+     *    독립이다(규격 §7.6). */
+    uint32_t mask = cfg_u32(t->cfg, "tx.fields_din", 0u);
+    const uint8_t kind = MK_FIELD_DIN;
 
     MkJson j;
     mk_json_begin(&j, out, cap);
@@ -315,13 +348,13 @@ static int build_din_record(MkTelem *t, const MkSolOut *o,
     mk_json_u32(&j, "connector_id", (uint32_t)o->connector_id);
     mk_json_u32(&j, "state", o->state);
 
-    if (field_on(t, mask, "device_id")) {
+    if (field_on(t, mask, "device_id", kind)) {
         mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
     }
     /* 🔴 time_source 는 마스크로 못 끈다 — ain 의 build_record 와 같은
      *    근거(위 주석 참고). */
     mk_json_str(&j, "time_source", time_source_of(t));
-    if (field_on(t, mask, "time_quality")) {
+    if (field_on(t, mask, "time_quality", kind)) {
         mk_json_u32(&j, "time_quality", time_quality_of(t));
     }
     return mk_json_end(&j);

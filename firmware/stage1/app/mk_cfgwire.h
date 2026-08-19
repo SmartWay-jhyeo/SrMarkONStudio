@@ -15,12 +15,28 @@
 
 #include "mk_config.h"
 
+/* 이 비트가 어느 레코드의 마스크에 해당하는가 (규격 §7.2 "해당 레코드").
+ *
+ * 🔴 [개정, 2026-08-19] `tx.fields` 하나를 ain·i2c·din 세 마스크로 나누며
+ *    생겼다. 비트 번호·이름표는 MkFieldBit 표 하나를 셋이 공유하지만,
+ *    어느 레코드에서 실제로 실리는지는 비트마다 다르다 — 이 비트필드가
+ *    그것을 말한다. mk_cfgtable.c 의 add_tx() 가 여기서 각 마스크의
+ *    최댓값·기본값을 끌어내고, mk_telem.c 의 field_on() 이 여기서 "해당
+ *    없는 비트는 마스크에 서 있어도 무시" 를 판정한다 — 이름만 비교하면
+ *    비트 재사용에서 조용히 새는 자리라 반드시 함께 검사한다. */
+typedef enum {
+    MK_FIELD_AIN = 1u << 0,
+    MK_FIELD_I2C = 1u << 1,
+    MK_FIELD_DIN = 1u << 2,
+} MkFieldKind;
+
 /* NDJSON 필드 마스크의 비트 하나 (규격 §7.2). */
 typedef struct {
     uint8_t     bit;
     const char *name;
     uint8_t     def;
     const char *label;
+    uint8_t     kinds;   /* MkFieldKind 의 OR 조합 — 이 비트가 속한 레코드들 */
 } MkFieldBit;
 
 /* 한 줄을 만들어 콜백에 넘긴다. 줄바꿈은 포함하지 않는다. */
