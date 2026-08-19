@@ -1,10 +1,12 @@
 #include "mk_i2c_drivers.h"
 #include "mk_i2c_bh1750.h"
+#include "mk_i2c_am2320.h"
 #include "mk_i2c_mlx90614.h"
 
 /* 🔴 종류 하나에 드라이버 하나. 새 칩은 여기 한 줄과 파일 하나다. */
 static const MkI2cDriver *const TABLE[] = {
     &MK_I2C_BH1750,
+    &MK_I2C_AM2320,
     &MK_I2C_MLX90614,
 };
 

@@ -130,10 +130,44 @@ int mk_i2c_io_xfer(void *ctx, uint8_t bus, uint8_t addr,
          *    Mem_Read 를 쓰면 안 된다 — 없는 주소 바이트가 하나 더 나간다. */
         rc = HAL_I2C_Master_Receive(h, a8, rx, (uint16_t)nrx, XFER_TIMEOUT_MS);
     } else {
-        return 0;                /* 할 일이 없다 */
+        /* 🔴 [AM2320] "할 일이 없다" 가 아니라 **주소만 두드린다** 다.
+         *    AM2320 은 평소 잠들어 있고 깨우려면 START + 주소 + STOP 을
+         *    보내야 하는데(데이터시트 p.17 §8.2.4 Figure 15) 응답은
+         *    없는 것이 정상이다(NACK). 예전엔 이 자리가 버스를 안
+         *    건드리고 조용히 0 을 돌려줘 그 동작을 표현할 방법이
+         *    없었다.
+         *
+         *    HAL_I2C_IsDeviceReady() 가 정확히 그 파형(주소만 보내고
+         *    ACK/NACK 만 본다)을 낸다. Trials=1 — 여러 번 재시도하면
+         *    그 자체가 START/STOP 을 여러 번 내는 것이라 "깨우기 한
+         *    번" 이라는 프로토콜 가정이 깨진다. 반환값 규칙(0/-1/-2)은
+         *    그대로다 — AM2320 드라이버(app/mk_i2c_am2320.c)가 NACK(-1)
+         *    을 정상으로 보고 삼킨다. */
+        rc = HAL_I2C_IsDeviceReady(h, a8, 1u, XFER_TIMEOUT_MS);
     }
 
     return map_rc(h, rc);
+}
+
+/* 🔴 [AM2320] 마이크로초 바쁜 대기. app/mk_i2c_am2320.c 가 깨우기 뒤
+ *    (>=800us)와 명령 전송 뒤(>=1.5ms) 실제로 기다려야 한다(데이터시트
+ *    p.17) — mk_ads1256.c 의 t6·t11 대기와 같은 이유로 app/ 은 HAL 을
+ *    몰라야 하니 콜백으로 뺀다(MkAdsIo.delay_us 와 같은 모양,
+ *    bsp/mk_ads_io.c 의 io_delay_us 를 그대로 본떴다 — 같은 클럭
+ *    가정(64MHz, HSI, PLL 없음 — main.c SystemClock_Config)이라 같은
+ *    계산을 쓴다).
+ *
+ *    이 함수는 main 슈퍼루프에서 불린다(SPI ISR 안이 아니다) — AM2320
+ *    포트 하나가 read() 를 부르는 순간(최소 2초에 한 번, warmup_ms)
+ *    최대 ~2.5ms 를 이 안에서 바쁘게 기다린다. 이 파일이 이미 받아들인
+ *    블로킹 폭(BH1750 시작 최악 60ms, 위 주석)보다 작다. */
+void mk_i2c_io_delay_us(void *ctx, uint32_t us)
+{
+    (void)ctx;
+    volatile uint32_t n = us * (64u / 3u + 1u);
+    while (n--) {
+        __asm volatile ("nop");
+    }
 }
 
 static void open_pins(GPIO_TypeDef *port, uint16_t pins, uint8_t af)

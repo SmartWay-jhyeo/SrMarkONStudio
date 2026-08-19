@@ -319,7 +319,10 @@ int main(void)
     /* 🔴 I2C 버스 셋. 카탈로그(mk_cfgtable 의 i2c*.kind·addr)에는 이미
      *    항목이 있었지만 xfer 뒤가 비어 있어 파형이 안 나갔다. */
     mk_i2c_io_init();
-    MkI2cIo i2c_io = { mk_i2c_io_xfer, NULL };
+    /* 🔴 delay_us 를 채운다 — AM2320 이 깨우기·명령 사이에 실제로
+     *    기다려야 한다(app/mk_i2c_am2320.c). 안 채우면 그 드라이버가
+     *    타이밍을 못 지킨다. */
+    MkI2cIo i2c_io = { mk_i2c_io_xfer, NULL, mk_i2c_io_delay_us };
     mk_i2c_init(&s_i2c, &i2c_io);
 
     mk_ads_io_init(&s_ads);

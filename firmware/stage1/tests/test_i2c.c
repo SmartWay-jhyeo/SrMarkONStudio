@@ -9,6 +9,7 @@
 #include "../app/mk_cfgtable.h"
 #include "../app/mk_i2c_bh1750.h"
 #include "../app/mk_i2c_mlx90614.h"
+#include "../app/mk_i2c_am2320.h"
 
 static int failures = 0;
 
@@ -53,6 +54,17 @@ static int fake_xfer(void *ctx, uint8_t bus, uint8_t addr,
     return b->ret;
 }
 
+/* 🔴 [AM2320] MkI2cIo.delay_us 자리를 채운다 — 없으면(NULL) AM2320
+ *    드라이버가 대기를 건너뛰지만(방어적으로 NULL 검사를 해 뒀다), 여기
+ *    시험은 실제로 딜레이가 불렸는지·얼마를 기다렸는지도 보고 싶으므로
+ *    채워 둔다. 부르는 횟수는 세지 않는다 — round-robin 시험들은 그것을
+ *    안 본다. */
+static void fake_delay(void *ctx, uint32_t us)
+{
+    (void)ctx;
+    (void)us;
+}
+
 static void set_u(const char *key, uint32_t v)
 {
     MkCfgItem *it = mk_cfg_find(&CFG, key);
@@ -63,7 +75,7 @@ static void setup(void)
 {
     memset(&BUS, 0, sizeof BUS);
     mk_cfgtable_init(&CFG);
-    MkI2cIo io = { fake_xfer, &BUS };
+    MkI2cIo io = { fake_xfer, &BUS, fake_delay };
     mk_i2c_init(&I2C, &io);
 }
 
@@ -161,17 +173,23 @@ static void test_one_port_per_tick(void)
  *    완전히 비우고 나온 레코드 수를 세어, 400ms/주기 200ms 에서 나와야
  *    하는 트리거 횟수(2 — t=0 즉시 한 번 + t=200 에 한 번)를 못박는다.
  *
- * 🔴 [MLX90614 추가] 예전에는 여기서 IR_TEMP 를 "드라이버 없음"의
- *    본보기로 썼다. 이제 IR_TEMP 에 MLX90614 드라이버가 생겼으므로,
- *    카탈로그에서 아직 드라이버가 없는 종류 WATER_TEMP(방수 온도)로
- *    바꾼다. */
+ * 🔴 [AM2320·MLX90614 추가] 예전에는 여기서 IR_TEMP 를 "드라이버 없음"의
+ *    본보기로 썼다. 이제 IR_TEMP(MLX90614) 도 HUMID(AM2320) 도 드라이버가
+ *    있으므로, 카탈로그에서 아직 드라이버가 없는 유일한 종류
+ *    WATER_TEMP(방수 온도, 양 하나)로 바꾼다 — "양 둘 인 종류가 미지원일
+ *    때 두 줄이 나가는가"는 이제 실제 카탈로그로는 재현할 수 없다(양이
+ *    둘인 종류는 온습도뿐인데 그것도 이제 드라이버가 있다). 그 자리는
+ *    아래 AM2320 절의 test_am2320_real_read_failure_emits_both_
+ *    quantities_as_status_via_the_state_machine 가 "미지원 경로"가 아니라
+ *    "진짜 드라이버가 실패하는 경로"로 대신 메운다 — 실제로 더 현실적인
+ *    시나리오다(배선된 AM2320 이 응답하지 않는 경우). */
 static void test_unsupported_kind_reports_status_three(void)
 {
     setup();
     enable_lux_port(10u, 0x23u, 200u);
     MkCfgItem *k = mk_cfg_find(&CFG, "i2c10.kind");
-    /* WATER_TEMP 는 카탈로그엔 있지만 아직 드라이버가 없으므로 여전히
-     * FAULT(status=3) 경로를 탄다. */
+    /* WATER_TEMP 는 카탈로그엔 있지만 이 라운드에도 드라이버가 없으므로
+     * 여전히 FAULT(status=3) 경로를 탄다. */
     k->cur.u = (uint32_t)MK_I2C_KIND_WATER_TEMP;
 
     int n_records = 0;
@@ -195,29 +213,6 @@ static void test_unsupported_kind_reports_status_three(void)
           "quantity 가 실린다 — 없으면 host/gui/screen.py 가 레코드를 버린다 (C1)");
     CHECK(BUS.n == 0, "지원 안 하면 버스를 두드리지 않는다");
     CHECK(I2C.dropped == 0u, "매 바퀴 다 비웠으면 버릴 것이 없다");
-}
-
-/* 🔴 [C1] 값이 둘인 종류(온습도)는 미지원일 때도 두 줄이 나가야 한다 —
- *    규격 §7.5.1 표가 종류→양을 이미 정해 두었고, 펌웨어가 임의로 하나만
- *    골라 보내면 온습도 카드 중 하나는 "지원 안 함"이 영영 안 뜬다. */
-static void test_unsupported_kind_with_two_quantities_emits_two_lines(void)
-{
-    setup();
-    enable_port_kind(10u, (uint32_t)MK_I2C_KIND_HUMID, 0x40u, 1000u);
-
-    int n_temp = 0, n_humidity = 0;
-    MkI2cOut out;
-    mk_i2c_tick(&I2C, &CFG, 0);          /* 첫 트리거 하나만 본다 */
-    int seen = 0;
-    while (mk_i2c_take(&I2C, &out) == 1) {
-        seen++;
-        CHECK(out.status == 3u, "온습도 미지원도 status=3");
-        CHECK(!out.have_value, "값 자리는 비어 있다");
-        if (out.quantity != NULL && strcmp(out.quantity, "temp") == 0) { n_temp++; }
-        if (out.quantity != NULL && strcmp(out.quantity, "humidity") == 0) { n_humidity++; }
-    }
-    CHECK(seen == 2, "온습도는 트리거 한 번에 두 줄 (temp, humidity)");
-    CHECK(n_temp == 1 && n_humidity == 1, "두 줄이 각각 temp·humidity 다");
 }
 
 /* 🔴 [C1] 종류→양 표를 직접 확인한다. 각 종류가 규격 §7.5.1 표대로다. */
@@ -246,15 +241,23 @@ static void test_kind_quantities_table_matches_the_spec(void)
 /* 🔴 [I1] 여러 포트가 같은 바퀴에 레코드를 내도 잃지 않는다.
  *
  *    FAULT(드라이버 없음)는 버스를 안 건드려 순회가 안 멈춘다 — 포트
- *    여섯을 전부 온습도(양 둘)로 켜 두면 부팅 직후(모든 last_read_ms=0)
- *    한 바퀴 안에서 여섯 포트가 동시에 gate 를 통과해 12줄이 쌓인다.
- *    MK_I2C_OUT_MAX 가 이 최악(MK_I2C_COUNT × MK_I2C_VALUES_MAX)을
- *    감당하지 못하면 dropped 가 올라간다. */
+ *    여섯을 전부 같은 미지원 종류로 켜 두면 부팅 직후(모든
+ *    last_read_ms=0) 한 바퀴 안에서 여섯 포트가 동시에 gate 를 통과해
+ *    레코드가 쌓인다. MK_I2C_OUT_MAX(=MK_I2C_COUNT × MK_I2C_VALUES_MAX)
+ *    가 이 최악을 감당하지 못하면 dropped 가 올라간다.
+ *
+ * 🔴 [AM2320·MLX90614 추가] 예전엔 HUMID(양 둘)로 여섯 포트를 켜 정확히
+ *    MK_I2C_OUT_MAX(12) 를 채웠다. 이제 HUMID 도 드라이버가 있어(AM2320)
+ *    미지원 경로를 안 탄다 — 카탈로그에서 아직 드라이버가 없는 유일한
+ *    종류는 WATER_TEMP(양 하나)뿐이라, 이 시험이 "미지원" 경로로 만들 수
+ *    있는 최악은 이제 6×1=6 이다. 버퍼 크기(12)는 여전히 이 최악을
+ *    안전하게 덮는다 — 값을 12→6 으로 낮춘 것이지 버퍼를 줄인 것이
+ *    아니다. */
 static void test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer(void)
 {
     setup();
     for (unsigned jack = 10u; jack <= 15u; jack++) {
-        enable_port_kind(jack, (uint32_t)MK_I2C_KIND_HUMID, 0x30u + jack, 1000u);
+        enable_port_kind(jack, (uint32_t)MK_I2C_KIND_WATER_TEMP, 0x30u + jack, 1000u);
     }
 
     mk_i2c_tick(&I2C, &CFG, 0);      /* 여섯 포트가 전부 처음 트리거된다 */
@@ -263,8 +266,8 @@ static void test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer(void)
     MkI2cOut out;
     while (mk_i2c_take(&I2C, &out) == 1) { n++; }
 
-    CHECK(n == (int)(MK_I2C_COUNT * 2),
-          "포트 여섯 × 양 둘 = 열두 줄이 한 바퀴에 다 나온다");
+    CHECK(n == (int)(MK_I2C_COUNT * 1),
+          "포트 여섯 × 양 하나 = 여섯 줄이 한 바퀴에 다 나온다");
     CHECK(I2C.dropped == 0u, "MK_I2C_OUT_MAX 가 최악을 감당해 버리는 것이 없다");
     CHECK(BUS.n == 0, "드라이버가 없으니 버스는 안 건드린다");
 }
@@ -571,6 +574,236 @@ static void test_mlx90614_quantity_matches_the_kind_table(void)
           "MLX90614 가 내는 quantity 가 종류 표와 같다 (temp_object)");
 }
 
+/* ---- AM2320 드라이버 -------------------------------------------------------
+ *
+ * 🔴 예제 값은 전부 docs/datasheet/AM2320.pdf 원문 p.13~14 다(습도
+ *    0x01F4=50.0%RH, 온도 0x00FA=25.0°C). CRC 는 Python 으로 미리
+ *    계산해 못박는다 — crc16([0x03,0x04,0x01,0xF4,0x00,0xFA]) 의 결과를
+ *    저바이트 먼저 실으면 0x31,0xA5 인데, 데이터시트 표(p.14, "CRC 코드
+ *    2 31A5")가 정확히 그 두 바이트를 보여준다.
+ */
+
+/* 🔴 AM2320 전용 가짜 버스. 세 번의 전송(깨우기·명령·응답)을 각각 다르게
+ *    반응시켜야 해서(그리고 깨우기는 ntx=0&&nrx=0) 공용 fake_xfer 로는
+ *    표현이 안 된다. */
+#define AM_MAX_EV 4
+typedef struct {
+    int      n;
+    size_t   ntx[AM_MAX_EV];
+    size_t   nrx[AM_MAX_EV];
+    uint8_t  first_tx[AM_MAX_EV];
+    int      poke_ret;           /* 깨우기(ntx=0,nrx=0) 호출의 반환값 */
+    int      cmd_ret;            /* 명령 프레임(ntx=3,nrx=0) 호출의 반환값 */
+    int      resp_ret;           /* 응답(ntx=0,nrx=8) 호출의 반환값 */
+    uint8_t  resp[8];
+    uint32_t delay_us[AM_MAX_EV];
+    int      n_delay;
+} AmBus;
+
+static AmBus AM;
+
+static int am_fake_xfer(void *ctx, uint8_t bus, uint8_t addr,
+                        const uint8_t *tx, size_t ntx, uint8_t *rx, size_t nrx)
+{
+    (void)bus; (void)addr;
+    AmBus *b = (AmBus *)ctx;
+    if (b->n < AM_MAX_EV) {
+        b->ntx[b->n] = ntx;
+        b->nrx[b->n] = nrx;
+        b->first_tx[b->n] = ntx ? tx[0] : 0u;
+        b->n++;
+    }
+    if (ntx == 0u && nrx == 0u) {
+        return b->poke_ret;
+    }
+    if (nrx == 0u) {
+        return b->cmd_ret;
+    }
+    if (b->resp_ret == 0) {
+        for (size_t k = 0; k < nrx && k < sizeof b->resp; k++) { rx[k] = b->resp[k]; }
+    }
+    return b->resp_ret;
+}
+
+static void am_fake_delay(void *ctx, uint32_t us)
+{
+    AmBus *b = (AmBus *)ctx;
+    if (b->n_delay < AM_MAX_EV) { b->delay_us[b->n_delay++] = us; }
+}
+
+/* 데이터시트 p.14 예제: 습도 0x01F4=500(50.0%RH), 온도 0x00FA=250(25.0°C),
+ * CRC 저바이트 먼저 0x31,0xA5 (파일 위 주석의 근거 참고). */
+static void am_setup_positive_example(void)
+{
+    memset(&AM, 0, sizeof AM);
+    uint8_t resp[8] = { 0x03u, 0x04u, 0x01u, 0xF4u, 0x00u, 0xFAu, 0x31u, 0xA5u };
+    memcpy(AM.resp, resp, sizeof resp);
+}
+
+/* 🔴 [핵심] 깨우기가 NACK 이어도 정상 읽기가 된다 — 이것이 이 드라이버가
+ *    존재하는 이유다. read() 안에서 깨우기의 반환값을 삼킨다. */
+static void test_am2320_ignores_the_wake_nack(void)
+{
+    am_setup_positive_example();
+    AM.poke_ret = -1;             /* 깨우기는 NACK — 정상이다 */
+    MkI2cIo io = { am_fake_xfer, &AM, am_fake_delay };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_AM2320.read(&io, 1u, 0x5Cu, v, &n);
+
+    CHECK(rc == 0, "깨우기가 NACK 이어도 읽기는 성공한다");
+    CHECK(n == 2, "값은 둘(temp, humidity)");
+}
+
+/* 세 번의 전송이 데이터시트 순서·모양대로인지: 깨우기(주소만) →
+ * 명령(0x03,0x00,0x04) → 응답(8바이트). 그 사이에 실제로 기다리는지도
+ * 본다. */
+static void test_am2320_wakes_then_waits_then_sends_the_command(void)
+{
+    am_setup_positive_example();
+    MkI2cIo io = { am_fake_xfer, &AM, am_fake_delay };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_AM2320.read(&io, 1u, 0x5Cu, v, &n);
+
+    CHECK(rc == 0, "읽기 성공");
+    CHECK(AM.n == 3, "전송이 셋 — 깨우기·명령·응답");
+    CHECK(AM.n == 3 && AM.ntx[0] == 0u && AM.nrx[0] == 0u,
+          "첫 전송은 깨우기(주소만, ntx=0&&nrx=0)");
+    CHECK(AM.n == 3 && AM.ntx[1] == 3u && AM.nrx[1] == 0u && AM.first_tx[1] == 0x03u,
+          "둘째 전송은 명령 프레임(함수코드 0x03)");
+    CHECK(AM.n == 3 && AM.ntx[2] == 0u && AM.nrx[2] == 8u,
+          "셋째 전송은 응답 8바이트");
+    CHECK(AM.n_delay == 2, "두 번 기다린다(깨우기 뒤·명령 뒤)");
+    CHECK(AM.n_delay == 2 && AM.delay_us[0] >= 800u,
+          "깨우기 뒤 최소 800us (p.17)");
+    CHECK(AM.n_delay == 2 && AM.delay_us[1] >= 1500u,
+          "명령 뒤 최소 1.5ms (p.17)");
+}
+
+/* 환산·순서: temp 가 out[0], humidity 가 out[1] — 종류 표(§7.5.1)와
+ * 같아야 한다. */
+static void test_am2320_conversion_and_order_match_the_datasheet_example(void)
+{
+    am_setup_positive_example();
+    MkI2cIo io = { am_fake_xfer, &AM, am_fake_delay };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_AM2320.read(&io, 1u, 0x5Cu, v, &n);
+
+    CHECK(rc == 0, "읽기 성공");
+    CHECK(n == 2 && strcmp(v[0].quantity, "temp") == 0, "out[0] 은 temp");
+    CHECK(n == 2 && v[0].value > 24.9f && v[0].value < 25.1f, "0x00FA → 25.0°C");
+    CHECK(n == 2 && strcmp(v[1].quantity, "humidity") == 0, "out[1] 은 humidity");
+    CHECK(n == 2 && v[1].value > 49.9f && v[1].value < 50.1f, "0x01F4 → 50.0%RH");
+}
+
+/* 🔴 음수 온도는 2의 보수가 아니라 부호+크기다(p.13). -10.0°C 는
+ * magnitude=100(0x0064) 에 부호비트(raw=0x8064) — CRC 는 이 데이터로
+ * python 으로 다시 계산했다(파일 위 주석). */
+static void test_am2320_negative_temperature_uses_sign_and_magnitude(void)
+{
+    memset(&AM, 0, sizeof AM);
+    uint8_t resp[8] = { 0x03u, 0x04u, 0x01u, 0xF4u, 0x80u, 0x64u, 0xD1u, 0xCDu };
+    memcpy(AM.resp, resp, sizeof resp);
+    MkI2cIo io = { am_fake_xfer, &AM, am_fake_delay };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_AM2320.read(&io, 1u, 0x5Cu, v, &n);
+
+    CHECK(rc == 0, "CRC 가 맞으면 읽기가 성공한다");
+    CHECK(n == 2 && v[0].value > -10.1f && v[0].value < -9.9f,
+          "raw=0x8064 → -10.0°C (부호+크기, 2의 보수가 아니다)");
+}
+
+/* 🔴 CRC 를 반드시 본다. */
+static void test_am2320_rejects_a_bad_crc(void)
+{
+    am_setup_positive_example();
+    AM.resp[7] ^= 0xFFu;          /* CRC 상위 바이트를 망가뜨린다 */
+    MkI2cIo io = { am_fake_xfer, &AM, am_fake_delay };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_AM2320.read(&io, 1u, 0x5Cu, v, &n);
+
+    CHECK(rc == -2, "CRC 가 어긋나면 데이터 오류(-2)다");
+    CHECK(n == 0, "값을 내보내지 않는다");
+}
+
+/* 명령 프레임(2번째 전송) 자체가 실패하면(=진짜 무응답) 오류를 그대로
+ * 돌려준다 — 깨우기와 달리 이건 삼키면 안 된다. */
+static void test_am2320_command_failure_is_a_real_error(void)
+{
+    am_setup_positive_example();
+    AM.cmd_ret = -1;
+    MkI2cIo io = { am_fake_xfer, &AM, am_fake_delay };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    int rc = MK_I2C_AM2320.read(&io, 1u, 0x5Cu, v, &n);
+
+    CHECK(rc == -1, "명령 프레임의 NACK 은 진짜 오류다 — 깨우기와 다르다");
+    CHECK(n == 0, "값을 내보내지 않는다");
+    CHECK(AM.n == 2, "응답을 읽으러 가지 않는다(명령이 실패했으므로)");
+}
+
+static void test_am2320_needs_no_start_and_has_the_right_defaults(void)
+{
+    CHECK(MK_I2C_AM2320.start == NULL,
+          "read() 안에서 매번 깨운다 — 한 번만 켜는 start 가 없다(p.10 §8.2.1)");
+    CHECK(MK_I2C_AM2320.default_addr == 0x5Cu, "기본 주소 0x5C (0xB8 의 7비트, p.10)");
+    CHECK(MK_I2C_AM2320.warmup_ms == 2000u, "최소 읽기 간격 2초 (p.10 §8.2.1)");
+}
+
+static void test_am2320_quantity_matches_the_kind_table(void)
+{
+    const char *q[MK_I2C_VALUES_MAX];
+    int nq = mk_i2c_kind_quantities((uint8_t)MK_I2C_KIND_HUMID, q);
+    CHECK(nq == 2 && strcmp(q[0], "temp") == 0 && strcmp(q[1], "humidity") == 0,
+          "온습도 종류 표는 temp, humidity 순서");
+
+    am_setup_positive_example();
+    MkI2cIo io = { am_fake_xfer, &AM, am_fake_delay };
+    MkI2cValue v[MK_I2C_VALUES_MAX];
+    int n = 0;
+    MK_I2C_AM2320.read(&io, 1u, 0x5Cu, v, &n);
+    CHECK(n == 2 && nq == 2 && strcmp(v[0].quantity, q[0]) == 0
+          && strcmp(v[1].quantity, q[1]) == 0,
+          "AM2320 이 내는 순서가 종류 표와 같다 (temp, humidity)");
+}
+
+/* 🔴 [C1 자리를 대신 채운다] 예전엔 "미지원(드라이버 없음) 종류가 양
+ *    둘이면 두 줄이 나가는가"를 HUMID 로 시험했다. 이제 HUMID 는
+ *    드라이버가 있어 그 경로를 못 탄다 — 대신 **진짜 드라이버가 실패하는
+ *    경로**로 같은 push_status() 다중 라인 로직을 시험한다. 배선된
+ *    AM2320 이 실제로 응답하지 않는(CRC 안 맞는 쓰레기 응답) 상황이라,
+ *    미지원 시나리오보다 오히려 더 현실적이다. */
+static void test_am2320_real_read_failure_emits_both_quantities_as_status(void)
+{
+    setup();       /* 공용 BUS/I2C/CFG — fake_xfer 는 rx 를 1,2,3... 으로
+                    * 채우므로 AM2320 응답의 CRC 는 항상 안 맞는다 */
+    enable_port_kind(10u, (uint32_t)MK_I2C_KIND_HUMID, 0x5Cu, 2000u);
+
+    int n_temp = 0, n_humidity = 0;
+    int all_status_two = 1;
+    MkI2cOut out;
+    /* OFF→START(rc=0, start 없음)→WARMUP(2000ms)→READY 진입 즉시 읽기 —
+     * 넉넉히 2100ms 를 돌린다. */
+    for (int64_t t = 0; t <= 2100; t += 10) {
+        mk_i2c_tick(&I2C, &CFG, t);
+        while (mk_i2c_take(&I2C, &out) == 1) {
+            if (out.status != 2u) { all_status_two = 0; }
+            if (!out.have_value && out.quantity != NULL) {
+                if (strcmp(out.quantity, "temp") == 0) { n_temp++; }
+                if (strcmp(out.quantity, "humidity") == 0) { n_humidity++; }
+            }
+        }
+    }
+
+    CHECK(n_temp >= 1 && n_humidity >= 1,
+          "실패해도 temp·humidity 두 줄 다 나간다(§7.5.1 표를 따라간다)");
+    CHECK(all_status_two, "CRC 가 안 맞으면 데이터 오류(status=2)");
+}
+
 /* ---- I3 — 설계 §11 이 요구한 상태기계 시험 다섯 --------------------------
  *
  * 🔴 원장(progress.md)에는 "Task 4 에서 Task 5 로 옮겼다"고 적혀 있었지만
@@ -659,7 +892,8 @@ static void test_isolation_a_dead_port_does_not_stop_the_rest(void)
 {
     setup();
     enable_lux_port(10u, 0x23u, 50u);                                  /* 정상 */
-    enable_port_kind(11u, (uint32_t)MK_I2C_KIND_HUMID, 0x40u, 50u);    /* 드라이버 없음 — 계속 죽어 있다 */
+    /* HUMID(AM2320) 는 이제 드라이버가 있다 — 죽은 포트는 WATER_TEMP 로. */
+    enable_port_kind(11u, (uint32_t)MK_I2C_KIND_WATER_TEMP, 0x40u, 50u);  /* 드라이버 없음 — 계속 죽어 있다 */
 
     int ok_count = 0, fault_count = 0;
     MkI2cOut out;
@@ -760,8 +994,6 @@ int main(int argc, char **argv)
     printf("-- 꺼진 포트 --\n");        test_disabled_ports_never_touch_the_bus();
     printf("-- 라운드로빈 --\n");       test_one_port_per_tick();
     printf("-- 지원 안 하는 종류 --\n"); test_unsupported_kind_reports_status_three();
-    printf("-- 지원 안 하는 종류(양 둘) --\n");
-    test_unsupported_kind_with_two_quantities_emits_two_lines();
     printf("-- 종류→양 표 --\n");       test_kind_quantities_table_matches_the_spec();
     printf("-- [I1] 여러 포트 동시 FAULT --\n");
     test_many_faulted_ports_in_one_tick_do_not_overflow_the_buffer();
@@ -790,6 +1022,25 @@ int main(int argc, char **argv)
     test_mlx90614_needs_no_start_and_has_the_right_defaults();
     printf("-- MLX90614 quantity 일치 --\n");
     test_mlx90614_quantity_matches_the_kind_table();
+
+    printf("-- AM2320 깨우기 NACK 무시 --\n");
+    test_am2320_ignores_the_wake_nack();
+    printf("-- AM2320 깨우기→대기→명령 순서 --\n");
+    test_am2320_wakes_then_waits_then_sends_the_command();
+    printf("-- AM2320 환산·순서 --\n");
+    test_am2320_conversion_and_order_match_the_datasheet_example();
+    printf("-- AM2320 음수 온도(부호+크기) --\n");
+    test_am2320_negative_temperature_uses_sign_and_magnitude();
+    printf("-- AM2320 CRC 불일치 거부 --\n");
+    test_am2320_rejects_a_bad_crc();
+    printf("-- AM2320 명령 실패는 진짜 오류 --\n");
+    test_am2320_command_failure_is_a_real_error();
+    printf("-- AM2320 start 없음·기본값 --\n");
+    test_am2320_needs_no_start_and_has_the_right_defaults();
+    printf("-- AM2320 quantity 일치 --\n");
+    test_am2320_quantity_matches_the_kind_table();
+    printf("-- AM2320 상태기계로 본 실패(양 둘) --\n");
+    test_am2320_real_read_failure_emits_both_quantities_as_status();
 
     printf("-- [I3] 변환 대기 --\n");   test_does_not_read_during_warmup();
     printf("-- [I3] 실효 주기 --\n");   test_effective_period_is_the_longer_of_period_and_warmup();

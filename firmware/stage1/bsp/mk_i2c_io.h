@@ -21,4 +21,8 @@ void mk_i2c_io_init(void);
 int mk_i2c_io_xfer(void *ctx, uint8_t bus, uint8_t addr,
                    const uint8_t *tx, size_t ntx, uint8_t *rx, size_t nrx);
 
+/* 🔴 [AM2320] mk_i2c 에 넘길 콜백. MkI2cIo.delay_us 자리에 그대로 꽂는다
+ *    — app/mk_i2c_am2320.c 가 깨우기·명령 사이 대기에 쓴다. */
+void mk_i2c_io_delay_us(void *ctx, uint32_t us);
+
 #endif /* MK_I2C_IO_H */
