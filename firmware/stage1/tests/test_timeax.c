@@ -175,6 +175,128 @@ static void test_extend_ticks_front_half_overlap_no_correction(void)
     CHECK(v == (uint64_t)5 * 65536 + 100, "앞쪽 절반은 보정하지 않는다");
 }
 
+/* ---- 단조 증가 보장 (역행 방지) --------------------------------------------
+ *
+ * Q1/Q2 의 `TimeSync_OnSyncRecovery`(LaneControlSystemQ1/STM32Code/App/
+ * Modules/time_sync.c:68-73, 183-193)와 같은 목적 — 복귀 시 시각이 뒤로
+ * 가면 카메라 프레임 정렬과 저장 데이터의 시간순 정렬이 뒤집힌다. 여기서는
+ * `mk_timeax_now_ms()`(순수 계산)를 그대로 두고, 마지막으로 낸 값을 기억해
+ * 뒤로 가려는 순간에만 최소 폭(+1ms)으로 밀어 올리는 `_monotonic` 버전을
+ * 따로 둔다 — 큰 앞 점프(동기가 막 잡힌 순간)는 그대로 허용해야 하므로
+ * "다르면 무조건 보정"이 아니라 "작아지면만" 보정한다. */
+
+static void test_monotonic_matches_plain_calc_while_moving_forward(void)
+{
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_timeax_on_pps(&tx, 1000000ULL);
+    MkGnssRmc rmc = make_rmc(1, 1700000000000LL);
+    mk_timeax_on_rmc(&tx, &rmc, 1050000ULL);
+
+    CHECK(mk_timeax_now_ms_monotonic(&tx, 1000000ULL) == 1700000000000LL,
+          "정상 전진에서는 mk_timeax_now_ms 와 같은 값");
+    CHECK(mk_timeax_now_ms_monotonic(&tx, 1500000ULL) == 1700000000500LL,
+          "계속 전진해도 같다 — 보정이 끼어들지 않는다");
+}
+
+static void test_monotonic_allows_the_big_forward_jump_on_first_lock(void)
+{
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    CHECK(mk_timeax_now_ms_monotonic(&tx, 500000ULL) == 500LL,
+          "잠기기 전에는 부팅 ms(device_clock)");
+
+    mk_timeax_on_pps(&tx, 1000000ULL);
+    MkGnssRmc rmc = make_rmc(1, 1700000000000LL);
+    mk_timeax_on_rmc(&tx, &rmc, 1050000ULL);
+
+    CHECK(mk_timeax_now_ms_monotonic(&tx, 1100000ULL) == 1700000000100LL,
+          "잠기는 순간의 큰 앞 점프는 그대로 허용한다 — 동기가 잡힌 것이지 "
+          "오류가 아니다");
+}
+
+static void test_monotonic_never_goes_backward_when_grade_drops_after_lock(void)
+{
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+
+    mk_timeax_on_pps(&tx, 0ULL);
+    MkGnssRmc rmc = make_rmc(1, 1700000000000LL);
+    mk_timeax_on_rmc(&tx, &rmc, 50000ULL);
+    int64_t locked = mk_timeax_now_ms_monotonic(&tx, 100000ULL);
+    CHECK(locked == 1700000000100LL, "잠긴 뒤 UTC epoch_ms");
+
+    /* PPS·RMC 가 둘 다 끊겨 device_clock 까지 내려간다. */
+    uint64_t stale = 50000ULL + MK_TIMEAX_NMEA_STALE_US + 1ULL;
+    mk_timeax_tick(&tx, stale);
+    CHECK(mk_timeax_grade(&tx) == MK_TIMEAX_DEVICE_CLOCK, "등급이 내려갔다");
+
+    /* 보정이 없다면 dev_us/1000(수 ms)로 뚝 떨어진다 — 카메라 프레임 순서가
+     * 뒤집히는 바로 그 상황이다. */
+    int64_t after_drop = mk_timeax_now_ms_monotonic(&tx, stale + 1000ULL);
+    CHECK(after_drop >= locked,
+          "등급이 떨어져도 이미 내보낸 시각보다 뒤로 가지 않는다");
+    CHECK(after_drop == locked + 1,
+          "뒤로 갈 상황에서는 최소 폭(+1ms)만 밀어 올린다 — Q1/Q2 의 강제 "
+          "+1ms 증가와 같은 방식(근거: mk_timeax.c 주석)");
+}
+
+static void test_monotonic_follows_forward_progress_again_after_a_forced_bump(void)
+{
+    /* 강제로 밀어 올린 뒤에도 영원히 +1ms 씩만 가는 것이 아니다 — 다시
+     * 동기가 붙어 진짜 시각이 앞서면 그때부터는 그 값을 따라간다.
+     *
+     * 🔴 dev_us 는 실기기에서 절대 뒤로 안 간다(TIM8 자유구동 카운터) —
+     *    그래서 이 시험도 호출마다 dev_us 를 계속 키운다. 처음엔
+     *    5,000,000 을 먼저 쓰고 그보다 작은 stale 값을 나중에 줬다가,
+     *    "과거 dev_us 질의는 클램프하지 않는다"는 새 규칙(mk_timeax.h
+     *    struct 정의부 주석) 때문에 강제 밀어 올림 자체가 안 걸려 시험이
+     *    깨졌다 — 값을 현실적인 순서로 고쳤다(되돌림 검사에서 확인). */
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+    mk_timeax_on_pps(&tx, 0ULL);
+    MkGnssRmc rmc = make_rmc(1, 1700000000000LL);
+    mk_timeax_on_rmc(&tx, &rmc, 50000ULL);
+    mk_timeax_now_ms_monotonic(&tx, 1000000ULL);
+
+    uint64_t stale = 50000ULL + MK_TIMEAX_NMEA_STALE_US + 1ULL;
+    mk_timeax_tick(&tx, stale);
+    int64_t bumped = mk_timeax_now_ms_monotonic(&tx, stale);
+
+    /* 재짝짓기 — 이번엔 한참 뒤 시각으로 다시 잠긴다. */
+    mk_timeax_on_pps(&tx, stale + 2000000ULL);
+    MkGnssRmc rmc2 = make_rmc(1, 1700005000000LL);
+    mk_timeax_on_rmc(&tx, &rmc2, stale + 2050000ULL);
+    int64_t resynced = mk_timeax_now_ms_monotonic(&tx, stale + 2100000ULL);
+
+    CHECK(resynced > bumped,
+          "다시 동기가 붙어 진짜 시각이 앞서면 그 값을 따른다 — 강제 +1ms 에 "
+          "갇히지 않는다");
+}
+
+static void test_monotonic_does_not_clamp_an_older_channels_stale_sample(void)
+{
+    /* 🔴 [되돌림으로 찾은 회귀] ain·i2c·din 이 `MkTimeAx` 하나를 공유하고
+     * 채널마다 수집 주기가 다르다 — 빠른 채널이 방금 큰 dev_us 로 값을
+     * 낸 직후, 느린 채널이 옛(작은 dev_us) 표본을 반복해서 내면 "마지막
+     * 값보다 작다"는 이유만으로 밀어 올려서는 안 된다. 그러면 그 표본
+     * 자체의 t 가 호출될 때마다 달라지는(반복값이 안 지켜지는) 새 버그가
+     * 된다 — device_clock 상태에서도(등급 전환과 무관하게) 벌어진다.
+     * host/tests/test_device_sim.py 의
+     * test_i2c_repeats_last_value_and_never_touched_ports_stay_silent 가
+     * Python 쪽에서 같은 회귀를 잡았다. */
+    MkTimeAx tx;
+    mk_timeax_init(&tx);
+
+    CHECK(mk_timeax_now_ms_monotonic(&tx, 200000ULL) == 200LL,
+          "채널 A(빠름) — dev_us=200000 -> 200ms");
+    CHECK(mk_timeax_now_ms_monotonic(&tx, 100000ULL) == 100LL,
+          "채널 B(느림)의 더 오래된 표본(dev_us=100000)은 클램프 없이 "
+          "제 값(100ms) 그대로다 — 200 보다 작다고 밀어 올리면 안 된다");
+    CHECK(mk_timeax_now_ms_monotonic(&tx, 100000ULL) == 100LL,
+          "같은 표본을 반복해도 매번 같은 값이어야 한다");
+}
+
 /* ---- 위성 수 --------------------------------------------------------------- */
 
 static void test_gga_updates_sats_only(void)
@@ -208,6 +330,12 @@ int main(void)
     test_pps_going_stale_downgrades_then_nmea_going_stale_downgrades_further();
     printf("-- 되돌림: 무효 fix는 신선도를 못 되살린다 --\n");
     test_invalid_fix_does_not_refresh_freshness();
+    printf("-- 단조 증가 보장(역행 방지) --\n");
+    test_monotonic_matches_plain_calc_while_moving_forward();
+    test_monotonic_allows_the_big_forward_jump_on_first_lock();
+    test_monotonic_never_goes_backward_when_grade_drops_after_lock();
+    test_monotonic_follows_forward_progress_again_after_a_forced_bump();
+    test_monotonic_does_not_clamp_an_older_channels_stale_sample();
     printf("-- 되돌림: 16비트 캡처 확장 --\n");
     test_extend_ticks_plain();
     test_extend_ticks_monotonic_across_rollover();

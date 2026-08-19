@@ -123,6 +123,35 @@ int64_t mk_timeax_now_ms(const MkTimeAx *tx, uint64_t dev_us)
     return (int64_t)(dev_us / 1000u);
 }
 
+int64_t mk_timeax_now_ms_monotonic(MkTimeAx *tx, uint64_t dev_us)
+{
+    int64_t raw = mk_timeax_now_ms(tx, dev_us);
+
+    if (tx->has_reported_ms && dev_us < tx->last_reported_dev_us) {
+        /* 🔴 이 질의는 지금까지 본 것보다 **과거** dev_us 다 — 다른(더
+         * 느린) 채널의 오래된 표본을 지금 변환하는 것이지, 시간축 자체가
+         * 뒤로 간 것이 아니다. 클램프하면 그 표본이 반복될 때마다 다른
+         * t 를 내는 새 버그가 된다(struct 정의부 주석 참고). 여기서는
+         * high-water mark(last_reported_*)도 갱신하지 않는다 — 과거
+         * 질의가 "가장 최근 전진 지점"을 앞당기면 안 된다. */
+        return raw;
+    }
+
+    if (!tx->has_reported_ms || raw >= tx->last_reported_ms) {
+        tx->has_reported_ms = 1;
+        tx->last_reported_ms = raw;
+        tx->last_reported_dev_us = dev_us;
+        return raw;
+    }
+
+    /* raw 가 이미 내보낸 값보다 작다 — 등급이 떨어졌거나(gnss_* ->
+     * device_clock) 재동기 anchor 가 이전 값보다 앞이다. 최소 폭(+1ms)만
+     * 밀어 올린다 — 헤더 주석 참고. */
+    tx->last_reported_ms += 1;
+    tx->last_reported_dev_us = dev_us;
+    return tx->last_reported_ms;
+}
+
 int64_t mk_timeax_pps_age_us(const MkTimeAx *tx, uint64_t dev_us)
 {
     if (!tx->has_pps) {

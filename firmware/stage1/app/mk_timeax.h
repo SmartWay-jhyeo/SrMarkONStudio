@@ -100,6 +100,38 @@ typedef struct MkTimeAx {
      * `mk_timeax_pps_age_us_now()` 로 쓴다 — 매 슈퍼루프 tick 만큼의
      * 지연은 진단 필드에는 무해하다. */
     uint64_t last_seen_dev_us;
+
+    /* 🔴 역행 방지(`mk_timeax_now_ms_monotonic()` 전용 상태) — Q1/Q2 의
+     *    `TimeSync_OnSyncRecovery` 와 같은 목적. 마지막으로 **전진 방향
+     *    질의**(dev_us 가 지금까지 본 것 이상)에서 내보낸 값·그 dev_us 를
+     *    기억해 두고, 다음 "전진 방향" 계산값이 그보다 작으면 최소 폭
+     *    (+1ms)만 밀어 올린다.
+     *
+     *    🔴 `dev_us` 가 마지막으로 본 것보다 **작은** 질의(다른 채널의
+     *    더 오래된 표본을 나중에 변환하는 경우 — ain·i2c·din 이 한
+     *    `MkTimeAx` 를 공유하고 채널마다 수집 주기가 다르다)는 클램프하지
+     *    않는다. 처음에는 "마지막으로 낸 값보다 작으면 무조건 민다"로
+     *    했다가, 수집 주기가 짧은 채널(예: ain, 100ms)이 방금 큰 dev_us
+     *    로 값을 낸 직후 수집 주기가 긴 채널(예: i2c, 10s)이 옛 표본을
+     *    반복해서 냈더니 **그 표본 자체의 t 가 매번 다르게 찍히는** 새
+     *    버그가 났다 — device_clock 상태에서도(등급 전환과 무관하게)
+     *    터졌다. "다른 채널의 과거 시각"과 "같은 시간축이 진짜로
+     *    뒤로 간 것"을 dev_us 순서로 구분해야 한다.
+     *
+     *    남는 위험(문서화, 해결 안 함): GNSS 가 내려간 뒤 오랫동안 재수집을
+     *    안 한 느린 채널이 그 옛 표본을 반복하다가, 다른 채널의 dev_us 가
+     *    그것을 앞지르는 순간부터는 클램프 밖(과거 질의)으로 빠져 그
+     *    채널만 한 번 작은 값으로 보일 수 있다. 모든 채널·포트가 각자
+     *    수집 시각에 변환값을 실어 저장하는 것이 완전한 해법이지만 이번
+     *    범위 밖이다(acquired_epoch_ms() 참고) — 실기기 채널 주기가 모두
+     *    초 단위 미만이라 실제로 마주칠 가능성은 낮다고 판단했다.
+     *
+     *    `mk_timeax_now_ms()` 자체는 건드리지 않는다 — 그 함수는 순수
+     *    계산으로 남겨 시험·진단에서 "지금 등급대로 계산하면 얼마인가"를
+     *    그대로 물어볼 수 있어야 한다. */
+    int      has_reported_ms;
+    int64_t  last_reported_ms;
+    uint64_t last_reported_dev_us;
 } MkTimeAx;
 
 void mk_timeax_init(MkTimeAx *tx);
@@ -134,6 +166,33 @@ uint8_t mk_timeax_sats(const MkTimeAx *tx);
  *   gnss_pps / gnss_nmea : anchor 로부터 dev_us 경과분을 더한다.
  *   device_clock         : dev_us/1000 (부팅 후 경과 ms, 옛 동작과 같다). */
 int64_t mk_timeax_now_ms(const MkTimeAx *tx, uint64_t dev_us);
+
+/* `mk_timeax_now_ms()` 와 같은 값을 내되, **뒤로 가지 않는다.**
+ *
+ * 🔴 왜 필요한가 — GNSS 가 처음 잠기면 `t` 는 부팅 ms 에서 UTC epoch_ms 로
+ *    한 번에 수십 년어치를 뛴다(정상, 동기가 잡힌 것). 반대로 GNSS 가
+ *    끊겨 등급이 device_clock 으로 내려가면 `mk_timeax_now_ms()` 는 다시
+ *    "부팅 후 경과 ms"(작은 수)를 내므로, 방금 전 UTC 값 대비 **몇십 년이
+ *    뒤로 가는 셈**이 된다. 재동기 후에도 새 anchor 가 이전에 이미 내보낸
+ *    값보다 앞선다는 보장이 없다.
+ *
+ *    레코드의 `t` 는 카메라 프레임(≤33ms)과 맞추고 저장 데이터를 시간순
+ *    으로 늘어놓는 축이다 — 한 번이라도 뒤로 가면 그 프레임 정렬과 저장
+ *    순서가 뒤집힌다. Q1/Q2(LaneControlSystem)의 `TimeSync_OnSyncRecovery`
+ *    가 복귀 시 "강제 +1ms 증가" 로 이 문제를 막는 것과 같은 이유다.
+ *
+ * 🔴 막는 것은 **뒤로 가는 것뿐**이다. 앞으로 가는 큰 점프(잠기는 순간)는
+ *    숨기지 않고 그대로 낸다 — 숨기면 실제로 언제 동기가 잡혔는지 알 수
+ *    없어진다.
+ *
+ * 상태(`has_reported_ms`·`last_reported_ms`·`last_reported_dev_us`)를
+ * 갖고 있으므로 `tx` 를 공유하는 모든 호출자(ain·i2c·din 레코드)가
+ * **하나의 시간축**을 본다 — 이 저장소의 설계(CLAUDE.md — 디지털 입력·
+ * I2C·아날로그가 같은 규칙을 따라야 한다)와 맞다.
+ *
+ * 🔴 `dev_us` 가 마지막 호출보다 작은 질의(다른 채널의 더 오래된 표본)는
+ *    클램프하지 않는다 — struct 정의부 주석 참고. */
+int64_t mk_timeax_now_ms_monotonic(MkTimeAx *tx, uint64_t dev_us);
 
 /* 마지막 PPS 이후 경과(µs). 한 번도 없었으면 -1. $STAT 진단용
  * (규격 §7.4 — "마지막 PPS 이후 경과"). */
