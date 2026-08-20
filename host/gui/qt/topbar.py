@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -121,11 +122,23 @@ class TopBar(QWidget):
             f"font-size: {Font.SIZE_LG}pt; font-weight: 700;"
             f" color: {Color.INK};"
         )
+        # 🔴 제목도 최소폭을 요구하지 않는다 — 창이 좁으면 제목이 먼저
+        #    양보하는 것이 맞다. 어느 보드인지(아래 _ident)와 페이지 단추가
+        #    제목보다 값어치 있다.
+        self._name.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                 QSizePolicy.Policy.Preferred)
         self._ident = QLabel("—")
         self._ident.setStyleSheet(
             f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
             f" color: {Color.INK_DIM};"
         )
+        # 🔴 가로 최소폭을 요구하지 않는다(Ignored). 이 라벨은 포트·장치
+        #    ID·펌웨어 버전을 잇는 가변 길이 문자열이라, 기본 정책으로 두면
+        #    **글 길이가 곧 창의 최소폭**이 된다 — 실제로 창이 1735 px 아래로
+        #    안 줄어드는 원인이었다(사용자 보고 2026-08-20). 좁으면 뒤가
+        #    잘리는 쪽이 창이 안 줄어드는 것보다 낫다.
+        self._ident.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                  QSizePolicy.Policy.Preferred)
 
         self._buttons: list[NavButton] = []
         nav = QHBoxLayout()
@@ -143,6 +156,9 @@ class TopBar(QWidget):
         self._link.setStyleSheet(
             f"color: {Color.INK_DIM}; font-size: {Font.SIZE_SM}pt;"
         )
+        # 🔴 _ident 와 같은 이유 — 링크 상태 문구도 가변 길이다.
+        self._link.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                 QSizePolicy.Policy.Preferred)
 
         left = QVBoxLayout()
         left.setSpacing(0)

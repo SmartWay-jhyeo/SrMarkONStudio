@@ -16,8 +16,10 @@ from dataclasses import dataclass, replace
 
 from PyQt6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QMainWindow,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -143,6 +145,16 @@ class MainWindow(QMainWindow):
         self._pages.addWidget(self._diagnostics)
         self._top.page_selected.connect(self._pages.setCurrentIndex)
 
+        # 🔴 캔버스를 스크롤로 감싼다 — 창을 내용의 최소 크기보다 작게 줄일
+        #    수 있게. 안 감싸면 대시보드(게이지 7개 × 최소 150 px)가 창
+        #    최소폭을 1100 px 대로 밀어올려서, 작은 화면·창 절반 배치에서
+        #    창이 줄어들지 않는다(사용자 보고 2026-08-20). 감싸면 창은
+        #    얼마든지 줄고, 안 들어가는 내용은 잘리는 대신 스크롤이 된다.
+        self._pages_scroll = QScrollArea()
+        self._pages_scroll.setWidget(self._pages)
+        self._pages_scroll.setWidgetResizable(True)
+        self._pages_scroll.setFrameShape(QFrame.Shape.NoFrame)
+
         # 🔴 세 구역으로 나눈다: 정체성 바(위) · 레일(왼쪽) · 캔버스.
         #
         #    처음에는 위·아래 두 덩이였는데, 화면을 띄워 보니 가운데 60% 가
@@ -164,7 +176,7 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(0)
         row.addWidget(self._rail)
-        row.addWidget(self._pages, 1)
+        row.addWidget(self._pages_scroll, 1)
 
         body = QWidget()
         col = QVBoxLayout(body)
