@@ -355,7 +355,7 @@ static size_t add_pwr(size_t i)
     s_items[i] = (MkCfgItem){ .key = "pwr.5v", .group = "pwr",
                               .vtype = MK_VT_BOOL, .out = 1,
                               .label = "5V 전원",
-                              .note = "끄면 24V·14.9V 도 함께 내려간다 — 팬 없이 발열원만 남는 상태를 만들지 않는다. 쿨링 팬·아날로그 수집·WS2812 도 멈춘다" };
+                              .note = "끄면 24V·14.9V·팬·수집·WS2812 가 함께 멈춘다" };
     s_items[i].def.u = 1;
     i++;
     s_items[i] = (MkCfgItem){ .key = "pwr.seq_delay_ms", .group = "pwr",

@@ -114,6 +114,20 @@ class RowWidget(QWidget):
         self._note.setText(text)
         self._note.setVisible(bool(text))
         self._note.setStyleSheet(f"color: {colour};" if colour else "")
+        # 🔴 줄바꿈된 높이를 미리 예약한다. QLabel 의 wordWrap 은 높이를
+        #    폭에 따라 정하는데(heightForWidth), 이 행 위젯(QWidget)은
+        #    그 사실을 부모 레이아웃에 알리지 않아 안내문이 두 줄이 되는
+        #    순간 아래 행에 깔려 잘렸다(사용자 스크린샷 2026-08-20 — 5V
+        #    전원 안내문). 카드 폭 근사(560px)로 감싼 높이를 계산해 최소
+        #    높이로 박는다 — 근사가 어긋나도 잘리는 대신 여백이 남는다.
+        if text:
+            from PyQt6.QtCore import QRect, Qt as _Qt
+            fm = self._note.fontMetrics()
+            rect = fm.boundingRect(QRect(0, 0, 560, 1000),
+                                   _Qt.TextFlag.TextWordWrap, text)
+            self._note.setMinimumHeight(rect.height() + 4)
+        else:
+            self._note.setMinimumHeight(0)
 
     def _make_editor(self, row: Row) -> QWidget:
         if row.widget is Widget.TOGGLE:

@@ -52,11 +52,14 @@ BREAK_ZONE_RATIO = 0.14
 #: 옆 줄을 침범하지 않게 살짝만 넘긴다.
 _TRACE_OVERSHOOT = 0.05
 
-_HEAD_H = 22        # 커넥터 이름 줄
-_VALUE_H = 46       # 값 줄
-_BAR_H = 12         # 바
-_TICK_H = 15        # 눈금 숫자 (mA 한 줄 + 물리량 한 줄)
-_GAP = 8
+# 🔴 20 % 축소 (사용자 요청 2026-08-20 — "카드가 너무 큰 것 같다").
+#    줄이기 전 값: HEAD 22 · VALUE 46 · BAR 12 · TICK 15 · GAP 8,
+#    최소폭 150, 이력띠 최소 40. 비율로 일괄 축소해 배치 관계는 그대로다.
+_HEAD_H = 18        # 커넥터 이름 줄
+_VALUE_H = 37       # 값 줄
+_BAR_H = 10         # 바
+_TICK_H = 12        # 눈금 숫자 (mA 한 줄 + 물리량 한 줄)
+_GAP = 6
 
 
 def _tick(value: float) -> str:
@@ -95,7 +98,7 @@ class LoopGauge(QWidget):
 
         self.setMouseTracking(True)
         self.setMinimumSize(
-            150, _HEAD_H + _VALUE_H + 40 + _BAR_H + _TICK_H * 2 + _GAP)
+            120, _HEAD_H + _VALUE_H + 32 + _BAR_H + _TICK_H * 2 + _GAP)
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
                            QSizePolicy.Policy.Expanding)
 
