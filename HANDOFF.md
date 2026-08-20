@@ -538,6 +538,8 @@ ACTIVE면 유지되는 명령. 이제 핀이 움직이므로(§7.1) 막는 것�
 
 ### 7.4 남겨 둔 작은 것들
 
+- **GUI 설치 exe** (사용자 요청 2026-08-20, **마지막에** — 화면이 아직 매일 바뀐다). PyInstaller, 진입점 `host.gui.app` 하나, 보드는 표준 CDC 라 드라이버 동봉 불필요. exe 버전과 펌웨어 버전을 화면에 함께 띄울 것
+
 - `check_dma_placement.py`가 이름 규칙 기반이라 불완전하다 (Codex 지적, 수용)
 - `BoardService.records`가 무한히 자란다
 - `LoopReading.broken=True`가 "데이터 없음"과 "물리적 단선"을 뭉갠다
