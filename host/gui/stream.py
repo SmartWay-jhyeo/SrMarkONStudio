@@ -20,7 +20,26 @@ from dataclasses import dataclass, field, replace
 from host.core.errors import ProtocolError
 from host.core.framing import parse_line
 from host.core.records import SeqTracker, is_telemetry, parse_record
+from host.gui.screen import AIN_COUNT, CONNECTOR_OFFSET, DIN_PORTS, I2C_PORTS
 from host.gui.widgets.status_chip import Level
+
+#: 이 보드에 있는 커넥터 전부 — 값이 한 번도 안 와도 목록에 있어야 한다.
+#:
+#: 🔴 **도착한 레코드에서 만들지 않는다.** 예전에는 `connector_counts` 가
+#:    실제로 온 줄에서만 자라서, 값이 안 오는 커넥터는 필터 목록에 아예
+#:    없었다 — 사용자가 J12 를 찾다가 "왜 없냐" 고 물은 것이 이 상수가
+#:    생긴 이유다. 0 건이라는 것 자체가 정보다("저기서 값이 안 온다").
+#:
+#: 🔴 대시보드와 **같은 출처**를 쓴다. `screen.py` 는 이미 값이 없어도
+#:    자리를 깔아 둔다(`empty_channels()` · `seed_sensors()` ·
+#:    `seed_dins()` — 설계 원칙 3, 센서 미연결은 정상 상태다). 목록을 여기서
+#:    따로 적으면 두 화면이 서로 다른 보드를 말하게 되고, 커넥터가 늘 때
+#:    한쪽만 고쳐진다. 배선은 PCB 가 고정한 사실이라 카탈로그가 아니라
+#:    상수에 있다(설계 원칙 1).
+KNOWN_CONNECTORS: tuple[int, ...] = tuple(sorted(
+    {CONNECTOR_OFFSET + i for i in range(AIN_COUNT)}
+    | set(I2C_PORTS) | set(DIN_PORTS)
+))
 
 #: 화면에 보여줄 최근 줄 수이자 창(window) 기반 계산의 표본 상한.
 #:
@@ -251,6 +270,68 @@ def format_row(row: StreamRow) -> str:
     return f"{seq} {t} {typ} {conn} {value} {raw} {ma}  {row.line}"
 
 
+def connector_label(connector: int, count: int) -> str:
+    """커넥터 필터 한 칸의 이름표.
+
+    🔴 **0 건을 이름표에 적는다.** 목록에 있기만 하면 "안 꽂은 것" 과 "꽂았는데
+       값이 안 오는 것" 이 똑같이 보인다 — 0 이라고 말해 줘야 사용자가 그
+       커넥터를 의심할 수 있다. 값이 오기 시작하면 표시를 뗀다(오는 것이
+       정상이라 굳이 셀 이유가 없고, 이름표가 매 틱 바뀌면 눈이 아프다).
+    """
+    return f"J{connector}" if count else f"J{connector} (0)"
+
+
+# ------------------------------------------------------- 전체 선택/해제 판정
+#
+# 🔴 판정을 여기 둔다. 위젯은 부르기만 한다 — "지금 전부 켜져 있나" 는 Qt 와
+#    무관한 질문이고, 화면 없이 시험할 수 있어야 한다
+#    (`host/tests/test_layer_boundaries.py` 가 이 경계를 AST 로 강제한다).
+
+
+def toggle_all(selected, everything) -> set:
+    """`전체` 버튼을 눌렀을 때의 다음 선택 집합.
+
+    전부 켜져 있으면 전부 끄고, 하나라도 꺼져 있으면 전부 켠다 — 버튼 하나로
+    두 방향을 다 쓰기 위해서다(타입 열몇 개, 커넥터 열여섯 개를 손으로
+    하나씩 누르게 하지 않는다).
+    """
+    every = set(everything)
+    return set() if every and set(selected) >= every else every
+
+
+def toggle_all_label(selected, everything) -> str:
+    """`전체` 버튼에 적을 말 — **누르면 무슨 일이 일어나는지**를 적는다.
+
+    지금 상태를 적으면("전부 켜짐") 버튼이 무엇을 하는 물건인지 알 수 없다.
+    """
+    every = set(everything)
+    return "전체 해제" if every and set(selected) >= every else "전체 선택"
+
+
+def filter_note(state: "StreamState", rows: tuple) -> str:
+    """콘솔이 비었을 때 그 자리에 적을 이유. 보일 줄이 있으면 빈 문자열.
+
+    🔴 **전부 해제해도 필터를 자동으로 되돌리지 않는다.** 사용자가 명시적으로
+       끈 것을 화면이 몰래 뒤집으면 "왜 안 꺼지지" 가 되고, 그때부터 필터를
+       믿을 수 없다. 대신 빈 화면이 **고장으로 읽히지 않게** 이유를 적는다 —
+       빈 콘솔과 "타입을 전부 껐다" 는 사용자에게 전혀 다른 사실이다.
+
+    🔴 네 가지를 구분한다: 타입을 전부 껐다 / 커넥터를 전부 껐다 / 아직
+       아무 줄도 안 왔다 / 필터는 켜져 있는데 걸리는 줄이 없다. 마지막 것은
+       "링크가 조용하다" 가 아니라 "그 채널만 조용하다" 는 뜻이라, 뭉뚱그리면
+       사용자가 엉뚱한 곳(케이블)을 의심하게 된다.
+    """
+    if rows:
+        return ""
+    if state.filter_types is not None and not state.filter_types:
+        return "타입을 전부 껐다 — 보이는 줄이 없다. [전체 선택] 을 누르면 돌아온다."
+    if state.filter_connectors is not None and not state.filter_connectors:
+        return "커넥터를 전부 껐다 — 보이는 줄이 없다. [전체 선택] 을 누르면 돌아온다."
+    if state.total_lines == 0:
+        return "아직 아무 줄도 오지 않았다."
+    return "지금 켜 둔 것에 걸리는 줄이 없다 — 그 채널이 조용하다는 뜻이다."
+
+
 def staleness_level(since_last_s: float | None) -> Level:
     """마지막 수신 후 경과에서 심각도를 정한다. 색·문구는 Qt 쪽이 입힌다.
 
@@ -449,7 +530,13 @@ class StreamState:
         self._channels: dict[tuple[str, int | None], _ChannelWindow] = {}
         #: 커넥터별 누적 수신 수 — 필터 체크박스를 무엇으로 채울지 화면이
         #: 이걸 보고 정한다(`type_counts` 와 같은 역할, 커넥터 버전).
-        self.connector_counts: dict[int, int] = {}
+        #:
+        #: 🔴 보드에 있는 커넥터를 **전부 0 으로 미리 깐다**(`KNOWN_CONNECTORS`
+        #:    머리말). 도착한 것만 담으면 값이 안 오는 커넥터가 목록에서
+        #:    사라지고, 그러면 화면이 "그런 커넥터는 없다" 고 말하는 셈이 된다.
+        #:    카탈로그에 없는 커넥터가 오더라도 아래 `ingest()` 가 그대로
+        #:    세므로 새 커넥터가 생겨도 화면에서 사라지지 않는다.
+        self.connector_counts: dict[int, int] = {c: 0 for c in KNOWN_CONNECTORS}
 
         #: 최근 seq 누락 구간. 개수 상한(`RECENT_GAPS_MAX`)이 있는
         #: deque 라 오래된 구간은 스스로 밀려난다.

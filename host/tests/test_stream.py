@@ -7,16 +7,21 @@
 from host.core.framing import build_command
 from host.gui.stream import (
     DEFAULT_HIDDEN_TYPES,
+    KNOWN_CONNECTORS,
     INTERVAL_SAMPLES,
     RATE_BUCKET_COUNT,
     RATE_BUCKET_S,
     RECENT_GAPS_MAX,
     StreamState,
+    connector_label,
+    filter_note,
     format_gap,
     format_header,
     format_interval,
     format_row,
     staleness_level,
+    toggle_all,
+    toggle_all_label,
 )
 from host.gui.widgets.status_chip import Level
 
@@ -543,3 +548,109 @@ def test_connector_counts_track_cumulative_arrivals_per_connector():
               _ain_line(3, connector_id=5)], now_s=0.0)
     assert s.connector_counts[4] == 2
     assert s.connector_counts[5] == 1
+
+
+# ----------------------------------------------------- 커넥터 목록 (카탈로그)
+
+def test_known_connectors_come_from_the_same_source_as_the_dashboard():
+    """🔴 되돌림 검사 — 커넥터 목록을 **도착한 레코드에서** 만들면 깨진다.
+
+    대시보드는 값이 안 와도 자리를 깐다(`screen.py` 의 `empty_channels()` ·
+    `seed_sensors()` · `seed_dins()` — 설계 원칙 3). 스트림만 도착분으로
+    목록을 만들면 두 화면이 서로 다른 보드를 말하게 된다. 그래서 여기서는
+    같은 상수를 쓴다 — 목록을 손으로 적지 않는다.
+    """
+    from host.gui.screen import (
+        AIN_COUNT,
+        CONNECTOR_OFFSET,
+        DIN_PORTS,
+        I2C_PORTS,
+    )
+
+    expected = ({CONNECTOR_OFFSET + i for i in range(AIN_COUNT)}
+                | set(I2C_PORTS) | set(DIN_PORTS))
+    assert set(KNOWN_CONNECTORS) == expected
+
+
+def test_every_connector_is_listed_before_a_single_value_arrives():
+    """값이 한 번도 안 온 커넥터도 목록에 있어야 한다 — 0 건이 곧 정보다."""
+    s = StreamState()
+    assert set(s.connector_counts) == set(KNOWN_CONNECTORS)
+    assert set(s.connector_counts.values()) == {0}
+
+
+def test_a_silent_connector_stays_at_zero_while_others_count_up():
+    s = StreamState()
+    s.ingest([_ain_line(1, connector_id=4), _ain_line(2, connector_id=4)],
+             now_s=0.0)
+    assert s.connector_counts[4] == 2
+    # 🔴 J5 는 목록에 있고 0 이다. 없어진 것이 아니라 **값이 안 오는 것**이다.
+    assert s.connector_counts[5] == 0
+
+
+def test_connector_label_marks_the_ones_that_never_sent_anything():
+    assert connector_label(5, 12) == "J5"
+    assert connector_label(5, 0).startswith("J5")
+    assert connector_label(5, 0) != "J5", "0 건이라는 사실이 이름표에 없다"
+
+
+# ------------------------------------------------------------- 전체 선택/해제
+
+def test_toggling_all_turns_everything_on_when_some_are_off():
+    assert toggle_all({"ain"}, {"ain", "i2c", "din"}) == {"ain", "i2c", "din"}
+
+
+def test_toggling_all_turns_everything_off_when_all_are_on():
+    assert toggle_all({"ain", "i2c"}, {"ain", "i2c"}) == set()
+
+
+def test_toggling_all_turns_everything_on_when_none_are_on():
+    assert toggle_all(set(), {3, 4}) == {3, 4}
+
+
+def test_toggle_all_label_says_what_the_click_will_do():
+    assert toggle_all_label({"ain", "i2c"}, {"ain", "i2c"}) == "전체 해제"
+    assert toggle_all_label({"ain"}, {"ain", "i2c"}) == "전체 선택"
+    assert toggle_all_label(set(), set()) == "전체 선택"
+
+
+# ------------------------------------------------- 전부 껐을 때 무엇을 보이나
+
+def test_no_note_while_something_is_on_screen():
+    s = StreamState()
+    s.ingest([_ain_line(1)], now_s=0.0)
+    assert filter_note(s, s.visible_rows()) == ""
+
+
+def test_note_explains_an_empty_screen_when_every_type_is_off():
+    """🔴 아무것도 안 보이는 화면은 고장으로 읽힌다. 필터를 자동으로
+    되돌리지 않는 대신, **왜 비었는지**를 화면이 말한다."""
+    s = StreamState()
+    s.ingest([_ain_line(1)], now_s=0.0)
+    s.set_filter(set())
+    note = filter_note(s, s.visible_rows())
+    assert "타입" in note and "전체 선택" in note
+
+
+def test_note_explains_an_empty_screen_when_every_connector_is_off():
+    s = StreamState()
+    s.ingest([_ain_line(1)], now_s=0.0)
+    s.set_connector_filter(set())
+    note = filter_note(s, s.visible_rows())
+    assert "커넥터" in note and "전체 선택" in note
+
+
+def test_note_says_nothing_has_arrived_yet_when_nothing_has():
+    s = StreamState()
+    note = filter_note(s, s.visible_rows())
+    assert note and "필터" not in note
+
+
+def test_note_separates_a_filter_that_matches_nothing_from_one_turned_off():
+    """필터는 켜져 있는데 걸리는 줄이 없는 것과, 전부 끈 것은 다른 사실이다."""
+    s = StreamState()
+    s.ingest([_ain_line(1)], now_s=0.0)
+    s.set_filter({"i2c"})
+    note = filter_note(s, s.visible_rows())
+    assert note
+    assert "전체 선택" not in note

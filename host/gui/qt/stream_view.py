@@ -58,11 +58,15 @@ from host.gui.stream import (
     DISPLAY_MAXLEN,
     StreamRow,
     StreamState,
+    connector_label,
+    filter_note,
     format_gap,
     format_header,
     format_interval,
     format_row,
     staleness_level,
+    toggle_all,
+    toggle_all_label,
 )
 from host.gui.theme import Color, Font, Space
 from host.gui.widgets.status_chip import Level, Verification, chip_style
@@ -84,7 +88,11 @@ class StreamView(QWidget):
         self._filter_checks: dict[str, QCheckBox] = {}
         #: 커넥터별 필터 체크박스. `ain` 7채널이 한 덩어리라 J4 만
         #: 이상해도 타입 필터만으로는 못 가려낸다 — 축 하나를 더 둔다.
-        #: 타입 필터와 같은 이유로 고정 목록을 두지 않는다.
+        #:
+        #: 🔴 타입과 달리 **보드에 있는 커넥터가 처음부터 전부** 들어온다
+        #:    (`StreamState.connector_counts` 가 0 으로 미리 깔아 준다).
+        #:    값이 안 오는 커넥터가 목록에 없으면 화면이 "그런 커넥터는
+        #:    없다" 고 말하는 셈이다.
         self._connector_checks: dict[int, QCheckBox] = {}
 
         # ---- 요약 ------------------------------------------------------
@@ -151,17 +159,28 @@ class StreamView(QWidget):
         connector_filter_host = QWidget()
         connector_filter_host.setLayout(self._connector_filter_row)
 
+        # 🔴 축마다 자기 `전체` 버튼을 갖는다. 하나로 합치면 "타입만 전부
+        #    켜고 커넥터는 그대로" 를 할 수 없고, 그것이 실제로 하고 싶은
+        #    일이다(J4 만 남긴 채 타입은 전부 보는 식). 무엇을 하는
+        #    버튼인지는 `toggle_all_label` 이 정한다 — 판정은 Qt 밖이다.
+        self._type_all_btn = QPushButton("전체 선택")
+        self._type_all_btn.clicked.connect(self._on_toggle_all_types)
+        self._conn_all_btn = QPushButton("전체 선택")
+        self._conn_all_btn.clicked.connect(self._on_toggle_all_connectors)
+
         filters_col = QVBoxLayout()
         filters_col.setSpacing(2)
         type_row = QHBoxLayout()
         type_row.setSpacing(Space.SM)
         type_row.addWidget(card_title("타입"))
+        type_row.addWidget(self._type_all_btn)
         type_row.addWidget(filter_host, 1)
         filters_col.addLayout(type_row)
 
         conn_row = QHBoxLayout()
         conn_row.setSpacing(Space.SM)
         conn_row.addWidget(card_title("커넥터"))
+        conn_row.addWidget(self._conn_all_btn)
         conn_row.addWidget(connector_filter_host, 1)
         filters_col.addLayout(conn_row)
 
@@ -271,8 +290,16 @@ class StreamView(QWidget):
             or "seq 누락 없음"
         )
         self._spark_label.setText(summary.rate_sparkline)
+        self._refresh_connector_labels(state)
+        self._refresh_toggle_all_buttons()
 
-        self._append_new_rows(state.visible_rows())
+        rows = state.visible_rows()
+        # 🔴 빈 콘솔은 고장으로 읽힌다. 왜 비었는지를 같은 자리에 적는다 —
+        #    판정은 `stream.filter_note` 가 한다(그 머리말에 근거가 있다).
+        #    `QPlainTextEdit` 의 placeholder 는 문서가 비었을 때만 뜨므로,
+        #    줄이 하나라도 그려지면 저절로 사라진다.
+        self._console.setPlaceholderText(filter_note(state, rows))
+        self._append_new_rows(rows)
 
     def _append_new_rows(self, rows: tuple[StreamRow, ...]) -> None:
         """새로 온 줄만 콘솔에 이어붙인다.
@@ -349,6 +376,46 @@ class StreamView(QWidget):
         self._redraw_all()
         self.render(self._state, self._last_now_s)
 
+    # -------------------------------------------------------- 전체 선택/해제
+    @staticmethod
+    def _set_checks(checks: dict, chosen: set) -> None:
+        """🔴 신호를 막고 한꺼번에 세운다. 그냥 돌리면 체크박스 하나마다
+        `toggled` 가 나가 필터 적용과 통째로 다시 그리기가 열몇 번 반복된다
+        — 커넥터가 열여섯 개라 그만큼이다."""
+        for key, cb in checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(key in chosen)
+            cb.blockSignals(False)
+
+    def _refresh_toggle_all_buttons(self) -> None:
+        self._type_all_btn.setText(
+            toggle_all_label(self._checked_types(), set(self._filter_checks)))
+        self._conn_all_btn.setText(
+            toggle_all_label(self._checked_connectors(),
+                             set(self._connector_checks)))
+
+    def _on_toggle_all_types(self) -> None:
+        self._set_checks(self._filter_checks,
+                         toggle_all(self._checked_types(),
+                                    set(self._filter_checks)))
+        self._refresh_toggle_all_buttons()
+        if self._state is None:
+            return
+        self._apply_filter_from_checks(self._state)
+        self._redraw_all()
+        self.render(self._state, self._last_now_s)
+
+    def _on_toggle_all_connectors(self) -> None:
+        self._set_checks(self._connector_checks,
+                         toggle_all(self._checked_connectors(),
+                                    set(self._connector_checks)))
+        self._refresh_toggle_all_buttons()
+        if self._state is None:
+            return
+        self._apply_connector_filter_from_checks(self._state)
+        self._redraw_all()
+        self.render(self._state, self._last_now_s)
+
     # ------------------------------------------------------------ 커넥터 필터
     def _ensure_connector_checks(self, state: StreamState) -> None:
         """새로 본 커넥터마다 체크박스를 만든다.
@@ -362,12 +429,24 @@ class StreamView(QWidget):
         if not new_conns:
             return
         for c in new_conns:
-            cb = QCheckBox(f"J{c}")
+            cb = QCheckBox(connector_label(c, state.connector_counts.get(c, 0)))
             cb.setChecked(True)
             cb.toggled.connect(self._on_connector_toggled)
             self._connector_filter_row.addWidget(cb)
             self._connector_checks[c] = cb
         self._apply_connector_filter_from_checks(state)
+
+    def _refresh_connector_labels(self, state: StreamState) -> None:
+        """0 건 표시를 갱신한다 — 값이 오기 시작하면 표시가 사라진다.
+
+        🔴 매 프레임 돌지만 커넥터 수(열여섯)만큼이고, 글자가 바뀔 때만
+           위젯을 만진다. 콘솔이 매 프레임 통째로 다시 그려지지 않도록
+           지켜 온 것과 같은 규칙이다(머리말).
+        """
+        for c, cb in self._connector_checks.items():
+            text = connector_label(c, state.connector_counts.get(c, 0))
+            if cb.text() != text:
+                cb.setText(text)
 
     def _checked_connectors(self) -> set[int]:
         return {c for c, cb in self._connector_checks.items() if cb.isChecked()}

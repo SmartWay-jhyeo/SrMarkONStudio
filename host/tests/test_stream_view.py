@@ -25,7 +25,11 @@ from PyQt6.QtWidgets import QApplication, QPlainTextEdit  # noqa: E402
 
 from host.gui.qt.stream_view import StreamView  # noqa: E402
 from host.gui.qt.style import stylesheet  # noqa: E402
-from host.gui.stream import DISPLAY_MAXLEN, StreamState  # noqa: E402
+from host.gui.stream import (  # noqa: E402
+    DISPLAY_MAXLEN,
+    KNOWN_CONNECTORS,
+    StreamState,
+)
 from host.gui.theme import Color  # noqa: E402
 
 
@@ -344,14 +348,109 @@ def test_spark_label_shows_a_non_empty_string_once_data_arrives(app):
 
 # ----------------------------------------------------------------- 커넥터 필터
 
-def test_connector_checkboxes_are_created_from_seen_connectors(app):
+def test_every_board_connector_gets_a_checkbox(app):
+    """🔴 되돌림 검사 — 커넥터 목록을 **도착한 레코드에서만** 만들면 깨진다.
+
+    사용자가 그것을 그대로 지적했다("스트림에 커넥터는 전부 있어야지 특정
+    항목만 있으면 안돼지"). 대시보드가 값 없는 자리도 까는 것과 같은
+    판단이다(설계 원칙 3).
+    """
     state = StreamState()
     state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)   # connector 3, 10
 
     view = StreamView()
     view.render(state, now_s=0.0)
 
-    assert set(view._connector_checks.keys()) == {3, 10}
+    assert set(view._connector_checks) == set(KNOWN_CONNECTORS)
+
+
+def test_a_connector_that_never_sent_anything_says_so(app):
+    """0 건이라는 것 자체가 정보다 — "저기서 값이 안 온다"."""
+    state = StreamState()
+    state.ingest([_ain_line(1)], now_s=0.0)                 # connector 3 만
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+
+    quiet = next(c for c in KNOWN_CONNECTORS if c != 3)
+    assert view._connector_checks[3].text() == "J3"
+    assert view._connector_checks[quiet].text() != f"J{quiet}"
+    assert "0" in view._connector_checks[quiet].text()
+
+
+def test_the_label_drops_the_zero_mark_once_a_value_arrives(app):
+    state = StreamState()
+    view = StreamView()
+    view.render(state, now_s=0.0)
+    assert "0" in view._connector_checks[3].text()
+
+    state.ingest([_ain_line(1)], now_s=0.1)
+    view.render(state, now_s=0.1)
+    assert view._connector_checks[3].text() == "J3"
+
+
+# ------------------------------------------------------------- 전체 선택/해제
+
+def test_the_type_select_all_button_clears_then_restores_every_type(app):
+    state = StreamState()
+    state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
+    view = StreamView()
+    view.render(state, now_s=0.0)
+    assert all(cb.isChecked() for cb in view._filter_checks.values()
+               if cb.text() not in ("cfg_item", "cfg_field", "cfg_end"))
+
+    view._type_all_btn.click()
+    assert not any(cb.isChecked() for cb in view._filter_checks.values())
+    assert view._console.toPlainText() == ""
+
+    view._type_all_btn.click()
+    assert all(cb.isChecked() for cb in view._filter_checks.values())
+    text = view._console.toPlainText()
+    assert _ain_line(1) in text and _i2c_line(2) in text
+
+
+def test_the_connector_select_all_button_clears_then_restores(app):
+    state = StreamState()
+    state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
+    view = StreamView()
+    view.render(state, now_s=0.0)
+
+    view._conn_all_btn.click()
+    assert not any(cb.isChecked() for cb in view._connector_checks.values())
+    assert view._console.toPlainText() == ""
+
+    view._conn_all_btn.click()
+    assert all(cb.isChecked() for cb in view._connector_checks.values())
+    text = view._console.toPlainText()
+    assert _ain_line(1) in text and _i2c_line(2) in text
+
+
+def test_the_button_says_what_the_next_click_will_do(app):
+    state = StreamState()
+    state.ingest([_ain_line(1)], now_s=0.0)
+    view = StreamView()
+    view.render(state, now_s=0.0)
+
+    assert view._conn_all_btn.text() == "전체 해제"
+    view._conn_all_btn.click()
+    assert view._conn_all_btn.text() == "전체 선택"
+
+
+def test_an_empty_console_says_why_it_is_empty(app):
+    """🔴 아무것도 안 보이는 화면은 고장으로 읽힌다. 필터를 몰래 되돌리는
+    대신 이유를 적는다(`filter_note` 머리말)."""
+    state = StreamState()
+    state.ingest([_ain_line(1)], now_s=0.0)
+    view = StreamView()
+    view.render(state, now_s=0.0)
+
+    view._conn_all_btn.click()
+    assert view._console.toPlainText() == ""
+    assert "커넥터" in view._console.placeholderText()
+    assert "전체 선택" in view._console.placeholderText()
+
+    view._conn_all_btn.click()
+    assert view._console.placeholderText() == ""
 
 
 def test_unchecking_a_connector_hides_it_retroactively(app):
@@ -382,3 +481,22 @@ def test_rechecking_every_connector_shows_everything_again(app):
     view._connector_checks[10].setChecked(True)
     text = view._console.toPlainText()
     assert _ain_line(1) in text and _i2c_line(2) in text
+
+
+def test_a_record_type_nobody_has_seen_yet_is_shown_by_default(app):
+    """🔴 곧 `gnss`·`imu` 레코드가 생긴다(다른 작업에서 만드는 중이다).
+
+    숨김 목록(`DEFAULT_HIDDEN_TYPES`)은 **카탈로그 응답 전용**이다 —
+    새 텔레메트리가 기본으로 숨으면, 그것을 만든 사람이 "안 온다" 고
+    판단하게 된다. 이 화면의 존재 이유가 정확히 그 판단이라 더 나쁘다.
+    """
+    line = ('{"schema_ver":3,"seq":1,"t":100,"type":"gnss",'
+            '"lat":37.5,"lon":127.0,"status":0}')
+    state = StreamState()
+    state.ingest([line], now_s=0.0)
+
+    view = StreamView()
+    view.render(state, now_s=0.0)
+
+    assert view._filter_checks["gnss"].isChecked() is True
+    assert line in view._console.toPlainText()
