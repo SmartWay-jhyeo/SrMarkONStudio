@@ -654,3 +654,20 @@ def test_note_separates_a_filter_that_matches_nothing_from_one_turned_off():
     note = filter_note(s, s.visible_rows())
     assert note
     assert "전체 선택" not in note
+
+
+def test_connector_filter_leaves_connectorless_rows_alone():
+    """커넥터 하나를 꺼도 gnss(커넥터 없음)는 남는다.
+
+    🔴 실기기에서 겪었다(2026-08-20): J3 를 끄니 gnss 줄이 통째로 사라져
+       "gnss 가 J3 에 붙어 있나" 로 보였다. gnss·stat 은 장비 전체의
+       것이라 커넥터 필터의 대상이 아니다 — 타입 필터로만 걸러진다.
+    """
+    st = StreamState()
+    st.feed('{"schema_ver":3,"seq":1,"t":5,"type":"ain","connector_id":3,"value":1.0}', 0.0)
+    st.feed('{"schema_ver":3,"seq":2,"t":6,"type":"gnss","lat":37.1,"lon":127.1}', 0.0)
+    # J3 를 뺀 나머지만 켠 상태 (사용자가 J3 하나를 껐다)
+    st.set_connector_filter({4, 5, 6})
+    types = [r.type for r in st.visible_rows()]
+    assert "gnss" in types, "커넥터 없는 줄이 커넥터 필터에 걸려 사라졌다"
+    assert "ain" not in types, "J3 은 꺼졌으니 ain 은 없어야 한다"

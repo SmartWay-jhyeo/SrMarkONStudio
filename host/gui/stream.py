@@ -654,7 +654,15 @@ class StreamState:
         if self.filter_types is not None:
             rows = tuple(r for r in rows if r.type in self.filter_types)
         if self.filter_connectors is not None:
-            rows = tuple(r for r in rows if r.connector in self.filter_connectors)
+            # 🔴 커넥터가 **없는** 줄(gnss·stat·cmd — 장비 전체에 속하는
+            #    것들)은 커넥터 필터의 대상이 아니다. `in` 만 보면 이런
+            #    줄이 어느 목록에도 못 들어가 **아무 커넥터나 하나만 꺼도
+            #    전부 사라진다** — 실제로 J3 를 끄니 gnss 가 사라져 "gnss
+            #    가 J3 에 붙어 있나" 로 보였다(사용자 보고 2026-08-20).
+            #    이런 줄은 타입 필터로만 걸러진다.
+            rows = tuple(r for r in rows
+                         if r.connector is None
+                         or r.connector in self.filter_connectors)
         return rows
 
     # -------------------------------------------------------------- 요약
