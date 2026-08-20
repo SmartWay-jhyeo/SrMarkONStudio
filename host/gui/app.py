@@ -98,6 +98,61 @@ def _checked_views(*views) -> tuple[View, ...]:
     return views
 
 
+class ConnectBar(QWidget):
+    """포트를 골라 [연결] 하는 막대 — 자동 연결을 없앤 자리(사용자 결정).
+
+    🔴 포트 목록은 [새로고침] 을 눌러야 다시 읽는다. 몰래 주기적으로
+       읽으면 사용자가 고르는 중에 목록이 바뀐다.
+    """
+
+    def __init__(self, baud: int, parent=None) -> None:
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QComboBox, QPushButton, QLabel
+        self._ports = QComboBox()
+        self._ports.setMinimumWidth(110)
+        self._baud = QComboBox()
+        for b in (115200, 460800, 921600, 1000000, 1500000, 2000000):
+            self._baud.addItem(str(b), b)
+        self._baud.setCurrentText(str(baud))
+        self._refresh_btn = QPushButton("새로고침")
+        self._refresh_btn.clicked.connect(self.refresh)
+        self._btn = QPushButton("연결")
+        self._msg = QLabel("")
+        self._msg.setObjectName("dim")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(16, 4, 16, 4)
+        row.setSpacing(8)
+        row.addWidget(QLabel("포트"))
+        row.addWidget(self._ports)
+        row.addWidget(self._refresh_btn)
+        row.addWidget(QLabel("속도"))
+        row.addWidget(self._baud)
+        row.addWidget(self._btn)
+        row.addWidget(self._msg, 1)
+        self.refresh()
+
+    def refresh(self) -> None:
+        import serial.tools.list_ports as lp
+        cur = self._ports.currentText()
+        self._ports.clear()
+        for pinfo in sorted(lp.comports(), key=lambda x: x.device):
+            self._ports.addItem(pinfo.device)
+        if cur:
+            i = self._ports.findText(cur)
+            if i >= 0:
+                self._ports.setCurrentIndex(i)
+
+    def selection(self) -> tuple[str, int]:
+        return self._ports.currentText(), int(self._baud.currentData())
+
+    def set_connected(self, on: bool, msg: str = "") -> None:
+        self._btn.setText("연결 해제" if on else "연결")
+        self._ports.setEnabled(not on)
+        self._baud.setEnabled(not on)
+        self._refresh_btn.setEnabled(not on)
+        self._msg.setText(msg)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, service, port_label: str, *,
                  baud: int = DEFAULT_BAUD) -> None:
@@ -195,6 +250,9 @@ class MainWindow(QMainWindow):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)
         col.addWidget(self._top)
+        self._connbar = ConnectBar(baud)
+        self._connbar._btn.clicked.connect(self._on_connect_clicked)
+        col.addWidget(self._connbar)
         col.addWidget(self._band)
         col.addWidget(split, 1)
         self.setCentralWidget(body)
@@ -212,13 +270,62 @@ class MainWindow(QMainWindow):
         self._history = StateHistory()
         self._state = ScreenState(channels=empty_channels())
 
+        self._worker = None
+        # 🔴 자동으로 연결하지 않는다 (사용자 결정 2026-08-20). 프로그램을
+        #    켜는 것과 포트를 여는 것은 다른 일이다 — 예고 없는 포트 개폐가
+        #    F103 브리지를 굳게 만드는 재발 패턴(HANDOFF §3)과도 맞물린다.
+        #    사용자가 포트를 고르고 [연결] 을 눌러야 연다.
+        if service is not None:
+            self._attach(service, port_label)
+            self._connbar.set_connected(True, "")
+
+    def _on_connect_clicked(self) -> None:
+        if self._worker is not None:
+            self._detach()
+            self._connbar.set_connected(False, "해제됨")
+            return
+        port, baud = self._connbar.selection()
+        if not port:
+            self._connbar.set_connected(False, "포트가 없다 — 새로고침을 눌러 보라")
+            return
+        try:
+            service = make_service(port, baud)
+        except Exception as exc:            # noqa: BLE001
+            # 🔴 실패 이유를 그 자리에서 말한다 — "액세스 거부" 는 대개
+            #    다른 프로그램이 그 포트를 잡고 있다는 뜻이다.
+            self._connbar.set_connected(False, f"연결 실패: {exc}")
+            return
+        self._baud = baud
+        self._attach(service, port)
+        self._connbar.set_connected(True, "")
+
+    # ------------------------------------------------------------- 연결
+    def _attach(self, service, port_label: str) -> None:
+        """포트가 열린 service 를 받아 워커를 돌리기 시작한다."""
+        self._service = service
+        self._port_label = port_label
+        self.setWindowTitle(f"{WINDOW_TITLE} — {port_label}")
+        self._top.set_identity(port_label)
         self._worker = WorkerThread(service, self._queue)
         self._worker.worker.stepped.connect(self._on_step)
         self._worker.start()
-
         self._load_identity()
         self._load_catalog()
         self._load_din_state()
+
+    def _detach(self) -> None:
+        """워커를 세우고 포트를 닫는다. 화면은 마지막 상태를 유지한다 —
+        지우면 '끊기 직전이 어땠나' 를 잃는다(설계 원칙, last_known)."""
+        if self._worker is not None:
+            self._worker.stop()
+            self._worker = None
+        if self._service is not None:
+            try:
+                self._service.close()
+            except Exception:               # noqa: BLE001
+                pass
+            self._service = None
+        self._top.set_link("연결 해제됨", bad=False)
 
     # ------------------------------------------------------------- 초기화
 
@@ -587,17 +694,19 @@ def make_service(port: str, baud: int):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="markon-gui")
-    # 🔴 기본값을 두지 않는다 — 예전 기본값이 `sim` 이었다.
-    parser.add_argument("--port", required=True,
-                        help="시리얼 포트 (예: COM23)")
+    # 🔴 --port 는 이제 **선택**이다 (사용자 결정 2026-08-20). 없으면
+    #    미연결로 뜨고, 화면의 포트 선택에서 골라 [연결] 한다.
+    #    주면 예전처럼 바로 연결한다(스크립트·단골 용도).
+    parser.add_argument("--port", default=None,
+                        help="시리얼 포트 (예: COM23). 없으면 화면에서 고른다")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     args = parser.parse_args(argv)
 
     app = QApplication(sys.argv[:1])
     app.setStyleSheet(stylesheet())
 
-    service = make_service(args.port, args.baud)
-    window = MainWindow(service, args.port, baud=args.baud)
+    service = make_service(args.port, args.baud) if args.port else None
+    window = MainWindow(service, args.port or "미연결", baud=args.baud)
     window.show()
     return app.exec()
 
