@@ -61,6 +61,34 @@
  *       루프 안에서 상대의 색인을 레지스터에 담아 두면 인터럽트가 바꾼
  *       값을 영영 못 본다 — 링이 영원히 꽉 찬 것처럼 보이거나(송신 정지)
  *       영원히 빈 것처럼 보인다.
+ *
+ * 🔴 버리는 정책이 **모든 줄에 맞지는 않았다** [실기기, 2026-08-20]
+ *
+ *    위의 "한 줄을 잃고 끝난다" 는 텔레메트리에만 참이다. `$CFG,LIST` 는
+ *    103줄 ≈ 25 KB 를 한 번에 쏟아내는데, 그중 **한 줄만 잃어도 카탈로그
+ *    전체가 못 쓰게 된다**(호스트는 `cfg_end` 의 count 로 절단을 판정하고
+ *    통째로 거부한다 — 규격 §7.3). 실제로 4,096 B 링에 43줄만 들어가고
+ *    나머지가 버려져 GUI 가 설정 폼을 아예 못 만들었다. 사용자가 본 것은
+ *    "전원이 켜져 있는데 GUI 는 꺼졌다고 하고 토글도 안 먹는다" 였다.
+ *
+ *    그래서 줄에 **급**이 생겼다. 세 가지다:
+ *
+ *      mk_txring_push      텔레메트리. 자리가 없으면 버리고 `drops` 에 센다.
+ *      mk_txring_push_ctl  명령 응답·하트비트. 예약 몫까지 쓰고, 그래도
+ *                          자리가 없으면 버리되 `ctl_drops` 에 **따로** 센다.
+ *      mk_txring_offer     이어서 낼 수 있는 흐름(카탈로그). 자리가 없으면
+ *                          0 을 돌려주고 **아무것도 안 센다** — 부른 쪽이
+ *                          다음 바퀴에 같은 줄을 다시 준다.
+ *
+ *    🔴 계기를 둘로 나눈 이유. 텔레메트리 유실은 "설정이 링크 용량을
+ *       넘었다" 는 흔한 상태이고, 제어 유실은 "호스트가 답을 영영 못
+ *       받았다" 는 사고다. 한 수로 뭉치면 전자에 묻혀 후자가 안 보인다 —
+ *       실기기에서 이 결함을 GDB 로 `s_tx` 를 들여다보고서야 알았다.
+ *       그래서 둘 다 `$STAT` 에 실어 화면에서 보이게 했다(규격 §7.4).
+ *
+ *    🔴 거절(offer)을 세지 않는 이유. 정상 동작에서도 링이 잠깐 찰 때마다
+ *       거절이 일어난다. 그것을 세면 계수기가 늘 올라가 아무 말도 못 하게
+ *       된다 — 유실은 "다시 오지 않는 것" 만 센다.
  */
 #ifndef MK_TXRING_H
 #define MK_TXRING_H
@@ -74,8 +102,11 @@ typedef struct {
     volatile uint16_t head;          /* 다음에 쓸 자리 — 생산자만 쓴다 */
     volatile uint16_t tail;          /* 다음에 보낼 자리 — 소비자만 쓴다 */
     uint16_t          peak;          /* 여태 최고 used — 여유가 얼마나 빠듯했나 */
-    uint32_t          drops;         /* 자리가 없어 통째로 버린 줄 수 */
+    uint32_t          drops;         /* 자리가 없어 통째로 버린 텔레메트리 줄 수 */
     uint32_t          dropped_bytes; /* 그 줄들의 바이트 합 */
+    /* 🔴 제어 경로는 따로 센다. 심각도가 다르다 — 헤더 위의 판단 근거. */
+    uint32_t          ctl_drops;
+    uint32_t          ctl_dropped_bytes;
 } MkTxRing;
 
 /* 저장소를 붙인다. 🔴 `buf` 는 **DMA 가 닿는 메모리**여야 한다 —
@@ -99,6 +130,23 @@ size_t mk_txring_free(const MkTxRing *r);
  * 아니므로 세지 않는다. */
 int mk_txring_push(MkTxRing *r, const void *data, size_t len, size_t reserve);
 
+/* 제어 경로 한 줄 — 명령 응답·오류·하트비트. 예약 몫까지 쓴다(reserve 0).
+ *
+ * 🔴 거절을 `ctl_drops` 에 **따로** 센다. 텔레메트리 유실과 뭉치면, 흔한
+ *    쪽(텔레메트리)에 묻혀 드문 쪽(호스트가 답을 못 받음)이 안 보인다. */
+int mk_txring_push_ctl(MkTxRing *r, const void *data, size_t len);
+
+/* 이어서 낼 수 있는 흐름 한 줄 — 카탈로그처럼 여러 줄이 한 덩어리로만
+ * 뜻을 갖는 것.
+ *
+ * 들어갔으면 1, 자리가 없으면 0 인데 **아무것도 세지 않는다.** 부른 쪽이
+ * 다음 바퀴에 같은 줄을 다시 주기 때문이다 — 유실이 아니라 역압이다.
+ *
+ * 🔴 `reserve` 를 받는다. 카탈로그가 링을 끝까지 채우면 그 몇 초 동안
+ *    `$SACK`·`$HB` 가 나갈 자리가 없어진다 — 카탈로그를 살리려다 명령
+ *    응답을 죽이는 셈이다. */
+int mk_txring_offer(MkTxRing *r, const void *data, size_t len, size_t reserve);
+
 /* 다음에 보낼 **연속된** 조각을 가리킨다. 반환은 그 길이(0 이면 빔).
  * 링이 감기는 자리에서 끊어 준다 — DMA 는 연속 메모리만 옮긴다.
  * `out` 이 NULL 이면 길이만 알려 준다. */
@@ -116,11 +164,24 @@ void mk_txring_consume(MkTxRing *r, size_t n);
  *    지나간 뒤에는 어디에도 안 남는다. */
 uint16_t mk_txring_peak(const MkTxRing *r);
 
-/* 진단 — 링이 차서 버린 줄 수와 바이트 수.
+/* 링의 전체 바이트 수. `peak` 이 여기에 얼마나 가까운지가 곧 여유다 —
+ * 그 비교를 호스트가 하려면 용량도 함께 알아야 한다(규격 §7.4). */
+uint16_t mk_txring_cap(const MkTxRing *r);
+
+/* 진단 — 링이 차서 버린 줄 수와 바이트 수 (텔레메트리).
  *
  * 🔴 호스트는 이 수를 직접 못 보지만 알아챌 수 있다 — 버려진 줄의 `seq`
  *    가 비기 때문이다(규격 §7.1). */
 uint32_t mk_txring_drops(const MkTxRing *r);
 uint32_t mk_txring_dropped_bytes(const MkTxRing *r);
+
+/* 진단 — 제어 경로에서 버린 줄 수와 바이트 수.
+ *
+ * 🔴 이것은 0 이 아니면 그 자체로 경고다. 호스트가 보낸 명령의 답이
+ *    전선에 안 나간 것이고, 텔레메트리와 달리 `seq` 로도 드러나지 않는다
+ *    (명령 응답의 seq 는 항상 0 이다 — 규격 §5.2). 그래서 이 수 말고는
+ *    알 방법이 없다. */
+uint32_t mk_txring_ctl_drops(const MkTxRing *r);
+uint32_t mk_txring_ctl_dropped_bytes(const MkTxRing *r);
 
 #endif /* MK_TXRING_H */

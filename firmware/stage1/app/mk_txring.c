@@ -30,26 +30,22 @@ size_t mk_txring_free(const MkTxRing *r)
     return (size_t)(r->cap - 1u) - mk_txring_used(r);
 }
 
-int mk_txring_push(MkTxRing *r, const void *data, size_t len, size_t reserve)
+/* 넣을 수 있으면 넣는다. **아무것도 세지 않는다** — 계기는 부른 쪽이
+ * 급에 맞게 올린다(헤더의 세 가지 급).
+ *
+ * 반환: 넣었으면 1, 자리가 없거나 넣을 것이 없으면 0. */
+static int try_write(MkTxRing *r, const void *data, size_t len, size_t reserve)
 {
-    /* 넣을 것이 없는 것은 유실이 아니다 — 세지 않는다. */
     if (data == NULL || len == 0u) {
         return 0;
     }
     if (r->buf == NULL || r->cap == 0u) {
-        /* 저장소가 없어도 버린 것은 버린 것이다. mk_queue 와 같은 이유 —
-         * 세지 않으면 "유실이 없었다" 로 보이고, 안 나가는 이유를 영영
-         * 못 찾는다. */
-        r->drops++;
-        r->dropped_bytes += (uint32_t)len;
         return 0;
     }
 
     /* 🔴 통째로 들어가야만 넣는다. 조각내면 NDJSON 한 줄이 끊긴다
      *    (헤더의 계약). 예약 몫은 명령 응답이 나갈 자리다. */
     if (len + reserve > mk_txring_free(r)) {
-        r->drops++;
-        r->dropped_bytes += (uint32_t)len;
         return 0;
     }
 
@@ -77,6 +73,47 @@ int mk_txring_push(MkTxRing *r, const void *data, size_t len, size_t reserve)
         r->peak = used_now;
     }
     return 1;
+}
+
+int mk_txring_push(MkTxRing *r, const void *data, size_t len, size_t reserve)
+{
+    /* 넣을 것이 없는 것은 유실이 아니다 — 세지 않는다. */
+    if (data == NULL || len == 0u) {
+        return 0;
+    }
+    if (try_write(r, data, len, reserve)) {
+        return 1;
+    }
+    /* 저장소가 없어도 버린 것은 버린 것이다. mk_queue 와 같은 이유 —
+     * 세지 않으면 "유실이 없었다" 로 보이고, 안 나가는 이유를 영영
+     * 못 찾는다. */
+    r->drops++;
+    r->dropped_bytes += (uint32_t)len;
+    return 0;
+}
+
+int mk_txring_push_ctl(MkTxRing *r, const void *data, size_t len)
+{
+    if (data == NULL || len == 0u) {
+        return 0;
+    }
+    /* 예약 몫까지 쓴다. 그 예약이 존재하는 이유가 바로 이 줄이다 —
+     * 텔레메트리가 링을 다 먹어도 명령 응답은 나가야 한다. */
+    if (try_write(r, data, len, 0u)) {
+        return 1;
+    }
+    /* 🔴 텔레메트리와 **다른 계기**에 센다. 헤더의 판단 근거 참고. */
+    r->ctl_drops++;
+    r->ctl_dropped_bytes += (uint32_t)len;
+    return 0;
+}
+
+int mk_txring_offer(MkTxRing *r, const void *data, size_t len, size_t reserve)
+{
+    /* 🔴 거절을 세지 않는다. 부른 쪽이 다음 바퀴에 같은 줄을 다시 준다 —
+     *    유실이 아니라 역압이다. 세면 정상 동작에서도 계수기가 계속 올라
+     *    "제어 유실 0" 이라는 신호가 아무 말도 못 하게 된다. */
+    return try_write(r, data, len, reserve);
 }
 
 size_t mk_txring_chunk(const MkTxRing *r, const uint8_t **out)
@@ -110,5 +147,11 @@ void mk_txring_consume(MkTxRing *r, size_t n)
 }
 
 uint16_t mk_txring_peak(const MkTxRing *r)          { return r->peak; }
+uint16_t mk_txring_cap(const MkTxRing *r)           { return r->cap; }
 uint32_t mk_txring_drops(const MkTxRing *r)         { return r->drops; }
 uint32_t mk_txring_dropped_bytes(const MkTxRing *r) { return r->dropped_bytes; }
+uint32_t mk_txring_ctl_drops(const MkTxRing *r)     { return r->ctl_drops; }
+uint32_t mk_txring_ctl_dropped_bytes(const MkTxRing *r)
+{
+    return r->ctl_dropped_bytes;
+}
