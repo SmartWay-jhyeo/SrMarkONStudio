@@ -983,3 +983,41 @@ def test_the_tab_strip_follows_that_order(app, form):
     assert [b.text() for b in page._tab_buttons] == [group_label(n)
                                                      for n in order]
     assert order[0] in TAB_PRIORITY
+
+
+def test_dashboard_shows_the_gnss_position(app):
+    """🔴 사용자 지적(2026-08-20): "모든 센서 데이터가 다 보여야 한다니까?"
+
+    상태만 만들고 화면에 안 꽂으면 사용자가 보는 것은 그대로다 — 이
+    시험이 보는 것은 배선이다. 좌표 문구 자체의 옳음은 Qt 없이
+    test_screen.py 가 본다.
+    """
+    from host.gui.qt.dashboard import Dashboard
+    from host.gui.screen import GnssState, ScreenState
+
+    d = Dashboard()
+    d.render(ScreenState(
+        reachable=True,
+        gnss=GnssState(seen=True, lat=37.3190694, lon=127.3405907,
+                       fix_t=1787193075000, t=1787193075120,
+                       alt=100.852, sats=20, fix=1,
+                       time_source="gnss_pps"),
+    ))
+    # 🔴 소수 7자리가 화면까지 살아 있어야 한다(규격 §7.8.2) — 4자리로
+    #    줄면 11 m 가 사라지는데 화면에는 아무 이상이 없어 보인다.
+    assert d._gnss._pos.text() == "37.3190694, 127.3405907"
+    assert "20" in d._gnss._quality.text()
+    # `t - fix_t` = 문장이 얼마나 늦게 도착했나 (규격 §7.8.3).
+    assert "120 ms" in d._gnss._detail.text()
+
+
+def test_dashboard_gnss_panel_stays_when_gnss_is_off(app):
+    """🔴 설계 원칙 3 — 안 꽂힌 것은 정상 상태다. 자리가 사라지면 사용자는
+    이 장비에 GNSS 가 있다는 것조차 화면에서 알 수 없다."""
+    from host.gui.qt.dashboard import Dashboard
+    from host.gui.screen import ScreenState
+
+    d = Dashboard()
+    d.render(ScreenState(reachable=True))
+    assert d._gnss._pos.text() == "위치 없음"
+    assert "꺼짐" in d._gnss._quality.text()

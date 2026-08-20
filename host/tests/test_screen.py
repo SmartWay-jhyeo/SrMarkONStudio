@@ -405,3 +405,110 @@ def test_build_screen_is_pure_enough_to_repeat():
     a = build_screen(base, **args)
     b = build_screen(base, **args)
     assert a == b
+
+
+# ---- GNSS 측위 구획 (규격 §7.8) ----------------------------------------------
+#
+# 🔴 사용자 지적(2026-08-20): "모든 센서 데이터가 다 보여야 한다니까?"
+#    RTK 위치는 이 장비의 가장 중요한 측정값인데 화면에 올릴 자리가 없었다.
+
+from host.gui.screen import GnssState, build_gnss, fix_label, gnss_position_text
+
+
+def _gnss_rec(**over):
+    rec = {"schema_ver": 3, "seq": 1, "t": 1787193075120, "type": "gnss",
+           "lat": 37.3190694, "lon": 127.3405907, "fix_t": 1787193075000,
+           "alt": 100.852, "sats": 20, "fix": 1,
+           "time_source": "gnss_pps"}
+    rec.update(over)
+    return rec
+
+
+def test_gnss_starts_empty_and_says_so():
+    """🔴 레코드가 한 번도 안 왔으면 `seen` 이 거짓이다 — 그것과 "fix 가
+    없다" 는 다른 사실이고, 화면이 둘을 구분해 말해야 한다."""
+    g = build_gnss([], reachable=True, history=StateHistory(), now_s=0.0)
+    assert g.seen is False
+    assert g.lat is None
+    assert gnss_position_text(g) == "위치 없음"
+
+
+def test_gnss_keeps_seven_decimals():
+    """🔴 화면에서 자릿수를 줄이면 사용자가 보는 값과 저장된 값이 갈린다.
+    4자리로 줄이면 그 차이가 11 m 다(규격 §7.8.2)."""
+    g = build_gnss([_gnss_rec()], reachable=True,
+                   history=StateHistory(), now_s=0.0)
+    assert g.lat == 37.3190694
+    assert gnss_position_text(g) == "37.3190694, 127.3405907"
+
+
+def test_gnss_carries_both_times_separately():
+    """🔴 `t` 와 `fix_t` 는 다른 것을 잰다(규격 §7.8.3) — 겹쳐 놓으면
+    문장이 늦어진 것인지 시간축이 어긋난 것인지 되물을 방법이 사라진다."""
+    g = build_gnss([_gnss_rec()], reachable=True,
+                   history=StateHistory(), now_s=0.0)
+    assert g.fix_t == 1787193075000
+    assert g.t == 1787193075120
+    assert g.t > g.fix_t
+
+
+def test_gnss_without_fix_shows_why_instead_of_going_blank():
+    """🔴 설계 원칙 4 — "모듈이 안 꽂혔다" 와 "하늘이 안 보인다" 를 화면이
+    구분해야 한다. 실기기 실내 관측(RMC 가 계속 `V`)이 그 경우였다."""
+    rec = _gnss_rec(lat=None, lon=None, fix_t=None, alt=None, sats=0, fix=0)
+    g = build_gnss([rec], reachable=True, history=StateHistory(), now_s=0.0)
+    assert g.seen is True
+    assert g.lat is None
+    assert g.fix == 0 and g.sats == 0
+
+
+def test_gnss_does_not_keep_showing_a_stale_position():
+    """🔴 fix 를 잃으면 마지막 위치를 계속 띄우지 않는다(규격 §7.8.4) —
+    차량이 마지막으로 하늘을 본 자리에 서 있는 것처럼 보인다."""
+    h = StateHistory()
+    g = build_gnss([_gnss_rec()], reachable=True, history=h, now_s=0.0)
+    assert g.lat is not None
+    lost = _gnss_rec(lat=None, lon=None, fix_t=None, fix=0)
+    g = build_gnss([lost], reachable=True, previous=g, history=h, now_s=1.0)
+    assert g.lat is None and g.lon is None
+
+
+def test_gnss_is_not_periodic_so_a_quiet_frame_keeps_the_value():
+    """🔴 1 Hz 인데 화면은 그보다 자주 갱신된다(규격 §7.8.6) — 레코드가 안
+    온 프레임에서 값을 지우면 화면이 계속 깜빡인다. `din` 과 같은 판단."""
+    h = StateHistory()
+    g = build_gnss([_gnss_rec()], reachable=True, history=h, now_s=0.0)
+    g = build_gnss([], reachable=True, previous=g, history=h, now_s=0.1)
+    assert g.lat == 37.3190694
+
+
+def test_gnss_clears_on_disconnect_but_remembers_it_was_seen():
+    """연결이 끊기면 지금 값은 지운다 — 마지막 위치를 계속 띄우면 그것이
+    지금 위치로 읽힌다(`build_channels` 와 같은 판단)."""
+    h = StateHistory()
+    g = build_gnss([_gnss_rec()], reachable=True, history=h, now_s=0.0)
+    g = build_gnss([], reachable=False, previous=g, history=h, now_s=5.0)
+    assert g.lat is None and g.sats is None
+    assert g.seen is True          # 과거의 사실은 남는다
+    assert g.fix_t == 1787193075000
+
+
+def test_fix_label_does_not_invent_names_for_unknown_codes():
+    """🔴 수신기마다 6~9 번대에 자기 정의를 둔다(규격 §7.8.5). "알 수 없음"
+    으로 뭉개면 무엇을 봤는지조차 사라진다."""
+    assert fix_label(4) == "RTK 고정"
+    assert fix_label(0) == "측위 없음"
+    assert fix_label(7) == "코드 7"
+    assert fix_label(None) == "—"
+
+
+def test_build_screen_includes_gnss():
+    """대시보드가 실제로 이 구획을 받는다 — 상태만 만들고 화면에 안 꽂으면
+    사용자가 보는 것은 그대로다."""
+    state = build_screen(
+        ScreenState(), identity=Identity(), mode="CONFIG", error=None,
+        rail_values={}, records=[_gnss_rec()], history=StateHistory(),
+        now_s=0.0,
+    )
+    assert isinstance(state.gnss, GnssState)
+    assert state.gnss.lat == 37.3190694

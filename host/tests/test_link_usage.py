@@ -170,6 +170,68 @@ def test_digital_input_is_an_event_not_a_zero(form):
     assert usage.unmeasured == (din.label,)
 
 
+# --------------------------------------------------------- GNSS (규격 §7.8)
+
+def test_gnss_costs_nothing_until_it_is_turned_on(form):
+    """🔴 꺼져 있으면 아무것도 안 나간다(규격 §7.8.4, 설계 원칙 3)."""
+    row = _row(compute_usage(form), "gnss")
+    assert row.bytes_per_s == 0.0
+    assert row.ratio == 0.0
+
+
+def test_turning_on_gnss_raises_the_total(form):
+    """🔴 사용자가 어제 요청한 화면이다 — **켜면 즉시 % 가 움직여야 한다.**
+
+    I2C 를 켜도 숫자가 꿈쩍 안 하던 문제(이 모듈이 생긴 이유)가 GNSS 에서
+    되풀이되면 안 된다.
+    """
+    before = compute_usage(form).bytes_per_s
+    form.edit("gnss.enabled", "true")
+    after = compute_usage(form)
+    assert after.bytes_per_s > before
+    assert _row(after, "gnss").bytes_per_s > 0
+
+
+def test_gnss_is_one_line_per_second_not_tx_period(form):
+    """🔴 `tx.period_ms` 가 아니라 모듈이 정하는 1 Hz 다(규격 §7.8.6).
+
+    송신 주기를 바꿔도 GNSS 줄 수는 그대로여야 한다 — 아니면 사용자가
+    주기를 줄일 때 있지도 않은 GNSS 트래픽이 화면에 나타난다.
+    """
+    form.edit("gnss.enabled", "true")
+    row = _row(compute_usage(form), "gnss")
+    assert row.lines_per_s == pytest.approx(1.0)
+
+    form.edit("tx.period_ms", "10")
+    assert _row(compute_usage(form), "gnss").lines_per_s == pytest.approx(1.0)
+
+
+def test_gnss_line_carries_the_locked_fields(form):
+    """🔴 `lat`·`lon`·`fix_t` 는 마스크 밖이라 마스크를 다 꺼도 남는다
+    (규격 §7.8.5). 빼고 재면 실제보다 짧게 잡혀, 여유가 있다고 말하는데
+    실제로는 없는 바로 그 실패가 된다."""
+    form.edit("tx.fields_gnss", "0")
+    line = record_line(form, "gnss")
+    assert "lat" in line and "lon" in line and "fix_t" in line
+
+
+def test_gnss_mask_is_independent_of_the_other_masks(form):
+    """🔴 마스크를 종류별로 나눈 이유. GNSS 를 비워도 `ain` 은 그대로다."""
+    form.edit("gnss.enabled", "true")
+    ain_before = _row(compute_usage(form), "ain").bytes_per_s
+    form.edit("tx.fields_gnss", "0")
+    after = compute_usage(form)
+    assert _row(after, "ain").bytes_per_s == ain_before
+    assert _row(after, "gnss").bytes_per_s < _row(after, "ain").bytes_per_s
+
+
+def test_gnss_field_names_only_lists_gnss_bits(form):
+    names = field_names(form, "gnss")
+    assert "alt" in names and "sats" in names and "fix" in names
+    # 다른 종류의 비트는 같은 표를 공유해도 여기 안 나온다.
+    assert "raw" not in names and "quantity" not in names
+
+
 # ------------------------------------------------------------------ 합계
 
 def test_nothing_enabled_is_zero_percent():
@@ -218,7 +280,7 @@ def test_the_message_says_what_to_reduce(form):
 
 # --------------------------------------------- 두 곳이 같은 숫자를 말한다
 
-@pytest.mark.parametrize("kind", ["ain", "i2c", "din"])
+@pytest.mark.parametrize("kind", ["ain", "i2c", "din", "gnss"])
 def test_the_summary_and_the_field_mask_card_agree(form, kind):
     """🔴 요약 표와 필드 마스크 카드가 다른 숫자를 말하면 안 된다.
 

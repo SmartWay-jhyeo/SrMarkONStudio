@@ -292,23 +292,45 @@ COL_ENABLED = "enabled"
 KEY_FIELD_MASK_AIN = "tx.fields_ain"
 KEY_FIELD_MASK_I2C = "tx.fields_i2c"
 KEY_FIELD_MASK_DIN = "tx.fields_din"
+#: 🔴 [신설, 2026-08-20] 네 번째. GNSS 측위 레코드(규격 §7.8)의 마스크.
+KEY_FIELD_MASK_GNSS = "tx.fields_gnss"
 KEY_PERIOD_MS = "tx.period_ms"
 KEY_FLOAT_DIGITS = "tx.float_digits"
+#: GNSS 를 켜고 끄는 항목(규격 §7.8.4 — 꺼져 있으면 아무것도 안 나간다).
+KEY_GNSS_ENABLED = "gnss.enabled"
 
-#: 레코드 종류 → 자기 마스크 설정 키. 화면이 카드를 셋으로 나눠 그릴 때
-#: 이 순서를 따른다(ain·i2c·din — 규격이 절을 나눈 순서와 같다).
+#: 레코드 종류 → 자기 마스크 설정 키. 화면이 카드를 넷으로 나눠 그릴 때
+#: 이 순서를 따른다(ain·i2c·din·gnss — 규격이 절을 나눈 순서와 같다).
 FIELD_MASK_KEYS: dict[str, str] = {
     "ain": KEY_FIELD_MASK_AIN,
     "i2c": KEY_FIELD_MASK_I2C,
     "din": KEY_FIELD_MASK_DIN,
+    "gnss": KEY_FIELD_MASK_GNSS,
 }
+
+#: GNSS 측위 레코드가 나가는 주기(규격 §7.8.6).
+#:
+#: 🔴 `tx.period_ms` 가 아니다. 모듈이 RMC 한 줄을 완성하는 것이 사건이고,
+#:    §4.1.1 의 초기화 명령이 `ONTIME 1` 이라 1 Hz 다. 여기를 `tx.period_ms`
+#:    로 두면 사용자가 송신 주기를 10 ms 로 줄일 때 있지도 않은 GNSS 트래픽
+#:    100 배가 화면에 나타난다.
+#:
+#: 🔴 사용자가 `$GNSS` 로 `LOG GPRMC ONTIME 0.1` 을 직접 걸면 실제 줄 수는
+#:    이보다 많아지고 화면의 사용량은 그만큼 낙관적이 된다. 보드는 모듈에
+#:    무엇을 명령했는지 기억하지 않으므로(규격 §4.1) 지어내지 않는다.
+GNSS_PERIOD_MS = 1000
 
 #: 레코드 종류 → 그 종류의 "채널 수" 를 셀 그룹. `din`(J18~J20)은 켜고 끄는
 #: 채널이 없다 — 남는 카탈로그 항목이 `sol.debounce_ms` 하나뿐이라
 #: `matrix_of` 가 표로 접지 못한다(반복 최소 3줄, MATRIX_MIN_ROWS). 그래서
 #: `din` 의 대역폭은 "채널 수 × 주기" 로 어림할 수 없다 — 애초에 이벤트성
 #: 레코드라(규격 §7.6) 지어내지 않는다(설계 원칙 3·4와 같은 결).
-RECORD_GROUPS: dict[str, str] = {"ain": "ain", "i2c": "i2c", "din": "sol"}
+#:
+#: 🔴 `gnss` 는 표로 접히는 그룹이 아니라 **항목 하나**(`gnss.enabled`)가
+#:    켜고 끈다 — J16 하나뿐이라 반복이 없다. `record_shape` 이 그 자리를
+#:    따로 다룬다.
+RECORD_GROUPS: dict[str, str] = {"ain": "ain", "i2c": "i2c", "din": "sol",
+                                 "gnss": "gnss"}
 
 #: 이 필드는 잠겨 있다 — 마스크 비트가 아예 없어 항상 실린다(규격 §7.1·
 #: §7.5·§7.6). 카드가 "잠김" 으로 보여 줄 항목들이다. `time_source`는
@@ -317,6 +339,10 @@ LOCKED_FIELDS: dict[str, tuple[str, ...]] = {
     "ain": ("time_source",),
     "i2c": ("time_source", "quantity", "value"),
     "din": ("time_source", "connector_id", "state"),
+    # 🔴 위치가 빠진 GNSS 레코드는 아무 말도 안 한다(규격 §7.8.5). `fix_t`
+    #    도 함께 잠근다 — "어디에" 만 있고 "언제" 가 없으면 주행 궤적을
+    #    되짚을 수 없다.
+    "gnss": ("time_source", "lat", "lon", "fix_t"),
 }
 
 #: 잠긴 필드의 사람이 읽는 이름표. 보드가 이 이름을 알려 주지 않는다 —
@@ -329,6 +355,9 @@ LOCKED_FIELD_LABELS: dict[str, str] = {
     "value": "측정값",
     "connector_id": "커넥터 번호",
     "state": "상태",
+    "lat": "위도",
+    "lon": "경도",
+    "fix_t": "측위 시각",
 }
 
 
@@ -382,6 +411,22 @@ def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
        펌웨어 mk_i2c.c), 종류를 안 고른 포트(`kind`=없음)는 켜도 아무것도
        안 낸다. 포트로 세면 앞은 절반으로, 뒤는 있지도 않은 트래픽으로 잡힌다.
     """
+    if kind == "gnss":
+        # 🔴 표로 접히지 않는다 — J16 하나뿐이라 반복이 없고, 켜고 끄는 것도
+        #    항목 하나(`gnss.enabled`)다. 그리고 **주기가 `tx.period_ms` 가
+        #    아니다**(규격 §7.8.6, `GNSS_PERIOD_MS` 주석).
+        on = False
+        try:
+            on = form.row(KEY_GNSS_ENABLED).value == "true"
+        except KeyError:
+            on = False                        # 옛 펌웨어 — GNSS 항목이 없다
+        return TelemetryShape(
+            channels=1 if on else 0,
+            period_ms=GNSS_PERIOD_MS,
+            float_digits=_int_or(form, KEY_FLOAT_DIGITS, 4, minimum=0),
+            labels=("J16",) if on else (),
+        )
+
     group_name = RECORD_GROUPS.get(kind, kind)
     enabled: list[tuple[int, str]] = []          # (번호, 커넥터 이름)
     for group in form.groups:

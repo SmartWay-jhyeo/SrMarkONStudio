@@ -492,9 +492,10 @@ def test_record_shape_din_has_no_channel_count():
     assert record_shape(f, "din").channels == 0
 
 
-def test_field_mask_keys_cover_all_three_record_kinds(form):
-    """🔴 [신규, 2026-08-19] 세 키 모두 카탈로그에 실제로 있어야 한다."""
-    assert set(FIELD_MASK_KEYS) == {"ain", "i2c", "din"}
+def test_field_mask_keys_cover_all_four_record_kinds(form):
+    """🔴 [신규, 2026-08-19 · 확장 2026-08-20] 네 키 모두 카탈로그에 실제로
+    있어야 한다. `gnss` 는 GNSS 측위 레코드(규격 §7.8)의 마스크다."""
+    assert set(FIELD_MASK_KEYS) == {"ain", "i2c", "din", "gnss"}
     for key in FIELD_MASK_KEYS.values():
         assert form.row(key) is not None
 
@@ -506,6 +507,9 @@ def test_locked_fields_are_defined_for_every_record_kind():
     assert LOCKED_FIELDS["ain"] == ("time_source",)
     assert set(LOCKED_FIELDS["i2c"]) == {"time_source", "quantity", "value"}
     assert set(LOCKED_FIELDS["din"]) == {"time_source", "connector_id", "state"}
+    # 🔴 [2026-08-20] gnss 는 lat·lon·fix_t (규격 §7.8.5) — 위치가 빠지면
+    #    레코드가 아무 말도 안 한다.
+    assert set(LOCKED_FIELDS["gnss"]) == {"time_source", "lat", "lon", "fix_t"}
 
 
 def test_telemetry_shape_reads_the_spec_named_keys(form):

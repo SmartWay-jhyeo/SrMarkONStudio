@@ -62,11 +62,12 @@ UNKNOWN_TEXT = "—"
 #: 켜진 것이 하나도 없는 줄.
 NONE_TEXT = "없음"
 
-#: 레코드 종류의 사람이 읽는 이름. 규격이 정한 세 종류다(§7.5·§7.6).
+#: 레코드 종류의 사람이 읽는 이름. 규격이 정한 네 종류다(§7.2·§7.5·§7.6·§7.8).
 KIND_LABELS: dict[str, str] = {
     "ain": "아날로그",
     "i2c": "I2C",
     "din": "디지털",
+    "gnss": "GNSS",
 }
 
 #: 초당 줄 수를 알 수 없는 종류 — 보드가 **일이 생길 때** 보낸다(규격 §7.6).
@@ -214,6 +215,11 @@ def _detail(kind: str, labels: tuple[str, ...], records: int) -> str:
     if not labels:
         return NONE_TEXT
     text = " ".join(labels)
+    if kind == "gnss":
+        # 🔴 이 줄의 주기는 `tx.period_ms` 가 아니라 모듈이 정한다(규격
+        #    §7.8.6). 표의 "주기" 칸만 보면 사용자가 그것을 tx 설정으로
+        #    오해하므로 어디서 온 수인지 여기서 말한다.
+        return f"{text} (모듈이 정하는 주기)"
     if kind == "i2c":
         # 🔴 포트 수와 레코드 수가 다르다 — 온습도는 포트 하나가 양을 둘
         #    낸다. 둘 다 보여 줘야 "포트 둘인데 왜 세 줄인가" 가 풀린다.

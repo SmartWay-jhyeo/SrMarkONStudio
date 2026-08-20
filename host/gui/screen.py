@@ -199,6 +199,9 @@ class ScreenState:
     sensors: tuple[SensorState, ...] = ()
     #: 디지털 입력 카드 J18~J20 (규격 §7.6). `DinState` 머리말 참조.
     dins: tuple[DinState, ...] = ()
+    #: GNSS 측위 구획 J16 (규격 §7.8). 카드 여럿이 아니라 하나인 이유는
+    #: `GnssState` 머리말 참조 — 위치는 값들이 한 덩어리로만 뜻이 있다.
+    gnss: "GnssState" = field(default_factory=lambda: GnssState())
 
     def channel(self, index: int) -> ChannelState | None:
         for ch in self.channels:
@@ -279,6 +282,8 @@ def build_screen(previous: ScreenState, *, identity: Identity, mode: str,
                               previous=previous.sensors, ports=i2c_ports),
         dins=build_dins(records, reachable=reachable,
                         previous=previous.dins, history=history, now_s=now),
+        gnss=build_gnss(records, reachable=reachable,
+                        previous=previous.gnss, history=history, now_s=now),
     )
 
 
@@ -737,3 +742,164 @@ def build_dins(records, *, reachable: bool,
         out.append(replace(d, state=state,
                            last_known=chip.last_known.text or ""))
     return tuple(out)
+
+
+# ---- GNSS 측위 (규격 §7.8) ---------------------------------------------------
+#
+# 🔴 왜 이 구획이 생겼나 (사용자 지적, 2026-08-20):
+#
+#     "왜 스트림에 GNSS는 안보이는데? 모든 센서 데이터가 다 보여야 한다니까?"
+#
+#    도로 표시 장비에서 **RTK 위치는 가장 중요한 측정값**이다. 그런데 규격에
+#    레코드 종류가 없어서(§7.7 의 `gnss_raw` 는 진단용 원문 에코다) 화면에
+#    올릴 것 자체가 없었다. §7.8 이 그것을 만들었고 여기가 그 화면 쪽이다.
+#
+# 🔴 아날로그·I2C 카드와 어법이 다르다. 저쪽은 "값 하나 + 흐름선" 인데
+#    위치는 **여러 값이 한 덩어리로만 뜻이 있다** — 위도만 있고 경도가
+#    없으면 아무 말도 안 되고, 위성 수·측위 품질은 그 위치를 믿어도 되는지를
+#    말하는 곁가지다. 그래서 카드 여럿이 아니라 구획 하나다.
+
+#: 측위 품질 코드 → 사람이 읽는 이름표 (규격 §7.8.5).
+#:
+#: 🔴 고정 어휘다 — `QUANTITY_LABELS`(§7.5.1)와 같은 성격이라 호스트가 알고
+#:    있어도 된다. 설정 항목이 아니라 프로토콜이 정한 값이다.
+FIX_LABELS: dict[int, str] = {
+    0: "측위 없음",
+    1: "단독 측위",
+    2: "DGPS",
+    4: "RTK 고정",
+    5: "RTK 부동",
+}
+
+
+def fix_label(fix: int | None) -> str:
+    """🔴 모르는 코드는 지어내지 않는다 — 숫자를 그대로 보여 준다.
+
+    수신기마다 6~9 번대에 자기 정의를 두므로(규격 §7.8.5 "그 밖은 수신기
+    정의"), 표에 없는 값을 "알 수 없음" 으로 뭉개면 무엇을 봤는지조차
+    사라진다.
+    """
+    if fix is None:
+        return "—"
+    return FIX_LABELS.get(fix, f"코드 {fix}")
+
+
+@dataclass(frozen=True)
+class GnssState:
+    """J16 의 지금 측위 (규격 §7.8).
+
+    🔴 `lat` 이 `None` 이면 **위치를 모른다**는 뜻이고, 그것은 고장이 아니다
+       (설계 원칙 3·4). 세 경우가 있다 — (1) `gnss.enabled` 가 꺼져 있어
+       레코드가 아예 안 온다, (2) 켜져 있는데 아직 fix 가 없다(레코드는
+       오고 `fix` 가 0 이다), (3) 연결이 끊겼다. `seen` 이 (1)과 나머지를
+       가르고, `fix` 가 (2)를 말한다.
+
+    🔴 fix 를 잃었다고 마지막 위치를 계속 띄우지 않는다. 보드가 이미 `null`
+       을 보내고(§7.8.4) 화면도 그것을 그대로 따른다 — 그러지 않으면 차량이
+       마지막으로 하늘을 본 자리에 서 있는 것처럼 보인다.
+    """
+
+    seen: bool = False
+    """측위 레코드를 한 번이라도 받았는가. 거짓이면 GNSS 가 꺼져 있거나
+    모듈이 아직 아무 말도 안 했다 — `$STAT` 의 `gnss.sentence_seen` 이
+    둘을 가른다."""
+
+    lat: float | None = None
+    lon: float | None = None
+    fix_t: int | None = None
+    """이 위치가 **측정된** 순간(UTC epoch_ms). `t`(보드가 줄을 확정한
+    시각)와 다른 것을 잰다 — 규격 §7.8.3."""
+
+    t: int | None = None
+    """보드가 이 줄을 확정한 시각. `fix_t` 와의 차이가 "문장이 얼마나 늦게
+    도착했나" 다."""
+
+    alt: float | None = None
+    sats: int | None = None
+    fix: int | None = None
+    hdop: float | None = None
+    speed: float | None = None
+    course: float | None = None
+    time_source: str = ""
+    last_known: str = ""
+    """연결이 끊긴 동안 곁들일 문구. `RailPill`·`DinState` 와 같은 어법."""
+
+
+def gnss_position_text(g: GnssState) -> str:
+    """위·경도를 한 줄로. 🔴 소수 7자리를 지킨다 (규격 §7.8.2).
+
+    화면에서 자릿수를 줄이면 사용자가 보는 값과 저장된 값이 달라진다 —
+    그리고 4자리로 줄이면 그 차이가 **11 m** 다.
+    """
+    if g.lat is None or g.lon is None:
+        return "위치 없음"
+    return f"{g.lat:.7f}, {g.lon:.7f}"
+
+
+def gnss_status_text(g: GnssState) -> str:
+    """왜 위치가 없는지(또는 있는지)를 한 줄로.
+
+    🔴 "없음" 만 띄우면 사용자는 배선을 뜯는다. 세 상태를 구분해 말한다 —
+       설계 원칙 3·4 그대로다.
+    """
+    if not g.seen:
+        return "GNSS 꺼짐 · 레코드 없음"
+    if g.lat is None:
+        sats = "—" if g.sats is None else str(g.sats)
+        return f"{fix_label(g.fix)} · 위성 {sats}"
+    sats = "—" if g.sats is None else str(g.sats)
+    return f"{fix_label(g.fix)} · 위성 {sats}"
+
+
+def build_gnss(records, *, reachable: bool,
+               previous: GnssState | None = None,
+               history: StateHistory, now_s: float) -> GnssState:
+    """`type` 이 `gnss` 인 레코드를 측위 구획으로 (규격 §7.8).
+
+    🔴 **주기 송신이 아니다**(§7.8.6) — `din` 과 같은 성격이라 "이번에 안
+       온 것은 그대로 둔다" 가 맞다. 1 Hz 인데 화면이 그보다 자주 갱신되면
+       매 프레임 절반은 비어 있게 된다.
+
+    🔴 연결이 끊기면 지금 값은 지운다. 마지막 위치를 계속 띄우면 그것이
+       지금 위치로 읽힌다 — `build_channels` 와 같은 판단이다.
+    """
+    state = previous if previous is not None else GnssState()
+
+    for rec in records or ():
+        if not isinstance(rec, dict) or rec.get("type") != "gnss":
+            continue
+
+        def num(name):
+            v = rec.get(name)
+            return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+        def integer(name):
+            v = rec.get(name)
+            return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+        state = replace(
+            state,
+            seen=True,
+            lat=num("lat"), lon=num("lon"),
+            fix_t=integer("fix_t"), t=integer("t"),
+            alt=num("alt"), sats=integer("sats"), fix=integer("fix"),
+            hdop=num("hdop"), speed=num("speed"), course=num("course"),
+            time_source=rec.get("time_source") or state.time_source,
+        )
+
+    # 🔴 `Level` 은 "위치를 알고 있나" 다. 측위 품질 코드를 등급으로 옮기지
+    #    않는다 — RTK 부동(5)이 단독(1)보다 정확한데 숫자는 더 크다.
+    known = reachable and state.lat is not None
+    verification = Verification.VERIFIED if known else Verification.UNKNOWN
+    level = Level.OK if known else Level.IDLE
+    chip = build_chip_state(history, "gnss.fix", "GNSS", level, verification,
+                            now_s)
+
+    if not reachable:
+        # 지금 값은 지우되 `seen`·`fix_t` 는 남긴다 — 과거의 사실이라
+        # 지금 모른다고 없던 일이 되지 않는다(`DinState.changed_at` 과 같은
+        # 이유).
+        state = replace(state, lat=None, lon=None, alt=None, sats=None,
+                        fix=None, hdop=None, speed=None, course=None)
+
+    return replace(state, last_known=chip.last_known.text or "")
