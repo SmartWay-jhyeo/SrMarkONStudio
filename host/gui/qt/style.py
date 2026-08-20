@@ -229,6 +229,32 @@ QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border: 2px solid {Color.PROBING};
 }}
 
+/* 🔴 콤보박스의 화살표 버튼 — 본체만 입히면 화살표가 Qt 기본(구식 회색
+   사각형)으로 남는다(사용자 지적 2026-08-20). 그림 파일 없이 테두리
+   삼각형 기법으로 그린다. */
+QComboBox::drop-down {{
+    border: none;
+    background: transparent;
+    width: 22px;
+}}
+QComboBox::down-arrow {{
+    image: none;
+    width: 0; height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {Color.INK_DIM};
+    margin-right: 6px;
+}}
+QComboBox::down-arrow:on {{ border-top-color: {Color.INK}; }}
+QComboBox QAbstractItemView {{
+    background: {Color.SURFACE};
+    border: 1px solid {Color.LINE};
+    border-radius: 4px;
+    selection-background-color: {Color.WELL};
+    selection-color: {Color.INK};
+    outline: none;
+}}
+
 /* 🔴 표 — 기본 Qt 표는 회색 격자에 옛날 헤더라 앱과 따로 논다(사용자
    피드백 2026-08-20 "디자인이 구리다"). 격자 대신 아래 실선 한 줄,
    납작한 헤더, 고정폭 숫자로 이 앱의 시각 언어에 맞춘다. */
