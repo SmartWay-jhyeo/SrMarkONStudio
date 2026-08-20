@@ -104,6 +104,9 @@ class StreamView(QWidget):
         self._type_label.setStyleSheet(
             f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
         )
+        # 🔴 타입이 11개라 한 줄로는 어떤 창에도 다 안 들어간다 — 잘리면
+        #    뒤쪽 타입(id·stat)은 있는 줄도 모른다. 줄바꿈으로 다 보인다.
+        self._type_label.setWordWrap(True)
         self._seq_label = QLabel("")
         self._bytes_label = QLabel("")
         self._since_label = QLabel("")
@@ -165,7 +168,15 @@ class StreamView(QWidget):
         analysis_scroll.setFrameShape(_QFrame.Shape.NoFrame)
         analysis_scroll.setSizePolicy(QSizePolicy.Policy.Ignored,
                                       QSizePolicy.Policy.Preferred)
-        analysis_scroll.setFixedHeight(110)
+        # 🔴 고정 높이(110)로 눌렀더니 타입이 늘자 내용이 잘린 채 그 안에서
+        #    스크롤됐다(사용자 보고 2026-08-20 — "이게 최소 사이즈야").
+        #    내용만큼 자라되 상한(200)을 넘을 때만 스크롤한다.
+        analysis_scroll.setMaximumHeight(200)
+
+        def _fit_analysis() -> None:
+            h = analysis_host.sizeHint().height() + 6
+            analysis_scroll.setMinimumHeight(min(h, 200))
+        self._fit_analysis = _fit_analysis
 
         # ---- 필터 · 조작 -------------------------------------------------
         # 🔴 트리 (사용자 요청 2026-08-20 — "일자로 쭉 늘어트리지 말고 트리
@@ -301,6 +312,7 @@ class StreamView(QWidget):
             "\n".join(format_interval(ci) for ci in summary.intervals)
             or "표본 없음"
         )
+        self._fit_analysis()
         self._gaps_label.setText(
             "\n".join(format_gap(g, now_s) for g in reversed(summary.recent_gaps))
             or "seq 누락 없음"
