@@ -9,7 +9,13 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from host.gui.theme import Color, Font, Space
+
+
+_ARROW_SVG = (Path(__file__).parent / "assets" / "arrow_down.svg"
+              ).as_posix()
 
 
 def stylesheet() -> str:
@@ -238,14 +244,13 @@ QComboBox::drop-down {{
     width: 22px;
 }}
 QComboBox::down-arrow {{
-    image: none;
-    width: 0; height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid {Color.INK_DIM};
+    /* 🔴 테두리 삼각형 기법은 이 Qt 에서 네모 얼룩으로 나온다(실물 확인
+       2026-08-20) — 진짜 그림(SVG 갈매기표)을 쓴다. 경로는 stylesheet()
+       가 실행 시점에 채운다. */
+    image: url("{_ARROW_SVG}");
+    width: 10px; height: 6px;
     margin-right: 6px;
 }}
-QComboBox::down-arrow:on {{ border-top-color: {Color.INK}; }}
 QComboBox QAbstractItemView {{
     background: {Color.SURFACE};
     border: 1px solid {Color.LINE};
