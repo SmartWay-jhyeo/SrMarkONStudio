@@ -1275,6 +1275,162 @@ static void test_gnss_raw_is_not_gated_by_tx_period(void)
     CHECK(found, "tx.period_ms 를 기다리지 않고 즉시 나간다");
 }
 
+/* ---- GNSS 측위 레코드 (규격 §7.8) ---------------------------------------
+ *
+ * 🔴 문장은 실기기가 낸 것 그대로다(UM981, 2026-08-20). 지어낸 좌표로
+ *    시험하면 도-분 변환이 틀려도 그럴듯한 숫자가 나와 통과한다. */
+
+#define TELEM_REAL_GGA "$GNGGA,023115.00,3719.14416560,N,12720.43544199,E,1,20,1.2,100.8517,M,23.8989,M,,*70\r\n"
+#define TELEM_REAL_RMC "$GNRMC,023115.00,A,3719.14416560,N,12720.43544199,E,0.139,208.1,200826,8.6,W,A,C*5E\r\n"
+
+static const char *find_type(const char *type)
+{
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], type)) { return LINES[k]; }
+    }
+    return NULL;
+}
+
+static void test_gnss_record_carries_the_real_fix(void)
+{
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    feed_gnss_line(&G, TELEM_REAL_GGA);
+    feed_gnss_line(&G, TELEM_REAL_RMC);
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    const char *line = find_type("\"type\":\"gnss\"");
+    CHECK(line != NULL, "gnss 레코드가 나간다");
+    if (line == NULL) { return; }
+
+    /* 🔴 소수 7자리 고정. tx.float_digits(기본 4)를 따르면 위치 분해능이
+     *    약 11 m 가 되고, 화면에는 아무 이상이 없어 보인다(규격 §7.8.2). */
+    CHECK_HAS(line, "\"lat\":37.3190694", "위도가 십진도 7자리로 실린다");
+    CHECK_HAS(line, "\"lon\":127.3405907", "경도가 십진도 7자리로 실린다");
+    CHECK_HAS(line, "\"fix_t\":1787193075000", "fix_t 는 문장이 말하는 UTC");
+    CHECK_HAS(line, "\"alt\":100.852", "고도(기본 켜짐)");
+    CHECK_HAS(line, "\"sats\":20", "위성 수(기본 켜짐)");
+    CHECK_HAS(line, "\"fix\":1", "측위 품질(기본 켜짐)");
+    CHECK(strstr(line, "\"hdop\"") == NULL, "HDOP 는 기본 꺼짐");
+    CHECK(strstr(line, "\"speed\"") == NULL, "속도는 기본 꺼짐");
+    CHECK(strstr(line, "\"course\"") == NULL, "방위는 기본 꺼짐");
+    CHECK_HAS(line, "\"time_source\":\"device_clock\"",
+              "time_source 는 마스크로 못 끈다");
+}
+
+static void test_gnss_optional_fields_follow_their_own_mask(void)
+{
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    /* 비트 13·14·15 = hdop·speed·course (mk_cfgtable.c FIELDS) */
+    set_u32("tx.fields_gnss", (1u << 13) | (1u << 14) | (1u << 15));
+    feed_gnss_line(&G, TELEM_REAL_GGA);
+    feed_gnss_line(&G, TELEM_REAL_RMC);
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    const char *line = find_type("\"type\":\"gnss\"");
+    CHECK(line != NULL, "레코드가 나갔다");
+    if (line == NULL) { return; }
+    CHECK_HAS(line, "\"hdop\":1.20", "HDOP 를 켜면 실린다");
+    /* 0.139 kn x 1852 / 3600 = 0.0715 m/s — 노트가 아니라 m/s 다 */
+    CHECK_HAS(line, "\"speed\":0.072", "속도는 m/s 로 변환돼 실린다");
+    CHECK_HAS(line, "\"course\":208.10", "방위");
+    CHECK(strstr(line, "\"alt\"") == NULL, "끈 필드는 안 실린다");
+    /* 🔴 lat·lon·fix_t 는 마스크 밖이라 마스크를 다 꺼도 남는다. */
+    CHECK_HAS(line, "\"lat\":37.3190694", "위도는 마스크로 못 끈다");
+    CHECK_HAS(line, "\"fix_t\":", "fix_t 도 마스크로 못 끈다");
+}
+
+static void test_gnss_mask_is_independent_of_the_others(void)
+{
+    /* 🔴 마스크를 종류별로 나눈 이유가 이것이다(규격 §7.2 개정) — GNSS 를
+     *    가볍게 하려다 아날로그의 raw 가 사라지면 안 되고, 그 반대도 안 된다. */
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    set_u32("tx.fields_gnss", 0u);
+    feed_gnss_line(&G, TELEM_REAL_GGA);
+    feed_gnss_line(&G, TELEM_REAL_RMC);
+    set_last(0, 1000, 2415918);
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    const char *g = find_type("\"type\":\"gnss\"");
+    const char *a = find_type("\"type\":\"ain\"");
+    CHECK(g != NULL && strstr(g, "\"alt\"") == NULL,
+          "gnss 마스크를 비우면 gnss 의 선택 필드가 사라진다");
+    CHECK(a != NULL && strstr(a, "\"raw\":") != NULL,
+          "그래도 ain 의 raw 는 그대로다");
+}
+
+static void test_gnss_record_is_not_gated_by_tx_period(void)
+{
+    /* 🔴 din·gnss_raw 와 같은 성격 — RMC 한 줄이 완성되는 것이 사건이다
+     *    (규격 §7.8.6). */
+    setup();
+    set_u32("tx.period_ms", 10000u);
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    feed_gnss_line(&G, TELEM_REAL_GGA);
+    feed_gnss_line(&G, TELEM_REAL_RMC);
+
+    mk_telem_tick(&T, 10, sink, NULL);   /* 주기가 한참 남았다 */
+
+    CHECK(find_type("\"type\":\"gnss\"") != NULL,
+          "tx.period_ms 를 기다리지 않고 즉시 나간다");
+}
+
+static void test_gnss_record_does_not_need_echo(void)
+{
+    /* 🔴 `gnss.echo`(기본 꺼짐)는 §7.7 의 진단 에코를 켜는 스위치다.
+     *    측정값인 이 레코드는 그것과 무관하게 나간다 — 안 그러면
+     *    "모든 센서 데이터가 보여야 한다"가 다시 깨진다. */
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    feed_gnss_line(&G, TELEM_REAL_GGA);
+    feed_gnss_line(&G, TELEM_REAL_RMC);
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK(find_type("\"type\":\"gnss\"") != NULL,
+          "gnss.echo 가 꺼져 있어도 측위 레코드는 나간다");
+    CHECK(find_type("\"type\":\"gnss_raw\"") == NULL,
+          "그리고 원시 에코는 여전히 안 나간다");
+}
+
+static void test_gnss_record_without_fix_says_null_not_a_stale_position(void)
+{
+    /* 🔴 규격 §7.8.4 — 마지막으로 알던 위치를 다시 싣지 않는다. */
+    setup();
+    static MkGnss G;
+    mk_gnss_init(&G);
+    mk_telem_attach_gnss(&T, &G);
+    feed_gnss_line(&G, TELEM_REAL_GGA);
+    feed_gnss_line(&G, TELEM_REAL_RMC);
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK(find_type("\"lat\":37.3190694") != NULL, "먼저 fix 를 한 번 잡는다");
+
+    N = 0;                       /* 모은 줄만 비운다 — 파서 상태는 그대로 */
+    feed_gnss_line(&G, "$GNRMC,023116.00,V,,,,,,,200826,,,N*6A\r\n");
+    mk_telem_tick(&T, 200, sink, NULL);
+
+    const char *line = find_type("\"type\":\"gnss\"");
+    CHECK(line != NULL, "fix 를 잃어도 레코드는 계속 나간다");
+    if (line == NULL) { return; }
+    CHECK_HAS(line, "\"lat\":null", "위도는 null — 옛 위치를 다시 싣지 않는다");
+    CHECK_HAS(line, "\"lon\":null", "경도도 null");
+}
+
 /* ---- 카탈로그 덤프 ------------------------------------------------------ */
 
 static void emit_samples(void)
@@ -1434,6 +1590,12 @@ int main(int argc, char **argv)
     test_gnss_raw_is_sent_even_on_checksum_failure();
     test_gnss_raw_time_source_field_cannot_be_masked_off();
     test_gnss_raw_is_not_gated_by_tx_period();
+    test_gnss_record_carries_the_real_fix();
+    test_gnss_optional_fields_follow_their_own_mask();
+    test_gnss_mask_is_independent_of_the_others();
+    test_gnss_record_is_not_gated_by_tx_period();
+    test_gnss_record_does_not_need_echo();
+    test_gnss_record_without_fix_says_null_not_a_stale_position();
 
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;

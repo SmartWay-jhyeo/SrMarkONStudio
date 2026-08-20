@@ -274,6 +274,90 @@ static int build_gnss_raw_record(MkTelem *t, const char *line, int64_t now_ms,
     return mk_json_end(&j);
 }
 
+/* gnss 레코드 조립(규격 §7.8). **필드 순서는 시뮬레이터 build_gnss_record 와
+ * 같게** 둔다 (`schema_ver` `seq` `t` `type` `lat` `lon` `fix_t` `alt`
+ * `sats` `fix` `hdop` `speed` `course` `device_id` `time_source`
+ * `time_quality`). */
+static int build_gnss_record(MkTelem *t, const MkGnssFix *f, int64_t now_ms,
+                             char *out, size_t cap)
+{
+    uint32_t mask = cfg_u32(t->cfg, "tx.fields_gnss", 0u);
+    const uint8_t kind = MK_FIELD_GNSS;
+
+    MkJson j;
+    mk_json_begin(&j, out, cap);
+    mk_json_u32(&j, "schema_ver", 3u);
+    mk_json_u32(&j, "seq", t->seq);
+    /* 🔴 `t` 는 §7.1 의 뜻 그대로다 — 보드가 이 줄을 확정한 시각을 시간축
+     *    으로 변환한 값이고, 등급이 device_clock 이면 부팅 후 경과 ms 다.
+     *    **문장이 들고 온 UTC 를 여기 넣지 않는다** — 그러면 `t` 의 뜻이
+     *    레코드 종류마다 갈리고, 그 각주는 언젠가 빠진다(규격 §7.8.3).
+     *    측위 시각은 측정값이므로 본문의 `fix_t` 로 간다. */
+    mk_json_i64(&j, "t", acquired_epoch_ms(t, now_ms));
+    mk_json_str(&j, "type", "gnss");
+
+    /* 🔴 lat·lon·fix_t 는 마스크로 끌 수 없다 (규격 §7.8.5) — 위치가 빠진
+     *    GNSS 레코드는 아무 말도 안 한다. 값이 없을 때는 null 이다:
+     *    마지막으로 알던 위치를 다시 싣지 않는다(규격 §7.8.4) — 그러면
+     *    화면에서 차량이 마지막으로 하늘을 본 자리에 서 있게 된다.
+     *
+     * 🔴 자릿수 7 은 고정이다. `tx.float_digits`(기본 4)를 따르면 위치
+     *    분해능이 약 11 m 가 되고, 화면에는 소수점이 그럴듯하게 붙어 있어
+     *    아무도 눈치채지 못한다(규격 §7.8.2). 그리고 mk_json_f32 가 아니라
+     *    mk_json_fixed 를 쓴다 — float 은 유효숫자가 약 7자리라
+     *    `127.3405907`(10자리)을 담지 못한다. */
+    if (f->have_pos) {
+        mk_json_fixed(&j, "lat", f->lat_1e7, 7);
+        mk_json_fixed(&j, "lon", f->lon_1e7, 7);
+    } else {
+        mk_json_null(&j, "lat");
+        mk_json_null(&j, "lon");
+    }
+    if (f->have_epoch) {
+        mk_json_i64(&j, "fix_t", f->epoch_ms);
+    } else {
+        mk_json_null(&j, "fix_t");
+    }
+
+    if (field_on(t, mask, "alt", kind)) {
+        if (f->have_alt) {
+            mk_json_fixed(&j, "alt", f->alt_mm, 3);
+        } else {
+            mk_json_null(&j, "alt");
+        }
+    }
+    if (field_on(t, mask, "sats", kind)) {
+        if (f->have_sats) { mk_json_u32(&j, "sats", f->sats); }
+        else              { mk_json_null(&j, "sats"); }
+    }
+    if (field_on(t, mask, "fix", kind)) {
+        if (f->have_fix) { mk_json_u32(&j, "fix", f->fix_quality); }
+        else             { mk_json_null(&j, "fix"); }
+    }
+    if (field_on(t, mask, "hdop", kind)) {
+        if (f->have_hdop) { mk_json_fixed(&j, "hdop", f->hdop_1e2, 2); }
+        else              { mk_json_null(&j, "hdop"); }
+    }
+    if (field_on(t, mask, "speed", kind)) {
+        if (f->have_speed) { mk_json_fixed(&j, "speed", f->speed_mm_s, 3); }
+        else               { mk_json_null(&j, "speed"); }
+    }
+    if (field_on(t, mask, "course", kind)) {
+        if (f->have_course) { mk_json_fixed(&j, "course", f->course_1e2, 2); }
+        else                { mk_json_null(&j, "course"); }
+    }
+
+    if (field_on(t, mask, "device_id", kind)) {
+        mk_json_str(&j, "device_id", t->device_id ? t->device_id : "");
+    }
+    /* 🔴 time_source 는 마스크로 못 끈다 — ain 의 build_record 와 같은 근거. */
+    mk_json_str(&j, "time_source", time_source_of(t));
+    if (field_on(t, mask, "time_quality", kind)) {
+        mk_json_u32(&j, "time_quality", time_quality_of(t));
+    }
+    return mk_json_end(&j);
+}
+
 /* i2c 레코드 조립. **필드 순서는 시뮬레이터 build_i2c_record 와 같게** 둔다
  * (`schema_ver` `seq` `t` `type` `connector_id` `quantity` `value` `status`
  *  `device_id` `time_source` `time_quality`). */
@@ -432,6 +516,33 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
         }
     }
 
+    /* 🔴 gnss(측위, 규격 §7.8)도 din 과 같은 성격이다 — RMC 한 줄이
+     *    완성되는 것이 사건이라 `tx.period_ms` 를 기다리지 않는다. 모듈이
+     *    1 Hz 로 내므로(§4.1.1 의 `ONTIME 1`) 한 틱에 0~1 줄이고, 상한에
+     *    걸릴 일은 없다.
+     *
+     *    🔴 `gnss.echo` 같은 스위치를 두지 않는다. 이것은 진단 에코가 아니라
+     *    **측정값**이고, 위치는 이 장비에서 가장 중요한 측정값이다 —
+     *    ain·i2c 를 켜고 끄는 스위치가 채널 설정이지 "레코드를 낼까" 가
+     *    아닌 것과 같다. 대역은 1 Hz 라 100 B/s 남짓이다.
+     *
+     *    붙어 있지 않으면(1단계 빌드) 아무것도 안 낸다. */
+    int sent_gnss_fix = 0;
+    if (t->gnss != NULL) {
+        MkGnssFix fix;
+        while (sent_gnss_fix < MK_TELEM_MAX_LINES &&
+               mk_gnss_take_fix(t->gnss, &fix)) {
+            char body[MK_LINE_MAX + 8];
+            t->seq++;
+            int len = build_gnss_record(t, &fix, now_ms, body, sizeof body);
+            if (len <= 0 || (size_t)len + 2u > sizeof body) { continue; }
+            body[len] = '\n';
+            body[len + 1] = '\0';
+            emit(ctx, body, (size_t)len + 1u);
+            sent_gnss_fix++;
+        }
+    }
+
     /* 🔴 gnss_raw 도 din 과 같은 성격이다 — 사건(줄 완성)이 이벤트라
      *    `tx.period_ms` 를 기다리지 않는다(규격 §7.7). `gnss.echo` 가
      *    꺼져 있으면(기본값) 큐를 비우지 않는다 — mk_gnss.c 의 원시
@@ -466,7 +577,7 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
         period = 1u;
     }
     if (now_ms - t->last_ms < (int64_t)period) {
-        return sent_din + sent_gnss;
+        return sent_din + sent_gnss + sent_gnss_fix;
     }
     t->last_ms = now_ms;
 
@@ -600,5 +711,5 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
         }
     }
 
-    return sent + sent_i2c + sent_din + sent_gnss;
+    return sent + sent_i2c + sent_din + sent_gnss + sent_gnss_fix;
 }
