@@ -307,63 +307,81 @@ def test_save_writes_the_buffer_as_ndjson(app, tmp_path):
 
 # ------------------------------------------------------------ 도착 간격 분포
 
-def test_interval_label_shows_arrival_and_board_for_each_channel(app):
+def _table_cells(table):
+    """표 내용을 [[칸...], ...] 로 — 새 '자세히' 표 검증용 (2026-08-20)."""
+    return [[(table.item(r, c).text() if table.item(r, c) else "")
+             for c in range(table.columnCount())]
+            for r in range(table.rowCount())]
+
+
+def test_detail_table_has_one_row_per_channel_with_both_intervals(app):
+    """🔴 "자세히" 는 진짜 표다 (사용자 피드백 — 단어가 아니라 구조).
+    열마다 한 가지 값: 항목·초당·누적·측정 간격·도착 간격·비고."""
     state = StreamState()
     for i in range(3):
         state.ingest([_ain_line(i)], now_s=i * 0.1)
-
     view = StreamView()
+    view._detail_btn.click()                 # 펼쳐야 표가 채워진다
     view.render(state, now_s=0.3)
 
-    text = view._interval_label.text()
-    assert "ain" in text
-    assert "도착" in text
-    assert "보드" in text
+    cells = _table_cells(view._detail_table)
+    ain = next(r for r in cells if r[0].startswith("ain"))
+    assert ain[1] != ""                      # 초당
+    assert "ms" in ain[3]                    # 측정 간격
+    assert "ms" in ain[4]                    # 도착 간격
 
 
-def test_interval_label_updates_as_more_channels_appear(app):
+def test_detail_table_grows_as_more_types_appear(app):
     state = StreamState()
     state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
-
     view = StreamView()
+    view._detail_btn.click()
     view.render(state, now_s=0.0)
-    text = view._interval_label.text()
-    assert "ain" in text
-    assert "i2c" in text
+    names = [r[0].split(" ")[0].split("/")[0] for r in _table_cells(view._detail_table)]
+    assert any(n.startswith("ain") for n in names)
+    assert any(n.startswith("i2c") for n in names)
 
 
-# --------------------------------------------------------------- seq 누락 위치
-
-def test_gaps_label_shows_recent_missing_ranges(app):
+def test_gap_table_shows_recent_missing_ranges(app):
     state = StreamState()
     state.ingest([_ain_line(1)], now_s=0.0)
     state.ingest([_ain_line(5)], now_s=0.5)          # 2,3,4 누락
-
     view = StreamView()
+    view._detail_btn.click()
     view.render(state, now_s=1.0)
+    assert view._gaps_table.isVisible() or view._gaps_table.rowCount() > 0
+    cells = _table_cells(view._gaps_table)
+    joined = " ".join(" ".join(r) for r in cells)
+    assert "2" in joined and "4" in joined
 
-    text = view._gaps_label.text()
-    assert "2" in text and "4" in text
 
-
-def test_gaps_label_says_none_when_nothing_is_missing(app):
+def test_gap_table_is_hidden_when_nothing_is_missing(app):
     state = StreamState()
     state.ingest([_ain_line(1)], now_s=0.0)
-
     view = StreamView()
+    view._detail_btn.click()
     view.render(state, now_s=0.0)
-    assert view._gaps_label.text() != ""
+    assert view._gaps_table.isHidden()
 
 
-# ------------------------------------------------------------- 초당 줄 수 흐름
-
-def test_spark_label_shows_a_non_empty_string_once_data_arrives(app):
+def test_footer_shows_totals_and_sparkline(app):
     state = StreamState()
     state.ingest([_ain_line(1)], now_s=0.0)
-
     view = StreamView()
+    view._detail_btn.click()
     view.render(state, now_s=0.0)
-    assert view._spark_label.text().strip() != ""
+    text = view._footer_label.text()
+    assert "합계" in text and "총" in text and text.strip() != ""
+
+
+def test_collapsed_detail_is_not_updated(app):
+    """🔴 접혀 있으면 표를 안 만진다 — 초당 100줄에서 안 보이는 표를
+    갱신하는 것은 멈춤 사고(트리 건수 전례)와 같은 부류의 낭비다."""
+    state = StreamState()
+    state.ingest([_ain_line(1)], now_s=0.0)
+    view = StreamView()
+    view.render(state, now_s=0.0)            # 접힌 채 렌더
+    assert view._detail_table.rowCount() == 0
 
 
 # ----------------------------------------------------------------- 커넥터 필터

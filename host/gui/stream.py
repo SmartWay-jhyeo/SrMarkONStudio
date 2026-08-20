@@ -463,6 +463,78 @@ class StreamSummary:
     rate_sparkline: str = ""
 
 
+def detail_rows(summary: "StreamSummary",
+                names: dict[int, str] | None = None,
+                ) -> tuple[tuple[str, str, str, str, str, str], ...]:
+    """"자세히" 표의 행들 — (항목, 초당, 누적, 측정 간격, 도착 간격, 비고).
+
+    🔴 표의 요점은 **구조**다 (사용자 피드백 2026-08-20 — "단어가 아니라
+       구조와 형식이 문제"). 예전에는 타입별 초당이 한 줄에 이어 붙고,
+       간격 분석이 고정폭 텍스트로 열 흉내만 내고, 놓친 구간이 따로
+       떠 있었다 — 만든 사람도 못 읽었다. 열마다 한 가지 값만 담고,
+       한 타입에 커넥터가 여럿이면 들여쓴 하위 행으로 갈라 담는다.
+    """
+    names = names or {}
+
+    def conn_label(c: int) -> str:
+        n = names.get(c, "")
+        return f"{n} (J{c})" if n else f"J{c}"
+
+    by_type: dict[str, list[ChannelIntervals]] = {}
+    for ci in summary.intervals:
+        by_type.setdefault(ci.type, []).append(ci)
+
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for ts in sorted(summary.types, key=lambda x: type_sort_key(x.type)):
+        ivs = by_type.get(ts.type, [])
+        rate = f"{ts.rate_per_s:.1f}" if ts.rate_per_s else "—"
+        total = f"{ts.count_total:,}"
+        if len(ivs) <= 1:
+            ci = ivs[0] if ivs else None
+            name = ts.type
+            if ci is not None and ci.connector is not None:
+                name = f"{ts.type} · {conn_label(ci.connector)}"
+            rows.append((
+                name, rate, total,
+                _fmt_stats(ci.board) if ci else _BLANK,
+                _fmt_stats(ci.arrival) if ci else _BLANK,
+                f"반복 {ci.repeat_count}" if ci and ci.repeat_count else "",
+            ))
+        else:
+            # 커넥터 여럿 — 타입 줄(합계) 아래 들여쓴 하위 행.
+            rows.append((ts.type, rate, total, "", "", ""))
+            for ci in sorted(ivs, key=lambda x: (x.connector is None,
+                                                 x.connector or 0)):
+                nm = ("  " + conn_label(ci.connector)
+                      if ci.connector is not None else "  (공통)")
+                rows.append((
+                    nm, "", "",
+                    _fmt_stats(ci.board), _fmt_stats(ci.arrival),
+                    f"반복 {ci.repeat_count}" if ci.repeat_count else "",
+                ))
+    return tuple(rows)
+
+
+def gap_rows(summary: "StreamSummary", now_s: float,
+             ) -> tuple[tuple[str, str, str], ...]:
+    """놓친 구간 표 — (언제, 몇 줄, 일련번호 범위). 없으면 빈 튜플이고
+    표 자체를 숨긴다 — 첫 줄 요약의 "놓친 줄 없음" 이 그 역할을 한다."""
+    out = []
+    for g in reversed(summary.recent_gaps):
+        span = (f"seq {g.seq_lo}" if g.seq_lo == g.seq_hi
+                else f"seq {g.seq_lo}~{g.seq_hi}")
+        out.append((f"{now_s - g.arrived_s:.0f}초 전",
+                    f"{g.count}줄", span))
+    return tuple(out)
+
+
+def detail_footer(summary: "StreamSummary") -> str:
+    """표 아래 총계 한 줄."""
+    rate = sum(t.rate_per_s for t in summary.types)
+    return (f"합계 초당 {rate:.0f}줄 · {summary.bytes_per_s:,.0f} B/s"
+            f" · 총 {summary.total_lines:,}줄 · 흐름 {summary.rate_sparkline}")
+
+
 def plain_summary(summary: "StreamSummary") -> tuple[str, str, Level]:
     """누구나 읽는 한 줄 요약 (사용자 요청 2026-08-20 — "통계를 알기 쉽게").
 

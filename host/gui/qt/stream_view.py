@@ -50,6 +50,8 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -67,10 +69,11 @@ from host.gui.stream import (
     type_sort_key,
     connector_label,
     filter_note,
-    format_gap,
     format_header,
-    format_interval,
+    detail_footer,
+    detail_rows,
     format_row,
+    gap_rows,
     plain_summary,
     staleness_level,
 )
@@ -115,92 +118,16 @@ class StreamView(QWidget):
         self._detail_btn.setCheckable(True)
         self._detail_btn.clicked.connect(self._on_detail_toggled)
 
-        self._type_label = QLabel("")
-        self._type_label.setStyleSheet(
-            f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
-        )
-        # 🔴 타입이 11개라 한 줄로는 어떤 창에도 다 안 들어간다 — 잘리면
-        #    뒤쪽 타입(id·stat)은 있는 줄도 모른다. 줄바꿈으로 다 보인다.
-        self._type_label.setWordWrap(True)
-        self._seq_label = QLabel("")
-        self._bytes_label = QLabel("")
+        #: 마지막 수신 시각 — plain 요약 옆에 계속 쓰는 유일한 생존자다.
         self._since_label = QLabel("")
         self._since_label.setStyleSheet(f"font-weight: 700; color: {Color.INK_DIM};")
-        #: 초당 줄 수의 최근 흐름 — 문자 스파크라인(`host/gui/stream.py`
-        #: `_rate_sparkline` 머리말: 그래프 라이브러리를 새로 안 쓰는
-        #: 이유가 거기 있다).
-        self._spark_label = QLabel("")
-        self._spark_label.setStyleSheet(
-            f"font-family: {Font.MONO}; font-size: {Font.SIZE_MD}pt;"
-            f" color: {Color.INK_DIM};"
-        )
 
-        summary_row = QHBoxLayout()
-        summary_row.setSpacing(Space.LG)
-        summary_row.addWidget(self._seq_label)
-        summary_row.addWidget(self._bytes_label)
-        summary_row.addWidget(self._since_label)
-        summary_row.addWidget(self._spark_label)
-        summary_row.addStretch(1)
-
-        # ---- 간격 분석 -------------------------------------------------
-        #
-        # 🔴 HANDOFF.md §3 미해결 문제("표본 간격 202ms")를 갈라 보는 곳.
-        #    도착과 보드 간격을 나란히 찍는 이유는 `format_interval` 의
-        #    머리말과 같다 — 판정은 전부 `stream.py` 에서 끝났고 여기는
-        #    그 문자열을 그대로 라벨에 앉히기만 한다.
-        self._interval_label = QLabel("")
-        self._interval_label.setStyleSheet(
-            f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
-            f" color: {Color.INK};"
-        )
-
-        #: 최근 seq 누락 구간. 총계(`_seq_label`)는 위에 이미 있다 — 여기는
-        #: "어디서" 를 보여준다.
-        self._gaps_label = QLabel("")
-        self._gaps_label.setStyleSheet(
-            f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
-            f" color: {Color.INK_DIM};"
-        )
-
-        analysis_row = QHBoxLayout()
-        analysis_row.setSpacing(Space.LG)
-        analysis_row.addWidget(self._interval_label, 2)
-        analysis_row.addWidget(self._gaps_label, 1)
-        # 🔴 넓은 내용은 **제 상자 안에서만** 스크롤한다 (사용자 제안
-        #    2026-08-20 — "텍스트 박스에 전부 넣을 필요 없이 스크롤만 따로").
-        #    이 라벨들은 데이터가 글 길이를 정해서, 그냥 두면 최소폭이
-        #    QStackedWidget 을 타고 대시보드를 창 밖으로 민다 — 오늘 세 번
-        #    재발한 병의 마지막 뿌리다. 콘솔이 제 가로 스크롤을 갖는 것과
-        #    같은 꼴로, 여기도 제 스크롤을 갖는다. 페이지 폭과는 절연된다.
-        from PyQt6.QtWidgets import QScrollArea as _QScrollArea
-        from PyQt6.QtWidgets import QFrame as _QFrame
-        analysis_host = QWidget()
-        analysis_host.setLayout(analysis_row)
-        analysis_scroll = _QScrollArea()
-        analysis_scroll.setWidget(analysis_host)
-        analysis_scroll.setWidgetResizable(True)
-        analysis_scroll.setFrameShape(_QFrame.Shape.NoFrame)
-        analysis_scroll.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                      QSizePolicy.Policy.Preferred)
-        # 🔴 고정 높이(110)로 눌렀더니 타입이 늘자 내용이 잘린 채 그 안에서
-        #    스크롤됐다(사용자 보고 2026-08-20 — "이게 최소 사이즈야").
-        #    내용만큼 자라되 상한(200)을 넘을 때만 스크롤한다.
-        analysis_scroll.setMaximumHeight(200)
-
-        def _fit_analysis() -> None:
-            h = analysis_host.sizeHint().height() + 6
-            analysis_scroll.setMinimumHeight(min(h, 200))
-        self._fit_analysis = _fit_analysis
-
-        # ---- 필터 · 조작 -------------------------------------------------
-        # 🔴 트리 (사용자 요청 2026-08-20 — "일자로 쭉 늘어트리지 말고 트리
-        #    구조로"). 커넥터는 정확히 한 타입에 속하므로(TYPE_FAMILIES)
-        #    "타입 아래에 커넥터" 가 자연스럽고, 납작한 칩 두 줄이 요구하던
-        #    가로 폭 문제도 세로로 풀린다 — 트리는 제 스크롤을 가진다.
+        # ---- 필터 트리 --------------------------------------------------
+        # 🔴 트리 (사용자 요청 2026-08-20 — 납작한 칩 두 줄 대신). 커넥터는
+        #    정확히 한 타입에 속하므로(TYPE_FAMILIES) 부모-자식이 자연스럽다.
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
-        self._tree.setMinimumHeight(160)   # 고정하지 않는다 — 남는 세로의 제 몫을 받는다
+        self._tree.setMinimumHeight(160)   # 고정하지 않는다 — 제 몫을 받는다
         self._tree.itemChanged.connect(self._on_tree_changed)
         #: itemChanged 를 프로그램이 낸 것인지 사람이 낸 것인지 가른다.
         self._tree_updating = False
@@ -290,14 +217,55 @@ class StreamView(QWidget):
         plain_row = QHBoxLayout()
         plain_row.addWidget(self._plain_detail)
         plain_row.addStretch(1)
+        plain_row.addWidget(self._since_label)
         plain_row.addWidget(self._detail_btn)
         col.addLayout(plain_row)
+        # 🔴 "자세히" 는 진짜 표다 (사용자 피드백 2026-08-20 — "단어가 아니라
+        #    구조가 문제"). 예전에는 타입별 초당이 한 줄에 이어 붙고 간격
+        #    분석이 고정폭 텍스트로 열 흉내만 냈다 — 만든 사람도 못 읽었다.
+        #    열마다 한 가지 값, 숫자는 오른쪽 정렬, 행 데이터는 stream.py
+        #    (detail_rows)가 만든다.
+        self._detail_table = QTableWidget(0, 6)
+        self._detail_table.setHorizontalHeaderLabels(
+            ["항목", "초당", "누적", "측정 간격", "도착 간격", "비고"])
+        hdr = self._detail_table.horizontalHeaderItem
+        hdr(3).setToolTip("보드가 찍은 획득 시각의 간격 (최소~중앙~최대). "
+                          "이것이 고르면 수집은 정상이다.")
+        hdr(4).setToolTip("PC 에 도착한 시각의 간격. 측정 간격은 고른데 "
+                          "이것만 출렁이면 전송 지연이다.")
+        self._detail_table.verticalHeader().setVisible(False)
+        self._detail_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
+        self._detail_table.setSelectionMode(
+            QTableWidget.SelectionMode.NoSelection)
+        self._detail_table.setMaximumHeight(240)
+        from PyQt6.QtWidgets import QHeaderView
+        self._detail_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+
+        self._gaps_title = QLabel("놓친 구간")
+        self._gaps_title.setObjectName("dim")
+        self._gaps_table = QTableWidget(0, 3)
+        self._gaps_table.setHorizontalHeaderLabels(["언제", "몇 줄", "일련번호"])
+        self._gaps_table.verticalHeader().setVisible(False)
+        self._gaps_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
+        self._gaps_table.setSelectionMode(
+            QTableWidget.SelectionMode.NoSelection)
+        self._gaps_table.setMaximumHeight(120)
+
+        self._footer_label = QLabel("")
+        self._footer_label.setObjectName("dim")
+        self._footer_label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                         QSizePolicy.Policy.Preferred)
+
         detail_col = QVBoxLayout()
         detail_col.setSpacing(Space.SM)
         detail_col.setContentsMargins(0, 0, 0, 0)
-        detail_col.addWidget(self._type_label)
-        detail_col.addLayout(summary_row)
-        detail_col.addWidget(analysis_scroll)
+        detail_col.addWidget(self._detail_table)
+        detail_col.addWidget(self._gaps_title)
+        detail_col.addWidget(self._gaps_table)
+        detail_col.addWidget(self._footer_label)
         self._detail_host = QWidget()
         self._detail_host.setLayout(detail_col)
         self._detail_host.setVisible(False)
@@ -322,6 +290,24 @@ class StreamView(QWidget):
         page.addWidget(filters_host)
         page.addWidget(canvas, 1)
 
+    @staticmethod
+    def _fill_table(table, rows) -> None:
+        """행 수를 맞추고, 글자가 다른 칸만 갱신한다. 숫자 열은 오른쪽 정렬."""
+        from PyQt6.QtCore import Qt as _Qt
+        table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, text in enumerate(row):
+                it = table.item(r, c)
+                if it is None:
+                    it = QTableWidgetItem()
+                    if c != 0:
+                        it.setTextAlignment(
+                            int(_Qt.AlignmentFlag.AlignRight
+                                | _Qt.AlignmentFlag.AlignVCenter))
+                    table.setItem(r, c, it)
+                if it.text() != text:
+                    it.setText(text)
+
     def _on_detail_toggled(self, on: bool) -> None:
         self._detail_host.setVisible(on)
         self._detail_btn.setText("자세히 ▾" if on else "자세히 ▸")
@@ -333,12 +319,6 @@ class StreamView(QWidget):
         self._ensure_tree_items(state)
 
         summary = state.summary(now_s)
-        self._type_label.setText(
-            "   ".join(
-                f"{t.type} {t.rate_per_s:.1f}/s (누적 {t.count_total})"
-                for t in summary.types
-            ) or "수신된 줄 없음"
-        )
         head, detail, lvl = plain_summary(summary)
         self._plain_head.setText(head)
         self._plain_head.setStyleSheet(
@@ -347,12 +327,6 @@ class StreamView(QWidget):
                else (f" color: {Color.PROBING};" if lvl is Level.WARN else ""))
         )
         self._plain_detail.setText(detail)
-        self._seq_label.setText(f"seq 누락 {summary.seq_missing}")
-        self._bytes_label.setText(
-            f"{summary.bytes_per_s:.0f} B/s · 총 {summary.total_lines}줄 "
-            f"/ {summary.total_bytes}B"
-        )
-
         level = staleness_level(summary.since_last_s)
         # 🔴 `Verification.VERIFIED` 를 강제로 넘긴다 — chip_style 은
         #    "확인 여부" 와 "심각도" 를 함께 보는데, 여기 있는 심각도
@@ -370,19 +344,22 @@ class StreamView(QWidget):
         self._pause_btn.setChecked(state.paused)
         self._pause_btn.setText("재생" if state.paused else "일시정지")
 
-        # 🔴 판정은 전부 `StreamState.summary()` 안에서 끝났다(간격 창·
-        #    seq 구간·스파크라인 버킷 모두 고정 크기라 여기서도 상수
-        #    비용이다) — 여기는 그 결과를 라벨 텍스트로 앉히기만 한다.
-        self._interval_label.setText(
-            "\n".join(format_interval(ci) for ci in summary.intervals)
-            or "표본 없음"
-        )
-        self._fit_analysis()
-        self._gaps_label.setText(
-            "\n".join(format_gap(g, now_s) for g in reversed(summary.recent_gaps))
-            or "seq 누락 없음"
-        )
-        self._spark_label.setText(summary.rate_sparkline)
+        # 🔴 판정·행 구성은 전부 stream.py(detail_rows 계열)에서 끝났다 —
+        #    여기는 그 문자열을 표 칸에 앉히기만 한다. 🔴 표를 다시 만들지
+        #    않는다: 행 수를 맞추고 글자가 다를 때만 setItem 한다 — 트리
+        #    건수 갱신이 전체 다시 그리기를 유발해 멈췄던 전례와 같은
+        #    부류의 비용을 여기서도 막는다. 접혀 있으면 아예 안 만진다.
+        #    (isVisible 이 아니라 버튼 상태를 본다 — 창이 아직 안 떠 있어도
+        #    "펼침" 은 사용자의 뜻이고, 오프스크린 시험도 그 뜻으로 돈다.)
+        if self._detail_btn.isChecked():
+            self._fill_table(self._detail_table,
+                             detail_rows(summary, state.connector_names))
+            gaps = gap_rows(summary, now_s)
+            self._gaps_title.setVisible(bool(gaps))
+            self._gaps_table.setVisible(bool(gaps))
+            if gaps:
+                self._fill_table(self._gaps_table, gaps)
+            self._footer_label.setText(detail_footer(summary))
         self._refresh_tree_labels(state)
 
         rows = state.visible_rows()
