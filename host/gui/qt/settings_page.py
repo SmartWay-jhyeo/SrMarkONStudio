@@ -12,13 +12,15 @@
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, QSize, Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -54,6 +56,108 @@ from host.gui.theme import Color, Space
 #: 폼 한 줄이 차지할 최대 폭. 🔴 예전에는 사유 칸이 stretch 라 창을 넓힐수록
 #: 오른쪽이 비었다 — 1130 px 캔버스에서 700 px 가 빈 채였다.
 FORM_WIDTH = 620
+
+#: 탭 차례에서 앞자리를 받는 그룹들. 🔴 **여기 없는 그룹은 카탈로그가 준
+#: 순서 그대로 뒤에 붙는다**(`ordered_groups`) — 보드가 그룹을 늘리거나
+#: 이름을 바꿔도 화면은 그것을 잃지 않는다. 순서를 이름으로 박아 두는 것과
+#: 다르다: 여기 적힌 것은 "사람이 자주 여는 곳" 이라는 사용 빈도이지
+#: 카탈로그의 구조가 아니다.
+#:
+#: 🔴 카탈로그 순서를 그대로 따르면 `ain`·`i2c` 가 맨 끝이었다 — 가장 많이
+#:    쓰는 둘이 화면 밖으로 밀려나 "설정이 없어졌다" 는 말이 나왔다.
+TAB_PRIORITY: tuple[str, ...] = ("ain", "i2c")
+
+
+def ordered_groups(groups: list):
+    """탭에 늘어놓을 차례. 알려진 것이 앞, 나머지는 카탈로그 순서 그대로.
+
+    🔴 `sorted` 는 안정 정렬이라 같은 등급 안에서는 들어온 순서가 그대로
+       남는다 — 모르는 그룹의 상대 순서를 화면이 지어내지 않는다.
+    """
+    rank = {name: i for i, name in enumerate(TAB_PRIORITY)}
+    return sorted(groups, key=lambda g: rank.get(g.name, len(rank)))
+
+
+class FlowLayout(QLayout):
+    """줄이 넘치면 다음 줄로 넘기는 배치. 탭 이름표 줄에 쓴다.
+
+    🔴 **왜 필요한가.** 예전에는 탭이 `QHBoxLayout` 한 줄이었다. 그룹이
+       열한 개로 늘자 창 너비를 넘었고, Qt 는 버튼을 최소 폭(약 50 px)까지
+       눌러 이름표를 `아날...` 로 잘랐다. 뒤쪽이던 `i2c`·`ain` 이 그렇게
+       읽을 수 없게 됐고, 사용자에게는 **없어진 것**으로 보였다.
+
+    🔴 가로 스크롤이 아니라 줄바꿈을 고른 이유: 스크롤은 "닿을 수는 있다"
+       일 뿐이고, 사용자가 스크롤 막대를 발견해야 한다. 설정 탭은 **한눈에
+       다 보여야** 무엇을 고를 수 있는지 알 수 있는 물건이다. 줄바꿈은
+       그룹이 몇 개로 늘어도 최소 폭이 버튼 하나 폭에 묶여 있어(아래
+       `minimumSize`) 화면이 창보다 넓어지는 일이 다시 생기지 않는다.
+
+    Qt 예제의 FlowLayout 과 같은 구조다. `heightForWidth` 로 필요한 줄 수를
+    알려 주므로 바깥 세로 배치가 자리를 알맞게 내어 준다.
+    """
+
+    def __init__(self, parent: QWidget | None = None, *,
+                 spacing: int = Space.XS) -> None:
+        super().__init__(parent)
+        self._items: list = []
+        self._space = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    # ---- QLayout 계약 ------------------------------------------------
+    def addItem(self, item) -> None:          # noqa: N802 (Qt 이름)
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, i: int):                 # noqa: N802
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i: int):                 # noqa: N802
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):            # noqa: N802
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self) -> bool:      # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:   # noqa: N802
+        return self._arrange(QRect(0, 0, width, 0), place=False)
+
+    def setGeometry(self, rect) -> None:      # noqa: N802
+        super().setGeometry(rect)
+        self._arrange(rect, place=True)
+
+    def sizeHint(self) -> QSize:              # noqa: N802
+        return self.minimumSize()
+
+    def minimumSize(self) -> QSize:           # noqa: N802
+        """🔴 가장 넓은 버튼 하나면 된다 — 개수와 무관하다. 이 한 줄이
+        "그룹이 늘어도 설정 화면이 창보다 넓어지지 않는다" 를 보장한다."""
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        return size
+
+    def _arrange(self, rect: QRect, *, place: bool) -> int:
+        """왼쪽에서 채우다 폭을 넘으면 다음 줄로. 필요한 높이를 돌려준다."""
+        x, y, line_h = rect.x(), rect.y(), 0
+        for item in self._items:
+            hint = item.sizeHint()
+            nxt = x + hint.width() + self._space
+            if nxt - self._space > rect.right() + 1 and line_h > 0:
+                x = rect.x()
+                y += line_h + self._space
+                nxt = x + hint.width() + self._space
+                line_h = 0
+            if place:
+                # 🔴 `sizeHint` 그대로 놓는다 — 눌러 담지 않는다. 눌리는
+                #    순간 이름표가 잘리고, 그것이 이 배치가 생긴 이유다.
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = nxt
+            line_h = max(line_h, hint.height())
+        return y + line_h - rect.y()
 
 
 class SettingsPage(QWidget):
@@ -101,9 +205,19 @@ class SettingsPage(QWidget):
         # 🔴 그룹마다 자기 화면을 준다. 45 개 항목을 한 두루마리에 이어
         #    붙이면 무엇이 어디 있는지 알 수 없고, 스크롤 위치가 곧 문맥이
         #    되어 버린다. 탭으로 나누면 한 번에 한 가지만 본다.
-        self._tabs = QHBoxLayout()
-        self._tabs.setSpacing(Space.XS)
-        self._tabs.setContentsMargins(0, 0, 0, 0)
+        #
+        # 🔴 한 줄(`QHBoxLayout`)이 아니라 **줄바꿈**이다. 그룹이 열한 개로
+        #    늘자 한 줄에 안 들어가 뒤쪽(`i2c`·`ain`)이 눌려 이름표가 잘렸고,
+        #    사용자는 그것을 "설정이 없어졌다" 로 읽었다. 근거는 `FlowLayout`
+        #    머리말에 있다.
+        self._tab_host = QWidget()
+        self._tabs = FlowLayout(self._tab_host)
+        policy = self._tab_host.sizePolicy()
+        # 🔴 없으면 바깥 세로 배치가 줄바꿈으로 늘어난 높이를 안 내어 줘
+        #    두 번째 줄부터 잘린다.
+        policy.setHeightForWidth(True)
+        policy.setVerticalPolicy(QSizePolicy.Policy.Minimum)
+        self._tab_host.setSizePolicy(policy)
         self._tab_buttons: list[QPushButton] = []
 
         self._pages = QStackedWidget()
@@ -150,7 +264,7 @@ class SettingsPage(QWidget):
         col = QVBoxLayout(self)
         col.setContentsMargins(Space.LG, Space.MD, Space.LG, Space.LG)
         col.setSpacing(Space.SM)
-        col.addLayout(self._tabs)
+        col.addWidget(self._tab_host)
         col.addWidget(hairline())
         col.addWidget(self._pages, 1)
         col.addLayout(bar)
@@ -179,11 +293,12 @@ class SettingsPage(QWidget):
             self._pages.removeWidget(widget)
             widget.deleteLater()
 
-        for group in form.groups:
+        # 🔴 탭과 화면을 **같은 순서**로 만든다. 두 반복문으로 나누면
+        #    언젠가 한쪽만 정렬돼 탭을 눌렀을 때 엉뚱한 화면이 열린다.
+        for group in ordered_groups(form.groups):
             self._pages.addWidget(self._page_for(group))
             self._tabs.addWidget(self._tab_button(group_label(group.name)))
 
-        self._tabs.addStretch(1)
         # 되돌리기·초기화로 다시 그릴 때 보던 탭에 머문다 — 화면이 제멋대로
         # 첫 탭으로 튀면 방금 무엇을 고쳤는지 잃어버린다.
         self.select_tab(keep if 0 <= keep < self._pages.count() else 0)

@@ -867,3 +867,119 @@ def test_the_mask_card_follows_the_link_speed(app, form):
     fast = card._budget.text()
 
     assert slow != fast
+
+
+# ------------------------------------------------------------------ 그룹 탭
+#
+# 🔴 회귀 시험. 그룹이 열한 개로 늘자 탭이 한 줄 `QHBoxLayout` 에 다 안 들어가
+#    뒤쪽(`i2c`·`ain`)이 눌러 찌그러졌고, 사용자는 "아날로그·I2C 설정이 없다"
+#    고 봤다. 없어진 것이 아니라 닿을 수가 없었다.
+
+def _form_with_groups(names) -> SettingsForm:
+    """그룹 이름만 다른 카탈로그를 만든다 — 개수를 마음대로 늘려 보기 위해."""
+    from host.core.config_schema import ConfigItem, ConfigSchema
+
+    items = {}
+    for name in names:
+        key = f"{name}.value"
+        items[key] = ConfigItem(key=key, group=name, vtype="u16",
+                                default=1, current=1, minimum=0, maximum=100,
+                                label=f"{name} 값")
+    return SettingsForm(ConfigSchema(items=items, _group_order=list(names)))
+
+
+def _laid_out(app, page, width=1130, height=700):
+    """실제 창 크기 안에 넣고 배치를 확정시킨다 (오프스크린)."""
+    from PyQt6.QtWidgets import QVBoxLayout, QWidget
+
+    box = QWidget()
+    box.setFixedSize(width, height)
+    lay = QVBoxLayout(box)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.addWidget(page)
+    box.show()
+    app.processEvents()
+    return box
+
+
+def test_twenty_groups_all_get_a_tab_that_can_be_opened(app):
+    """🔴 지금 열한 개에서만 되는 것으로는 같은 일이 또 난다."""
+    names = [f"grp{i:02d}" for i in range(20)]
+    page = SettingsPage()
+    page.set_form(_form_with_groups(names))
+
+    assert len(page._tab_buttons) == len(names)
+    for i in range(len(names)):
+        page.select_tab(i)
+        assert page._pages.currentIndex() == i
+
+
+def test_a_tab_name_is_never_squeezed_until_it_is_unreadable(app):
+    """🔴 되돌림 검사 — 탭을 한 줄 `QHBoxLayout` 으로 되돌리면 깨진다.
+
+    한 줄에 밀어 넣으면 Qt 가 버튼을 최소 폭(약 50 px)까지 눌러 이름표를
+    `아날...` 로 잘라 버린다. 목록에는 있는데 무엇인지 읽을 수 없으니,
+    사용자에게는 없는 것과 같다.
+    """
+    page = SettingsPage()
+    page.set_form(_form_with_groups([f"그룹이름{i:02d}" for i in range(20)]))
+    box = _laid_out(app, page)
+
+    squeezed = [b.text() for b in page._tab_buttons
+                if b.width() < b.sizeHint().width()]
+    assert not squeezed, f"이름표가 잘린 탭: {squeezed}"
+    assert box.width() == 1130
+
+
+def test_more_groups_do_not_make_the_screen_demand_more_width(app):
+    """🔴 이것이 회귀의 정체다 — 탭 줄의 최소 폭이 그룹 수에 비례해 자라면
+    설정 화면 전체가 창보다 넓어지고, 넘친 만큼이 잘려 나간다."""
+    few = SettingsPage()
+    few.set_form(_form_with_groups([f"grp{i:02d}" for i in range(3)]))
+    many = SettingsPage()
+    many.set_form(_form_with_groups([f"grp{i:02d}" for i in range(20)]))
+
+    assert many.minimumSizeHint().width() <= few.minimumSizeHint().width()
+
+
+# ------------------------------------------------------------- 탭 순서
+
+def test_frequently_used_groups_come_first(app):
+    """🔴 카탈로그 순서를 그대로 따르면 가장 많이 쓰는 `ain`·`i2c` 가 맨
+    끝이다. 규칙은 **알려진 것을 앞으로, 모르는 것은 원래 순서대로 뒤에** 다.
+    """
+    from host.gui.qt.settings_page import TAB_PRIORITY, ordered_groups
+
+    # 🔴 비면 아래가 조용히 통과한다 — 우선순위를 지우는 것도 회귀다.
+    assert TAB_PRIORITY, "앞자리를 받는 그룹이 하나도 없다"
+    names = ["zeta", "alpha"] + list(TAB_PRIORITY)
+    groups = _form_with_groups(names).groups
+    got = [g.name for g in ordered_groups(groups)]
+
+    assert got[:len(TAB_PRIORITY)] == list(TAB_PRIORITY)
+    assert got[len(TAB_PRIORITY):] == ["zeta", "alpha"]
+
+
+def test_groups_nobody_knows_keep_the_catalog_order(app):
+    """🔴 보드가 그룹을 늘리거나 이름을 바꿔도 화면이 순서를 지어내지
+    않는다 — 모르는 그룹은 보드가 보낸 차례 그대로다."""
+    from host.gui.qt.settings_page import ordered_groups
+
+    names = ["quux", "bravo", "zulu", "alfa"]
+    got = [g.name for g in ordered_groups(_form_with_groups(names).groups)]
+    assert got == names
+
+
+def test_the_tab_strip_follows_that_order(app, form):
+    """실제 카탈로그에서도 화면이 그 순서로 그려지는가 — 함수만 맞고 화면이
+    안 따르면 아무 소용이 없다."""
+    from host.gui.qt.settings_page import TAB_PRIORITY, ordered_groups
+    from host.gui.settings_form import group_label
+
+    page = SettingsPage()
+    page.set_form(form)
+    order = [g.name for g in ordered_groups(form.groups)]
+
+    assert [b.text() for b in page._tab_buttons] == [group_label(n)
+                                                     for n in order]
+    assert order[0] in TAB_PRIORITY
