@@ -798,6 +798,23 @@ def test_the_simulator_does_not_invent_lcd_recovery_numbers():
         assert lcd[key] == 0, f"{key} 를 지어냈다"
 
 
+def test_the_simulator_says_it_has_no_send_ring():
+    """🔴 `tx` 는 **null** 이다 — 0 을 지어내지 않는다 (규격 §7.4).
+
+    시뮬레이터에는 송신 링이 없다. 소켓이 알아서 버퍼링하고 한 줄도 안
+    버리기 때문이다. 0 을 채우면 진단 화면이 "링이 있는데 한 번도 안 찼다"
+    로 말하게 되는데, 그것은 거짓 안심이다 — `clock` 의 null 과 같은 결.
+
+    그래도 **키는 있어야** 한다. 없으면 실기기 응답과 모양이 달라지고,
+    그 차이는 GUI 가 시뮬레이터에서만 도는 원인이 된다.
+    """
+    rec = parse_record(
+        next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert "tx" in rec
+    assert rec["tx"] is None
+
+
 # ----------------------- $STAT 의 clock (규격 §7.4) -------------------------
 #
 # 🔴 클럭 출처는 진단 정보가 아니라 **시간축 신뢰도의 일부**다.
