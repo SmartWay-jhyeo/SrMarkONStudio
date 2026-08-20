@@ -664,8 +664,8 @@ def test_connector_filter_leaves_connectorless_rows_alone():
        것이라 커넥터 필터의 대상이 아니다 — 타입 필터로만 걸러진다.
     """
     st = StreamState()
-    st.feed('{"schema_ver":3,"seq":1,"t":5,"type":"ain","connector_id":3,"value":1.0}', 0.0)
-    st.feed('{"schema_ver":3,"seq":2,"t":6,"type":"gnss","lat":37.1,"lon":127.1}', 0.0)
+    st.ingest(['{"schema_ver":3,"seq":1,"t":5,"type":"ain","connector_id":3,"value":1.0}',
+               '{"schema_ver":3,"seq":2,"t":6,"type":"gnss","lat":37.1,"lon":127.1}'], 0.0)
     # J3 를 뺀 나머지만 켠 상태 (사용자가 J3 하나를 껐다)
     st.set_connector_filter({4, 5, 6})
     types = [r.type for r in st.visible_rows()]
