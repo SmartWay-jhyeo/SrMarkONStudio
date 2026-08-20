@@ -23,7 +23,7 @@ PLAN = [
     ("i2c13.addr",    "92",     "0x5C"),
     ("i2c13.enabled", "true",   ""),
     ("gnss.enabled",  "true",   "UM981"),
-    ("gnss.echo",     "true",   "모듈 원문을 호스트로 — 진단용"),
+    ("gnss.echo",     "false",  "원문 에코 끔 — gnss 정식 레코드가 있고, 안 읽는 구간의 브리지 버퍼 압력을 줄인다"),
     ("lcd.enabled",   "true",   "J25 ILI9488 화면"),
     ("ain0.name",     "유압",     "커넥터 이름 — 대시보드·스트림에 보인다"),
     ("i2c12.name",    "적외온도", ""),
