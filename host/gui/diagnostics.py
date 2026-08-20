@@ -717,6 +717,111 @@ def _link_group(stat: dict | None) -> Group:
     return Group("link", "호스트 링크", (baud_r, pending_r, rev_r))
 
 
+# --------------------------------------------------------------- 송신 링
+
+#: 이 수위를 넘으면 버린 줄이 0 이어도 경고다 (링 용량 대비).
+#:
+#: 🔴 90 % 로 잡는다. 링은 한 줄을 통째로 담을 자리가 없으면 그 줄을
+#:    버리는데, 가장 긴 줄이 $STAT(최악 1.7 KB)이라 8 KB 링에서 남은 10 %
+#:    (819 B)로는 이미 못 담는다. 즉 90 % 는 "곧 버린다" 가 아니라 "이미
+#:    어떤 줄은 못 들어간다" 는 뜻이다.
+TX_PEAK_WARN_RATIO = 0.9
+
+
+def _tx_group(stat: dict | None) -> Group:
+    """규격 §7.4 — 보드가 만든 줄이 전선으로 나가기 전에 서는 줄.
+
+    🔴 이 묶음이 생긴 계기 (실기기 2026-08-20).
+
+       송신을 링버퍼+DMA 로 바꾼 뒤 `$CFG,LIST` 응답(103줄 ≈ 25 KB)이
+       4,096 B 링을 넘겨 **43줄만 도착했다.** 호스트는 "cfg_end 가 없다"
+       로 카탈로그를 통째로 거부했고, 설정 폼이 안 만들어지니 레일 표시도
+       틀리고 토글도 안 먹었다. 사용자가 본 것은 "분명히 켜져있는데
+       안켜졌다고 GUI에서 나와" 였다.
+
+       링의 계수기가 화면에 없어서 **GDB 로 `p 'mk_uart.c'::s_tx` 를 해서야**
+       원인을 알았다. PPS 때(`pps_raw_count`)와 똑같은 실수를 두 번 한
+       셈이고, 그래서 여기 둔다.
+
+    🔴 `drops` 와 `ctl_drops` 를 **같은 칸에 뭉치지 않는다.** 텔레메트리
+       유실은 "설정이 링크 용량을 넘었다" 는 흔한 상태이고 호스트가 seq
+       구멍으로도 안다. 제어 유실은 사고다 — 명령 응답의 seq 는 항상 0
+       이라(규격 §5.2) 이 수 말고는 알 방법이 없다.
+    """
+    tx = _sub(stat, "tx")
+    if tx is None:
+        # `tx` 가 없거나 null 이다. 링이 없는 장치(시뮬레이터)와 구형
+        # 펌웨어가 여기로 온다 — 어느 쪽이든 **모름**이지 0 이 아니다.
+        return Group("tx", "송신 링", (
+            _unknown("tx.ctl_drops", "명령 응답 유실",
+                     "이 장치는 송신 링을 답하지 않는다. 시뮬레이터에는 링이 "
+                     "없고(소켓이 버퍼링한다), 구형 빌드는 이 필드를 안 보낸다"),
+            _unknown("tx.drops", "텔레메트리 유실"),
+            _unknown("tx.peak", "최고 수위"),
+        ))
+
+    ctl_drops = _int(tx, "ctl_drops")
+    drops = _int(tx, "drops")
+    peak = _int(tx, "peak")
+    cap = _int(tx, "cap")
+
+    if ctl_drops is None:
+        ctl_r = _unknown("tx.ctl_drops", "명령 응답 유실")
+    elif ctl_drops == 0:
+        ctl_r = Reading(
+            "tx.ctl_drops", "명령 응답 유실", "없음",
+            "명령 응답·오류·하트비트가 한 줄도 안 버려졌다 — 보낸 명령의 "
+            "답은 전부 전선에 나갔다",
+            Level.OK, Verification.VERIFIED)
+    else:
+        # 🔴 경고다. 텔레메트리 유실과 급이 다르다 — 그 줄은 seq 구멍으로
+        #    드러나지만 이쪽은 아무 데도 안 남는다.
+        lost = _int(tx, "ctl_dropped_bytes")
+        ctl_r = Reading(
+            "tx.ctl_drops", "명령 응답 유실", _count(ctl_drops, "줄"),
+            "🔴 보드가 만든 명령 응답이 전선에 못 나갔다 — 호스트는 그 명령이 "
+            "먹혔는지 영영 모른다. 카탈로그라면 한 줄만 잃어도 설정 화면이 "
+            "통째로 안 만들어진다(규격 §7.3). 텔레메트리를 줄여 링에 자리를 "
+            "내거나 링크 속도를 올린다"
+            + (f" (잃은 바이트 {lost:,})" if lost else ""),
+            Level.FAULT, Verification.VERIFIED)
+
+    if drops is None:
+        drops_r = _unknown("tx.drops", "텔레메트리 유실")
+    elif drops == 0:
+        drops_r = Reading(
+            "tx.drops", "텔레메트리 유실", "없음",
+            "만든 줄이 전부 전선에 나갔다 — 링크가 수집 속도를 따라오고 있다",
+            Level.OK, Verification.VERIFIED)
+    else:
+        lost = _int(tx, "dropped_bytes")
+        drops_r = Reading(
+            "tx.drops", "텔레메트리 유실", _count(drops, "줄"),
+            "링이 차서 텔레메트리를 버렸다 — 그 줄의 `seq` 가 비므로 호스트도 "
+            "알아챈다(규격 §7.1). 만드는 양이 링크 용량을 넘은 것이니, "
+            "필드 마스크를 줄이거나 주기를 늦추거나 속도를 올린다"
+            + (f" (잃은 바이트 {lost:,})" if lost else ""),
+            Level.WARN, Verification.VERIFIED)
+
+    if peak is None or not cap:
+        peak_r = _unknown("tx.peak", "최고 수위")
+    else:
+        ratio = peak / cap
+        # 🔴 버린 줄이 0 이어도 수위가 링에 붙어 있으면 다음번엔 버린다.
+        #    그 사실은 지나간 뒤에는 어디에도 안 남는다(규격 §7.4).
+        brim = ratio >= TX_PEAK_WARN_RATIO
+        peak_r = Reading(
+            "tx.peak", "최고 수위",
+            f"{peak:,} / {cap:,} 바이트 ({ratio * 100:.0f} %)",
+            ("🔴 여태 링이 거의 다 찬 적이 있다. 버린 줄이 아직 0 이어도 "
+             "가장 긴 줄($STAT 은 최악 1.7 KB)은 이미 못 들어간다"
+             if brim else
+             "여태 가장 많이 쌓였던 양이다. 링 크기가 넉넉한지 보는 수다"),
+            Level.WARN if brim else Level.IDLE, Verification.VERIFIED)
+
+    return Group("tx", "송신 링", (ctl_r, drops_r, peak_r))
+
+
 # --------------------------------------------------------------- 조립
 
 def build_diagnostics(stat: dict | None, *, error: str = "",
@@ -733,6 +838,9 @@ def build_diagnostics(stat: dict | None, *, error: str = "",
         _queue_group(stat),
         _lcd_group(stat),
         _link_group(stat),
+        # 🔴 링크 바로 뒤에 둔다. `link` 가 "선이 몇 bps 인가" 이고 이것은
+        #    "그 선에 얼마나 밀려 있나" 라, 둘이 나란히 읽혀야 뜻이 선다.
+        _tx_group(stat),
         _io_group(stat),
         _board_group(stat),
     )

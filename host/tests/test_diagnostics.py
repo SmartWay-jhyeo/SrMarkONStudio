@@ -490,3 +490,69 @@ def test_an_old_firmware_without_a_link_object_is_unknown_not_zero():
     r = build_diagnostics({"type": "stat"}).reading("link.baud")
     assert r is not None and not r.known
     assert r.value == UNKNOWN_TEXT
+
+
+# ---- 송신 링 (규격 §7.4, 2026-08-20) ----------------------------------------
+#
+# 🔴 이 묶음이 생긴 계기가 이 파일 머리말의 그것과 똑같다.
+#
+#    카탈로그(103줄 ≈ 25 KB)가 4,096 B 짜리 송신 링을 넘겨 43줄만 도착했고,
+#    GUI 는 설정 폼을 아예 못 만들었다. 사용자에게는 "전원이 켜져 있는데
+#    GUI 는 꺼졌다고 하고 토글도 안 먹는다" 로 보였다. 링의 계수기가 화면에
+#    없어서 GDB 를 붙이고서야 원인을 알았다 — PPS 때와 같은 실수를 두 번
+#    했다. 그래서 여기 둔다.
+
+
+def _stat_with_tx(**over):
+    tx = {"cap": 8192, "peak": 1200, "drops": 0, "dropped_bytes": 0,
+          "ctl_drops": 0, "ctl_dropped_bytes": 0}
+    tx.update(over)
+    return {"type": "stat", "tx": tx}
+
+
+def test_a_control_drop_is_a_warning_because_the_host_never_gets_an_answer():
+    """🔴 이 묶음에서 가장 중요한 한 줄이다.
+
+    명령 응답의 `seq` 는 항상 0 이라(규격 §5.2) 호스트는 이 수 말고는
+    유실을 알아챌 방법이 없다. 텔레메트리 유실과 급이 다르다.
+    """
+    r = build_diagnostics(_stat_with_tx(ctl_drops=3)).reading("tx.ctl_drops")
+    assert r is not None and r.warning
+    assert "3" in r.value
+
+
+def test_telemetry_drops_are_reported_but_not_confused_with_control_drops():
+    """텔레메트리 유실은 흔한 상태다 — 제어 유실과 같은 칸에 뭉치지 않는다."""
+    state = build_diagnostics(_stat_with_tx(drops=12, dropped_bytes=1620))
+    telem = state.reading("tx.drops")
+    ctl = state.reading("tx.ctl_drops")
+    assert telem is not None and "12" in telem.value
+    assert ctl is not None and not ctl.warning     # 제어는 멀쩡하다
+    assert "없음" in ctl.value
+
+
+def test_a_clean_ring_says_so_instead_of_staying_silent():
+    state = build_diagnostics(_stat_with_tx())
+    assert not state.reading("tx.ctl_drops").warning
+    assert not state.reading("tx.drops").warning
+
+
+def test_a_peak_at_the_brim_warns_even_with_zero_drops():
+    """🔴 버린 줄이 0 이어도 수위가 링에 붙어 있으면 다음번엔 버린다.
+
+    그 사실은 지나간 뒤에는 어디에도 안 남는다(규격 §7.4).
+    """
+    r = build_diagnostics(_stat_with_tx(peak=8100)).reading("tx.peak")
+    assert r is not None and r.warning
+    assert "%" in r.value
+
+
+def test_a_device_without_a_send_ring_is_unknown_not_zero():
+    """🔴 시뮬레이터는 링이 없어 `tx` 가 null 이다.
+
+    0 으로 읽어 "한 번도 안 찼다" 로 말하면 화면이 거짓 안심을 준다 —
+    `clock` 의 null 과 같은 결이다.
+    """
+    r = build_diagnostics({"type": "stat", "tx": None}).reading("tx.ctl_drops")
+    assert r is not None and not r.known
+    assert r.value == UNKNOWN_TEXT
