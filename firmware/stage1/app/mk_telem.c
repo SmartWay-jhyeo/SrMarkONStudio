@@ -501,31 +501,72 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
      *    한 채널이 한 틱에 낼 수 있는 줄 수는 MK_TELEM_MAX_LINES 가
      *    막는다(전체 ain 합산). 상한에 걸려 못 낸 나머지는 큐에 그대로
      *    남는다 — pop 을 안 부르면 표본이 지워지지 않으므로 다음 틱에
-     *    이어 나간다. 버리는 것이 아니라 미루는 것이다. */
-    for (int ch = 0; ch < MK_ADS_CHANNELS && sent < MK_TELEM_MAX_LINES; ch++) {
-        if (!mk_ads_channel_enabled(t->ads, ch)) {
+     *    이어 나간다.
+     *
+     *    🔴 [정정, 2026-08-20] "미루는 것이지 버리는 것이 아니다" 는
+     *    이 주석이 예전에 여기서 했던 말이다. 실기기에서 그 말이 거짓임이
+     *    드러났다 — 채널당 10ms 로 7채널을 켜고 tx.period_ms=10 으로
+     *    돌리자(2026-08-20 실측), 뒤 채널(J8·J9)이 30초 내내 단 한 줄도
+     *    못 냈다: 앞 채널부터 늘 ch=0 에서 순회를 시작했고, 한 채널이 자기
+     *    큐를 통째로 비울 때까지 다음 채널로 안 넘어갔다. "다음 틱으로
+     *    미룬다"는 앞 채널이 매번 다시 그 몫을 먼저 가져가 버려 뒤 채널은
+     *    영영 차례가 안 왔다는 뜻이었다 — 미루기가 영원하면 그것은 버리는
+     *    것이다. 큐 칸수(64)가 다 찬 채 drops 만 계속 오른 것이 그 증거다.
+     *
+     *    고친 방식 — 라운드로빈, 한 바퀴에 채널마다 한 표본:
+     *      1) `t->ain_rr` 에서부터 켜진 채널을 한 바퀴 돈다. 채널마다
+     *         큐에서 **딱 하나만**(가장 오래된 것 — mk_queue_pop 은 FIFO)
+     *         꺼내 낸다. 그래서 한 채널이 한 틱의 예산을 혼자 다 먹을 수
+     *         없다 — 다른 채널도 같은 바퀴 안에서 자기 몫을 받는다.
+     *      2) 예산이 남고 이번 바퀴에 뭔가 나갔으면 다음 바퀴를 돈다 —
+     *         밀린 채널은 여러 바퀴에 걸쳐 여러 줄을 낼 수 있지만, 매
+     *         바퀴 다른 켜진 채널에게도 최소 한 줄씩 기회를 준다.
+     *      3) 다음 틱의 시작 채널은 이번 틱이 멈춘 자리의 다음으로 돌린다
+     *         (`t->ain_rr` 갱신, 함수 끝) — 그래야 여러 틱에 걸쳐서도
+     *         특정 채널이 항상 먼저(=유리하게) 서지 않는다. 꺼진 채널은
+     *         순회에서 그냥 건너뛰므로 회전이 깨지지 않는다.
+     *      4) 이번 바퀴 내내 큐가 비어 있던 채널만 last 값 경로를 탄다 —
+     *         정상 부하(수집 < 송신)에서는 지금까지와 같은 동작이다. */
+    int drained[MK_ADS_CHANNELS];
+    for (int k = 0; k < MK_ADS_CHANNELS; k++) { drained[k] = 0; }
+    int start = t->ain_rr;
+    if (start < 0 || start >= MK_ADS_CHANNELS) { start = 0; }
+    int last_ch = start;
+    int progressed = 1;
+    while (sent < MK_TELEM_MAX_LINES && progressed) {
+        progressed = 0;
+        for (int i = 0; i < MK_ADS_CHANNELS && sent < MK_TELEM_MAX_LINES; i++) {
+            int ch = (start + i) % MK_ADS_CHANNELS;
+            if (!mk_ads_channel_enabled(t->ads, ch)) {
+                continue;
+            }
+            MkQueue *q = mk_ads_queue(t->ads, ch);
+            MkSample s;
+            if (q != NULL && mk_queue_pop(q, &s)) {
+                sent += emit_ain_sample(t, ch, &s, emit, ctx);
+                drained[ch] = 1;
+                progressed = 1;
+                last_ch = ch;
+            }
+        }
+    }
+
+    /* 큐가 이번 틱 내내 비어 있던 채널만 last 값을 반복한다 — has_last 가
+     * 거짓이면(한 번도 표본을 못 받았으면) 아무것도 안 낸다. 0 을 지어내지
+     * 않는다(설계 원칙 3·4). */
+    for (int i = 0; i < MK_ADS_CHANNELS && sent < MK_TELEM_MAX_LINES; i++) {
+        int ch = (start + i) % MK_ADS_CHANNELS;
+        if (!mk_ads_channel_enabled(t->ads, ch) || drained[ch]) {
             continue;
         }
-
-        MkQueue *q = mk_ads_queue(t->ads, ch);
         MkSample s;
-        int drained = 0;
-        while (sent < MK_TELEM_MAX_LINES && q != NULL && mk_queue_pop(q, &s)) {
-            sent += emit_ain_sample(t, ch, &s, emit, ctx);
-            drained = 1;
-        }
-        if (drained) {
-            continue;               /* 큐에 있던 것은 이미 다 냈다 */
-        }
-
-        /* 큐가 비어 있었다 — has_last 가 거짓이면(한 번도 표본을 못
-         * 받았으면) 아무것도 안 낸다. 0 을 지어내지 않는다(설계 원칙
-         * 3·4). */
         if (!mk_ads_last(t->ads, ch, &s)) {
             continue;
         }
         sent += emit_ain_sample(t, ch, &s, emit, ctx);
+        last_ch = ch;
     }
+    t->ain_rr = (last_ch + 1) % MK_ADS_CHANNELS;
 
     /* i2c 는 포트·슬롯마다 마지막 값(last[][])만 있고 ain 같은 표본 큐가
      * 없다(2026-08-19 걷어냄, 커밋 ab11ee0). ain 의 "큐 우선, last 는

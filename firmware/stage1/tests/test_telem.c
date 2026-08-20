@@ -119,6 +119,37 @@ static uint32_t parse_seq(const char *line)
     return v;
 }
 
+/* 이번 틱에 모인 LINES[0..N) 안에 이 커넥터(J<3+ch>)가 한 줄이라도
+ * 있는지. parse_t() 는 이 파일 아래쪽(시간축 시험들)에 이미 있다 — 라운드
+ * 로빈 순서 시험도 그것을 그대로 쓴다. */
+static int has_connector(int connector_id)
+{
+    char want[24];
+    int n = 0;
+    want[n++] = '"'; want[n++] = 'c'; want[n++] = 'o'; want[n++] = 'n';
+    want[n++] = 'n'; want[n++] = 'e'; want[n++] = 'c'; want[n++] = 't';
+    want[n++] = 'o'; want[n++] = 'r'; want[n++] = '_'; want[n++] = 'i';
+    want[n++] = 'd'; want[n++] = '"'; want[n++] = ':';
+    n += snprintf(want + n, sizeof want - (size_t)n, "%d", connector_id);
+    want[n] = '\0';
+    for (int i = 0; i < N; i++) {
+        if (strstr(LINES[i], want) != NULL) { return 1; }
+    }
+    return 0;
+}
+
+/* 이번 틱에 이 커넥터가 낸 줄 수. */
+static int count_connector(int connector_id)
+{
+    char want[24];
+    snprintf(want, sizeof want, "\"connector_id\":%d", connector_id);
+    int c = 0;
+    for (int i = 0; i < N; i++) {
+        if (strstr(LINES[i], want) != NULL) { c++; }
+    }
+    return c;
+}
+
 static int64_t parse_t(const char *line)
 {
     const char *p = strstr(line, "\"t\":");
@@ -700,6 +731,129 @@ static void test_disabled_channel_is_silent(void)
     }
 }
 
+/* ---- ain 라운드로빈 공정성 (2026-08-20, 실기기 재현) --------------------- */
+
+static void test_no_channel_starves_when_all_queues_stay_full(void)
+{
+    /* 🔴 핵심 시험. 실기기 재현(2026-08-20): 채널당 10ms, tx.period_ms=10,
+     *    1.5 Mbps 로 7채널을 30초 돌리자 J8·J9 는 레코드가 0개였다 — 큐
+     *    (64칸)가 다 찬 채 drops 만 3038·3040 으로 올랐다. J3~J6 은
+     *    간격 10ms 그대로 정상이었다.
+     *
+     *    이 시험은 그 상태를 네 채널·큐 칸수 8(setup() 참고)로 줄여
+     *    흉내 낸다: 매 틱 네 채널을 전부 가득 채운다 — ch0·ch1 둘만으로
+     *    8+8=16=MK_TELEM_MAX_LINES 라, 지금 코드(매 틱 ch=0 부터 순회 +
+     *    한 채널의 큐를 통째로 비울 때까지 다음 채널로 안 넘어감)는
+     *    ch2·ch3 를 몇 틱을 돌려도 단 한 줄도 못 낸다. */
+    setup();
+    int seen[4] = {0, 0, 0, 0};
+    int64_t t = 0;
+    for (int period = 0; period < 5; period++) {
+        t += 100;
+        for (int ch = 0; ch < 4; ch++) {
+            for (int k = 0; k < 8; k++) {
+                push_to_queue(ch, t, ch * 100000 + period * 10 + k);
+            }
+        }
+        N = 0;
+        mk_telem_tick(&T, t, sink, NULL);
+        for (int ch = 0; ch < 4; ch++) {
+            seen[ch] += count_connector(ch + 3);
+        }
+    }
+    CHECK(seen[0] > 0, "J3(ch0) 은 다섯 틱 안에 나간다");
+    CHECK(seen[1] > 0, "J4(ch1) 도 다섯 틱 안에 나간다");
+    CHECK(seen[2] > 0, "J5(ch2) 도 다섯 틱 안에 나간다 — 지금 코드는 여기서 굶는다");
+    CHECK(seen[3] > 0, "J6(ch3) 도 다섯 틱 안에 나간다 — 지금 코드는 여기서 굶는다");
+}
+
+static void test_no_single_channel_eats_the_whole_tick_budget(void)
+{
+    /* 채널 하나만 큐가 잔뜩 밀려 있어도(칸수 8, 나머지 세 채널은 각각
+     * 하나씩) 그 한 채널이 이번 틱 예산(16)을 혼자 다 먹으면 안 된다 —
+     * 나머지 채널도 이번 틱에 자기 몫을 받아야 한다. */
+    setup();
+    for (int k = 0; k < 8; k++) {
+        push_to_queue(0, 1000 + k, 100000 + k);
+    }
+    push_to_queue(1, 2000, 200000);
+    push_to_queue(2, 2000, 300000);
+    push_to_queue(3, 2000, 400000);
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    CHECK(count_connector(3) < MK_TELEM_MAX_LINES,
+          "ch0(J3) 혼자서 이번 틱 예산을 통째로 먹지 않는다");
+    CHECK(has_connector(4), "ch1(J4) 도 이번 틱에 자기 몫을 받는다");
+    CHECK(has_connector(5), "ch2(J5) 도 이번 틱에 자기 몫을 받는다");
+    CHECK(has_connector(6), "ch3(J6) 도 이번 틱에 자기 몫을 받는다");
+}
+
+static void test_oldest_sample_goes_first_within_a_channel_even_interleaved(void)
+{
+    /* 라운드로빈이 채널 사이에 표본을 끼워 넣더라도, 같은 채널 안에서는
+     * 큐가 FIFO 이므로 오래된 표본이 먼저 나가야 한다. */
+    setup();
+    push_to_queue(0, 111, 1);
+    push_to_queue(0, 222, 2);
+    push_to_queue(0, 333, 3);
+    push_to_queue(1, 444, 4);
+
+    mk_telem_tick(&T, 100, sink, NULL);
+
+    int64_t t_order[3];
+    int idx = 0;
+    for (int i = 0; i < N && idx < 3; i++) {
+        if (strstr(LINES[i], "\"connector_id\":3") != NULL) {
+            t_order[idx++] = parse_t(LINES[i]);
+        }
+    }
+    CHECK(idx == 3, "ch0(J3) 의 세 표본이 모두 나간다");
+    CHECK(idx == 3 && t_order[0] == 111 && t_order[1] == 222 && t_order[2] == 333,
+          "같은 채널 안에서는 오래된 표본이 먼저다");
+}
+
+static void test_start_channel_rotates_and_skips_disabled_channels(void)
+{
+    /* 🔴 세 채널(ch0·ch1·ch2)만 켜고 ch3 은 끈다 — MK_TELEM_MAX_LINES(16)
+     *    가 3 으로 안 나눠떨어지므로(16 = 5*3 + 1) 매 틱 "여분 한 줄"이
+     *    생긴다. 그 여분이 항상 같은 채널로 가면(회전 없음) 시작점이 고정된
+     *    것이고, 틱마다 받는 채널이 바뀌면 회전이 되는 것이다. 꺼진 ch3 은
+     *    두 틱 다 한 줄도 없어야 한다(회전에서 건너뛴다). */
+    setup();
+    mk_ads_configure(&ADS, 3, 0, 100, 0);   /* ch3(J6) 끈다 */
+
+    int64_t t = 0;
+    int extra_tick1 = -1, extra_tick2 = -1;
+
+    t += 100;
+    for (int ch = 0; ch < 3; ch++) {
+        for (int k = 0; k < 6; k++) { push_to_queue(ch, t, ch * 1000 + k); }
+    }
+    N = 0;
+    mk_telem_tick(&T, t, sink, NULL);
+    for (int ch = 0; ch < 3; ch++) {
+        if (count_connector(ch + 3) == 6) { extra_tick1 = ch; }
+    }
+    CHECK(!has_connector(6), "꺼진 ch3(J6) 은 1회차에도 안 나간다");
+
+    t += 100;
+    for (int ch = 0; ch < 3; ch++) {
+        for (int k = 0; k < 6; k++) { push_to_queue(ch, t, ch * 1000 + 10 + k); }
+    }
+    N = 0;
+    mk_telem_tick(&T, t, sink, NULL);
+    for (int ch = 0; ch < 3; ch++) {
+        if (count_connector(ch + 3) == 6) { extra_tick2 = ch; }
+    }
+    CHECK(!has_connector(6), "꺼진 ch3(J6) 은 2회차에도 안 나간다");
+
+    CHECK(extra_tick1 >= 0 && extra_tick2 >= 0,
+          "매 틱 여분 한 줄을 받는 채널이 있다(16 이 3 으로 안 나눠떨어지므로)");
+    CHECK(extra_tick1 != extra_tick2,
+          "여분을 받는 채널이 틱마다 바뀐다 — 시작점이 회전한다");
+}
+
 /* ---- I2C --------------------------------------------------------------- */
 
 /* 🔴 seq 는 레코드 종류를 가리지 않고 하나로 이어진다. 따로 세면 호스트의
@@ -1246,6 +1400,10 @@ int main(int argc, char **argv)
     test_every_active_channel_sends_exactly_one_line_per_period();
     test_all_seven_channels_fit_in_one_tick();
     test_disabled_channel_is_silent();
+    test_no_channel_starves_when_all_queues_stay_full();
+    test_no_single_channel_eats_the_whole_tick_budget();
+    test_oldest_sample_goes_first_within_a_channel_even_interleaved();
+    test_start_channel_rotates_and_skips_disabled_channels();
     test_i2c_records_share_the_sequence_with_ain();
     test_failure_repeats_at_the_tx_period_not_the_retry_period();
     test_i2c_t_follows_the_same_timeax_conversion_as_ain();
