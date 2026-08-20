@@ -47,6 +47,29 @@ static void emit_sack_err(MkHostlink *h, const char *verb, const char *reason)
     emit_line(h, payload);
 }
 
+/* 장치 카운터(ms)를 규격 §7.1 의 시간축으로 옛긴다.
+ *
+ * 🔴 [정정, 2026-08-20] 명령 응답의 `t` 가 시간축을 안 따르고 있었다.
+ *    실기기에서 텔레메트리는 `t: 1787193172927`(UTC epoch)인데 같은 순간의
+ *    `$STAT` 은 `t: 947472`(부팅 후 ms)였다.
+ *
+ *    §7.1 은 `t` 의 뜻을 `time_source` **하나로** 정한다 — 레코드 종류로
+ *    나누지 않는다. 그리고 가동 시간은 이미 `uptime_ms` 로 따로 실리므로,
+ *    같은 사실이 두 자리에 있으면서 그중 한 자리는 이름이 거짓말을 하고
+ *    있었던 셈이다. 호스트가 명령 응답의 `t` 를 시각으로 쓸 일이 없어
+ *    드러나지 않았을 뿐, 한 스트림 안에서 같은 이름의 필드가 줄마다 다른
+ *    시간축을 쓰는 것은 저장·정렬에서 조용히 터질 자리다.
+ *
+ *    timeax 가 안 붙어 있으면(1단계 빌드) 변환 없이 그대로 — mk_telem.c 의
+ *    acquired_epoch_ms() 와 같은 규칙·같은 단위 변환(ms -> us)이다. */
+static int64_t axis_ms(MkHostlink *h, int64_t now_ms)
+{
+    if (h->timeax == NULL) {
+        return now_ms;
+    }
+    return mk_timeax_now_ms_monotonic(h->timeax, (uint64_t)now_ms * 1000ULL);
+}
+
 /* 규격 §5.2 — `$ID` 는 id 레코드 한 줄 뒤에 $SACK 를 보낸다. */
 /* 반환: 내보냈으면 1, 못 내보냈으면 0.
  *
@@ -62,7 +85,7 @@ static int emit_id_record(MkHostlink *h, int64_t now_ms)
     mk_json_begin(&j, body, sizeof body);
     mk_json_u32(&j, "schema_ver", 3u);
     mk_json_u32(&j, "seq", 0u);          /* §5.2 — 명령 응답의 seq 는 항상 0 */
-    mk_json_i64(&j, "t", now_ms);
+    mk_json_i64(&j, "t", axis_ms(h, now_ms));
     mk_json_str(&j, "type", "id");
     mk_json_str(&j, "device_id", h->device_id);
     mk_json_str(&j, "fw", h->fw);
@@ -139,7 +162,7 @@ static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
 
     if (strcmp(sub, "LIST") == 0) {
         /* 규격 §5.2 — 본문을 먼저 보내고 $SACK 로 끝낸다. */
-        mk_cfgwire_list(h->cfg, h->fields, h->n_fields, now_ms,
+        mk_cfgwire_list(h->cfg, h->fields, h->n_fields, axis_ms(h, now_ms),
                         catalog_sink, h);
         emit_sack_ok(h, "CFG");
         return;
@@ -156,7 +179,7 @@ static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
             return;
         }
         char body[256];
-        int n = mk_cfgwire_value(item, now_ms, body, sizeof body);
+        int n = mk_cfgwire_value(item, axis_ms(h, now_ms), body, sizeof body);
         /* 🔴 본문을 못 만들었으면 OK 라고 하지 않는다. 거짓 OK 는 무응답보다
          *    나쁘다 — 호스트가 값을 받았다고 믿고 넘어간다. */
         if (!emit_json(h, body, sizeof body, n)) {
@@ -597,7 +620,7 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
      *    (u32 넷이 각각 10자리 + remaining_ms 가 i64). 1664 로 올린다. */
     char body[1664];
     int n = mk_cfgwire_stat(
-        now_ms,
+        axis_ms(h, now_ms),
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
         h->ctl_mode == MK_CTL_TEST ? "TEST" : "ACTIVE",
         h->fw, h->board_rev, (uint32_t)now_ms,
