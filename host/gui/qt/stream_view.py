@@ -267,6 +267,11 @@ class StreamView(QWidget):
         col.addWidget(hairline())
         col.addLayout(control_row)
         col.addWidget(self._header_label)
+        # 🔴 콘솔이 남는 세로 공간을 통째로 먹지 않는다 (사용자 요청
+        #    2026-08-20 — "너무 커, 절반으로"). 상한을 걸어 절반쯤에서
+        #    멈추고, 넘치는 줄은 콘솔 제 스크롤로 본다. 남는 공간은
+        #    위의 통계·필터가 숨 쉴 자리가 된다.
+        self._console.setMaximumHeight(360)
         col.addWidget(self._console, 1)
 
     # ------------------------------------------------------------- 그리기
