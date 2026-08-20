@@ -25,6 +25,9 @@ PLAN = [
     ("gnss.enabled",  "true",   "UM981"),
     ("gnss.echo",     "true",   "모듈 원문을 호스트로 — 진단용"),
     ("lcd.enabled",   "true",   "J25 ILI9488 화면"),
+    ("ain0.name",     "유압",     "커넥터 이름 — 대시보드·스트림에 보인다"),
+    ("i2c12.name",    "적외온도", ""),
+    ("i2c13.name",    "온습도",   ""),
 ]
 
 def main(port="COM23", extra=()):
