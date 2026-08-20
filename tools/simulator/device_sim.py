@@ -24,6 +24,7 @@ from tools.simulator.telemetry import (
     ADS1256_FULL_SCALE,
     build_ain_record,
     build_din_record,
+    build_gnss_record,
     build_i2c_record,
     render,
     synthetic_i2c_value,
@@ -63,6 +64,27 @@ GNSS_DEMO_WARMUP_MS = 5000
 #:    firmware/stage1/tests/test_timeax.c 의 시험 fixture(1700000000000)와
 #:    자릿수만 맞춘 임의의 수다 — 실제 어느 시각도 가리키지 않는다.
 GNSS_DEMO_EPOCH_MS = 1_700_000_000_000
+
+#: GNSS 측위 레코드가 나가는 주기(규격 §7.8.6). 🔴 `tx.period_ms` 가 아니다 —
+#: 모듈이 RMC 를 완성하는 것이 사건이고, §4.1.1 의 초기화 명령이 `ONTIME 1`
+#: 이라 1 Hz 다. 호스트의 링크 사용량 표도 같은 값을 쓴다
+#: (`host/gui/link_usage.GNSS_PERIOD_MS`).
+GNSS_RECORD_PERIOD_MS = 1000
+
+#: 🔴 데모 좌표다. 실제 어느 지점도 아니고, 흔들림도 실제 수신기의 것이
+#:    아니다 — `GNSS_DEMO_WARMUP_MS`·`_synthetic_raw` 와 같은 성격이다
+#:    (사용자 지시: "가짜 fix 를 진짜처럼 내지 마라").
+#:
+#:    그래도 **자릿수는 실기기와 같게** 둔다. 소수 7자리를 안 채우면
+#:    화면·저장·대역폭 계산이 전부 실제보다 짧은 줄로 맞춰지고, 실기기를
+#:    물리는 순간에만 어긋난다.
+GNSS_DEMO_LAT = 37.3190694
+GNSS_DEMO_LON = 127.3405907
+GNSS_DEMO_ALT_M = 100.852
+
+#: 잠긴 뒤 좌표가 아주 조금씩 도는 폭(도). 1e-6 도 ~ 11 cm 라 화면에서
+#: "값이 살아 있다" 를 볼 수 있을 만큼만 움직인다.
+GNSS_DEMO_SWING_DEG = 0.000_02
 
 #: 🔴 시뮬레이터에는 옵토가 없다 — 실기기는 사람이 신호선을 흔들어야
 #:    상태가 바뀐다. 이 주기는 화면 확인용 **데모**일 뿐이다. `ain` 처럼
@@ -148,6 +170,10 @@ class DeviceSim:
         #: None 이면 꺼져 있다 — `_gnss_time_state()` 가 이 값으로
         #: 워밍업 경과를 잰다.
         self._gnss_enabled_at_ms: int | None = None
+        #: 측위 레코드(규격 §7.8)를 마지막으로 낸 시각. 🔴 `tx.period_ms` 와
+        #: 무관한 자기 주기(1 Hz)를 갖는다 — 모듈이 RMC 를 완성하는 것이
+        #: 사건이기 때문이다(§7.8.6). None 이면 아직 한 번도 안 냈다.
+        self._last_gnss_fix_ms: int | None = None
         #: `t` 변환의 anchor 쌍(장치 ms <-> "UTC" ms). `gnss.enabled` 가
         #: 켜지는 순간 한 번 세운다 — `_convert_t()` 참고. 꺼지면 비운다.
         self._gnss_anchor_dev_ms: int | None = None
@@ -687,6 +713,11 @@ class DeviceSim:
         self._collect_ain(now_ms)
         self._collect_i2c(now_ms)
 
+        # 🔴 측위 레코드는 `tx.period_ms` 밖에 있다(규격 §7.8.6) — 모듈이
+        #    RMC 를 완성하는 것이 사건이고 그 주기는 모듈이 정한다(1 Hz).
+        #    din·gnss_raw 와 같은 성격이라 아래 게이트 앞에 둔다.
+        out.extend(self._emit_gnss(now_ms))
+
         period = int(self.store.get("tx.period_ms"))
         if now_ms - self._last_emit_ms >= period:
             self._last_emit_ms = now_ms
@@ -781,6 +812,57 @@ class DeviceSim:
         lines += self._emit_din(now_ms)
         return lines
 
+    def _emit_gnss(self, now_ms: int) -> list[str]:
+        """규격 §7.8 — RMC 한 줄마다(=1 Hz) 측위 레코드를 낸다.
+
+        🔴 **꺼져 있으면 아무것도 안 낸다**(§7.8.4, 설계 원칙 3). 켜져 있는데
+           아직 fix 가 없으면(워밍업 = 실기기의 "실내, RMC 가 V") 레코드는
+           내되 위치를 `null` 로 둔다 — 침묵하면 "모듈이 안 꽂혔다"와
+           "하늘이 안 보인다"가 화면에서 똑같아 보인다(설계 원칙 4).
+
+        🔴 좌표·위성 수·HDOP 는 전부 **데모값**이다(`GNSS_DEMO_LAT` 주석).
+           실제 수신기의 흔들림이 아니다.
+        """
+        if not self.store.get("gnss.enabled"):
+            self._last_gnss_fix_ms = None
+            return []
+        if (self._last_gnss_fix_ms is not None
+                and now_ms - self._last_gnss_fix_ms < GNSS_RECORD_PERIOD_MS):
+            return []
+        self._last_gnss_fix_ms = now_ms
+
+        time_source, time_quality, _pps, sats, *_ = self._gnss_time_state(now_ms)
+        converted_t = self._convert_t(now_ms, time_source)
+
+        locked = time_source == "gnss_pps"
+        if locked:
+            # 위상만 다른 두 사인파 — "값이 살아 있다"를 볼 수 있을 만큼만.
+            phase = now_ms / 30000.0
+            lat = GNSS_DEMO_LAT + GNSS_DEMO_SWING_DEG * math.sin(phase)
+            lon = GNSS_DEMO_LON + GNSS_DEMO_SWING_DEG * math.cos(phase)
+            alt = GNSS_DEMO_ALT_M
+            fix = 1
+            hdop = 1.2
+            speed = 0.072
+            course = 208.1
+        else:
+            # 🔴 fix 가 없으면 옛 위치를 다시 싣지 않는다(규격 §7.8.4).
+            lat = lon = alt = None
+            fix = 0
+            hdop = speed = course = None
+
+        # 🔴 `fix_t` 는 초 경계다. PPS 가 그 순간을 찍고 RMC 가 "몇 초인지"를
+        #    말하므로, 측위 시각은 언제나 정확히 `.000` 이다(규격 §7.8.3).
+        fix_t = (converted_t // 1000) * 1000
+
+        self._seq += 1
+        return [render(build_gnss_record(
+            self.store, seq=self._seq, t_ms=converted_t, fix_t_ms=fix_t,
+            lat=lat, lon=lon, alt=alt, sats=sats, fix=fix,
+            hdop=hdop, speed=speed, course=course,
+            time_source=time_source, time_quality=time_quality,
+        ))]
+
     def _emit_din(self, now_ms: int) -> list[str]:
         """규격 §7.6 — 상태가 바뀔 때만 한 줄 낸다.
 
@@ -859,7 +941,20 @@ class DeviceSim:
         return build_command("SACK", verb, *rest).rstrip("\r\n")
 
     def _json(self, **fields) -> str:
-        rec = {"schema_ver": SCHEMA_VER, "seq": 0, "t": self._now_ms}
+        """명령 응답 한 줄(`id`·`stat`·`cfg_*`).
+
+        🔴 [정정, 2026-08-20] `t` 가 시간축을 따른다. 예전에는 장치 카운터
+           (`_now_ms`)를 그대로 실었다 — 실기기에서도 그랬고, 텔레메트리가
+           UTC epoch 을 낼 때 `$STAT` 만 `947472`(부팅 후 ms)를 냈다.
+
+           규격 §7.1 은 `t` 의 뜻을 `time_source` **하나로** 정하지 레코드
+           종류로 나누지 않는다. 그리고 가동 시간은 `uptime_ms` 로 이미 따로
+           실린다 — 같은 사실이 두 자리에 있으면서 한쪽은 이름이 거짓말을
+           하고 있었던 셈이다.
+        """
+        time_source, *_ = self._gnss_time_state(self._now_ms)
+        rec = {"schema_ver": SCHEMA_VER, "seq": 0,
+               "t": self._convert_t(self._now_ms, time_source)}
         rec.update(fields)
         return json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
 

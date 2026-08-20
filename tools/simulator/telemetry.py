@@ -192,6 +192,71 @@ def build_i2c_record(store: ConfigStore, *, connector_id: int, quantity: str,
 # ---- 디지털 입력 J18~J20 (규격 §7.6) ----------------------------------------
 
 
+# ---- GNSS 측위 J16 (규격 §7.8) ----------------------------------------------
+
+#: 위·경도의 소수 자릿수. 🔴 `tx.float_digits` 를 따르지 않는다 — 기본값
+#: 4자리면 위치 분해능이 약 11 m 가 되어 RTK 를 단 이유가 사라지는데,
+#: 화면에는 소수점이 그럴듯하게 붙어 있어 아무도 눈치채지 못한다(규격 §7.8.2).
+#: 1e-7 도는 적도에서 약 1.11 cm 다.
+GNSS_DEG_DIGITS = 7
+
+#: 나머지 GNSS 필드의 자릿수(규격 §7.8.5). 역시 `tx.float_digits` 밖이다 —
+#: 필드마다 물리적으로 뜻이 있는 자릿수가 다르다.
+GNSS_FIELD_DIGITS = {"alt": 3, "hdop": 2, "speed": 3, "course": 2}
+
+
+def build_gnss_record(store: ConfigStore, *, seq: int, t_ms: int,
+                      fix_t_ms: int | None,
+                      lat: float | None, lon: float | None,
+                      alt: float | None = None,
+                      sats: int | None = None,
+                      fix: int | None = None,
+                      hdop: float | None = None,
+                      speed: float | None = None,
+                      course: float | None = None,
+                      time_source: str = "device_clock",
+                      time_quality: int = 0) -> dict:
+    """규격 §7.8 의 gnss 레코드.
+
+    필드 순서는 펌웨어 `mk_telem.c` 의 `build_gnss_record` 와 같게 둔다 —
+    두 출력을 나란히 놓고 볼 일이 많다.
+
+    🔴 `lat`·`lon`·`fix_t` 는 마스크로 끌 수 없다(규격 §7.8.5). 값이 없을
+       때는 `null` 이다 — **마지막으로 알던 위치를 다시 싣지 않는다.**
+       그러면 화면에서 차량이 마지막으로 하늘을 본 자리에 서 있게 된다
+       (§7.5 의 "옛 값을 다시 실으면 화면이 살아 있는 센서처럼 보인다" 와
+       같은 이유).
+    """
+    mask = store.field_mask("gnss")
+
+    rec: dict = {"schema_ver": SCHEMA_VER, "seq": seq, "t": t_ms,
+                 "type": "gnss"}
+    rec["lat"] = None if lat is None else round(lat, GNSS_DEG_DIGITS)
+    rec["lon"] = None if lon is None else round(lon, GNSS_DEG_DIGITS)
+    rec["fix_t"] = fix_t_ms
+
+    optional = (("alt", alt), ("sats", sats), ("fix", fix),
+                ("hdop", hdop), ("speed", speed), ("course", course))
+    for name, value in optional:
+        if not _field_on(mask, name, "gnss"):
+            continue
+        digits = GNSS_FIELD_DIGITS.get(name)
+        if value is None:
+            rec[name] = None
+        elif digits is None:
+            rec[name] = int(value)
+        else:
+            rec[name] = round(float(value), digits)
+
+    if _field_on(mask, "device_id", "gnss"):
+        rec["device_id"] = str(store.get("dev.id"))
+    # 🔴 time_source 는 마스크로 못 끈다 — build_ain_record 와 같은 근거.
+    rec["time_source"] = time_source
+    if _field_on(mask, "time_quality", "gnss"):
+        rec["time_quality"] = time_quality
+    return rec
+
+
 def build_din_record(store: ConfigStore, *, connector_id: int, state: int,
                      seq: int, t_ms: int,
                      time_source: str = "device_clock",

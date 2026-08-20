@@ -840,3 +840,146 @@ def test_clock_source_is_a_separate_axis_from_time_quality():
         next(ln for ln in _sim().feed(build_command("STAT")) if ln.startswith("{"))
     )
     assert "clock" in rec and "time_quality" in rec and "time_source" in rec
+
+
+# ------------------- GNSS 측위 레코드 (규격 §7.8) ---------------------------
+#
+# 🔴 사용자 지적(2026-08-20): "왜 스트림에 GNSS는 안보이는데? 모든 센서
+#    데이터가 다 보여야 한다니까?"
+#
+#    §7.7 의 `gnss_raw` 는 NMEA 원문 에코라 기본이 꺼짐이고 측정값이 아니다.
+#    위치·고도·위성 수는 이 장비에서 가장 중요한 측정값인데 레코드 종류가
+#    없어서 스트림·대시보드·저장 어디에도 안 들어갔다.
+
+
+def _gnss_records(sim: DeviceSim, until_ms: int, step_ms: int = 100):
+    """`tick` 을 돌려 나온 gnss 레코드만 모은다."""
+    out = []
+    for t in range(step_ms, until_ms + 1, step_ms):
+        for line in sim.tick(t):
+            if not line.startswith("{"):
+                continue
+            rec = parse_record(line)
+            if rec["type"] == "gnss":
+                out.append(rec)
+    return out
+
+
+def test_no_gnss_record_while_disabled():
+    """🔴 설계 원칙 3 — 안 꽂힌 것의 침묵은 오류가 아니다(규격 §7.8.4)."""
+    sim = _sim()
+    assert _gnss_records(sim, 5000) == []
+
+
+def test_gnss_record_appears_once_a_second_when_enabled():
+    """🔴 `tx.period_ms`(기본 100 ms)가 아니라 모듈이 정하는 1 Hz 다
+    (규격 §7.8.6)."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    recs = _gnss_records(sim, 5000)
+    # 5초 동안 다섯 줄 안팎 — 100 ms 주기였다면 쉰 줄이다.
+    assert 4 <= len(recs) <= 6, len(recs)
+
+
+def test_gnss_record_says_null_until_it_locks():
+    """🔴 문장은 오는데 fix 가 없을 때 침묵하지 않는다(규격 §7.8.4).
+
+    침묵하면 "모듈이 안 꽂혔다"와 "하늘이 안 보인다"가 화면에서 똑같아
+    보인다 — 설계 원칙 4다. 실기기 실내 관측(RMC 가 계속 `V`)이 정확히
+    이 경우였다.
+    """
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    warm = _gnss_records(sim, GNSS_DEMO_WARMUP_MS - 500)
+    assert warm, "워밍업 중에도 레코드는 나가야 한다"
+    assert warm[0]["lat"] is None and warm[0]["lon"] is None
+    assert warm[0]["fix"] == 0
+
+
+def test_gnss_record_carries_seven_decimals_once_locked():
+    """🔴 소수 7자리 = 약 1.11 cm. `tx.float_digits`(기본 4)를 따르면
+    분해능이 약 11 m 가 되는데 화면에는 소수점이 그럴듯하게 붙어 있다
+    (규격 §7.8.2)."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    recs = _gnss_records(sim, GNSS_DEMO_WARMUP_MS + 3000)
+    locked = [r for r in recs if r["lat"] is not None]
+    assert locked, "잠기고 나면 위치가 실려야 한다"
+    r = locked[-1]
+    assert 37.0 < r["lat"] < 38.0 and 127.0 < r["lon"] < 128.0
+    # 도-분을 그대로 실었다면 3719.x·12720.x 가 나온다.
+    assert r["lat"] < 90.0 and r["lon"] < 180.0
+    assert r["alt"] is not None and r["sats"] is not None
+    assert r["fix_t"] is not None
+
+
+def test_gnss_fix_t_is_utc_and_t_follows_the_time_axis():
+    """🔴 두 시각은 다른 것을 잰다(규격 §7.8.3).
+
+    `t` 는 §7.1 의 뜻 그대로(보드가 줄을 확정한 시각)이고, `fix_t` 는
+    문장이 말하는 **측정 순간**이라 언제나 UTC 다. 겹쳐 놓으면 어느 쪽이
+    늦어진 것인지 되물을 방법이 사라진다.
+    """
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    r = _gnss_records(sim, GNSS_DEMO_WARMUP_MS + 3000)[-1]
+    assert r["fix_t"] % 1000 == 0, "측위 시각은 초 경계다"
+    assert r["fix_t"] <= r["t"], "문장은 자기가 말하는 순간보다 늦게 도착한다"
+    assert r["time_source"] in ("gnss_pps", "gnss_nmea")
+
+
+def test_gnss_optional_fields_follow_their_own_mask():
+    """🔴 마스크가 종류별로 독립이다 — GNSS 를 비워도 ain 은 그대로다."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    sim.feed(build_command("CFG", "SET", "tx.fields_gnss", "0"))
+    r = _gnss_records(sim, GNSS_DEMO_WARMUP_MS + 3000)[-1]
+    for name in ("alt", "sats", "fix", "hdop", "speed", "course"):
+        assert name not in r, f"{name} 를 껐는데 실렸다"
+    # 🔴 lat·lon·fix_t·time_source 는 마스크 밖이다.
+    for name in ("lat", "lon", "fix_t", "time_source"):
+        assert name in r, f"{name} 는 마스크로 끌 수 없다"
+
+
+def test_gnss_record_does_not_hide_behind_the_echo_switch():
+    """🔴 `gnss.echo`(§7.7)는 진단 에코 스위치다. 측정값인 이 레코드는
+    그것과 무관하게 나간다 — 안 그러면 "모든 센서 데이터가 보여야 한다"가
+    다시 깨진다."""
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    assert sim.store.get("gnss.echo") is False
+    assert _gnss_records(sim, 3000), "에코가 꺼져 있어도 측위는 나간다"
+
+
+# --------------------- $STAT 의 t (규격 §7.4 정정, 2026-08-20) --------------
+
+
+def test_stat_t_follows_the_time_axis_not_uptime():
+    """🔴 실기기에서 어긋나 있었다 — 텔레메트리는 UTC epoch 인데 같은
+    순간의 `$STAT` 은 `t: 947472`(부팅 후 ms)였다.
+
+    규격 §7.1 은 `t` 의 뜻을 `time_source` 하나로 정한다. 그리고 가동
+    시간은 `uptime_ms` 로 이미 따로 실린다 — 같은 사실이 두 자리에 있으면서
+    한쪽은 이름이 거짓말을 하고 있었던 셈이다.
+    """
+    sim = _sim()
+    sim.feed(build_command("HB"))
+    sim.feed(build_command("CFG", "SET", "gnss.enabled", "true"))
+    # 🔴 워밍업은 **첫 tick 부터** 잰다(`_gnss_enabled_at_ms`) — 한 번에
+    #    건너뛰면 그 순간이 곧 시작점이라 아직 잠기지 않는다.
+    sim.tick(100)
+    sim.tick(GNSS_DEMO_WARMUP_MS + 1000)
+    rec = parse_record(
+        next(ln for ln in sim.feed(build_command("STAT")) if ln.startswith("{"))
+    )
+    assert rec["time_source"] == "gnss_pps"
+    assert rec["t"] > 1_000_000_000_000, "UTC epoch 이어야 한다"
+    assert rec["t"] != rec["uptime_ms"]
+    # 그리고 가동 시간은 여전히 제자리에 있다.
+    assert 0 < rec["uptime_ms"] < 1_000_000_000
