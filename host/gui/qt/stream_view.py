@@ -61,6 +61,7 @@ from host.gui.stream import (
     DISPLAY_MAXLEN,
     StreamRow,
     StreamState,
+    KNOWN_TYPES,
     TYPE_FAMILIES,
     type_sort_key,
     connector_label,
@@ -340,7 +341,8 @@ class StreamView(QWidget):
            직후 `$CFG,LIST` 가 쏟아내는 91줄이 텔레메트리를 파묻는다.
         """
         new_types = [t for t in sorted(set(state.type_counts)
-                                       | set(TYPE_FAMILIES))
+                                       | set(TYPE_FAMILIES)
+                                       | set(KNOWN_TYPES))
                      if t not in self._type_items]
         if not new_types:
             return

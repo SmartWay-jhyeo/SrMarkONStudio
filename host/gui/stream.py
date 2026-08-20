@@ -61,6 +61,19 @@ TYPE_FAMILIES: dict[str, tuple[int, ...]] = {
 #: 🔴 도착 순서로 앉히면 안 된다 — 연결 직후 카탈로그 91줄이 먼저 와서
 #:    cfg_* 가 맨 위를 차지하고, 정작 gnss 는 스크롤 밑에 숨는다
 #:    (사용자 보고 2026-08-20 "필터에 GNSS가 없다").
+#: 규격이 정의한 레코드 타입 전부 (§7). 필터 트리는 이것을 **미리** 깐다.
+#:
+#: 🔴 커넥터(KNOWN_CONNECTORS)와 같은 이유다 — 도착해야 목록에 생기면,
+#:    아직 안 온 타입은 "그런 타입이 없는 화면" 이 된다. 실제로 겪었다
+#:    (2026-08-20): GUI 가 레코드를 못 받는 상태에서 사용자가 gnss 를
+#:    찾았는데 트리에 항목 자체가 없었다 — "없음(0건)" 과 "그런 것 없음"
+#:    은 다른 말이다. 규격에 없는 새 타입이 와도 여전히 저절로 생긴다.
+KNOWN_TYPES: tuple[str, ...] = (
+    "ain", "i2c", "din", "gnss", "gnss_raw", "stat",
+    "cmd", "cfg_item", "cfg_field", "cfg_end",
+)
+
+
 def type_sort_key(t: str) -> tuple[int, str]:
     if t in TYPE_FAMILIES:
         return (0, t)
