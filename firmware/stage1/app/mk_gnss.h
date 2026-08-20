@@ -57,6 +57,58 @@ typedef struct {
     uint8_t sats;           /* 사용 중인 위성 수 */
 } MkGnssGga;
 
+/* ---- 측위 레코드(규격 §7.8) -----------------------------------------------
+ *
+ * 🔴 위·경도를 float 로 담지 않는다. `float` 는 가수 24비트라 유효숫자가 약
+ *    7자리인데, 십진도 경도는 `127.3405907` 로 10자리다 — float 에 넣으면
+ *    약 1 m 가 조용히 사라진다. RTK 수신기를 단 이유가 그 자리에서 없어지고,
+ *    값은 여전히 그럴듯해 보여서 아무도 눈치채지 못한다. `double` 은
+ *    Cortex-M7 에서도 소프트 부동소수라 비싸고, 애초에 이 값들은 십진
+ *    문자열로 나가므로 부동소수를 거칠 이유가 없다.
+ *
+ *    그래서 **1e-7 도 단위 정수**로 담는다. 1e-7 도 = 적도에서 약 1.11 cm 라
+ *    RTK 의 정밀도와 자릿수가 맞고, 경도 최댓값 1,800,000,000 이 int32
+ *    (2,147,483,647) 안에 들어간다. 도-분 -> 십진도 변환도 정수 산술만으로
+ *    한다(mk_gnss.c 의 parse_latlon).
+ *
+ * 🔴 `have_*` 가 0 인 자리는 규격의 `null` 이다. 0 을 지어내지 않는다
+ *    (설계 원칙 3·4, 규격 §7.8.4).
+ */
+typedef struct {
+    /* 이 위치가 측정된 순간(규격 §7.8.3 의 `fix_t`). RMC 의 시각+날짜에서
+     * 온다. **언제나 UTC 이며 time_source 와 무관하다.** */
+    int64_t epoch_ms;
+    int     have_epoch;
+
+    /* RMC 상태가 'A' 이고 위·경도를 읽었을 때만 1. 남위·서경은 음수. */
+    int     have_pos;
+    int32_t lat_1e7;
+    int32_t lon_1e7;
+
+    /* GGA 에서 온다 — **시각 필드가 같은** GGA 를 봤을 때만 채워진다
+     * (규격 §7.8.1). 두 문장의 순서가 규격으로 정해져 있지 않아, 짝을
+     * 안 맞추면 1초 전 고도가 지금 위치에 붙는다. */
+    int     have_alt;
+    int32_t alt_mm;            /* 해발 고도, mm */
+    int     have_sats;
+    uint8_t sats;
+    int     have_fix;
+    uint8_t fix_quality;
+    int      have_hdop;
+    uint16_t hdop_1e2;         /* 수평 정밀도 저하율 × 100 */
+
+    /* RMC 에서 온다. */
+    int     have_speed;
+    int32_t speed_mm_s;        /* 대지 속도, mm/s (노트에서 변환됨) */
+    int      have_course;
+    uint16_t course_1e2;       /* 대지 방위(진북 °) × 100, 0~36000 */
+} MkGnssFix;
+
+/* 측위 레코드 큐(규격 §7.8). RMC 는 1 Hz 이고 슈퍼루프는 그보다 훨씬 자주
+ * 도므로 두 칸이면 넉넉하다 — raw 에코 큐(4칸)보다 작은 이유는 이쪽이
+ * 문장마다가 아니라 **RMC 마다** 한 칸을 쓰기 때문이다. */
+#define MK_GNSS_FIX_QUEUE_CAP  2u
+
 /* 🔴 모듈로 명령 한 줄을 내보내는 계약(규격 §4.1). 줄바꿈은 구현이
  *    붙인다 — 여기 오는 text 에는 CR/LF 가 없다. 성공하면 1, 실패(버퍼
  *    부족 등)면 0.
@@ -107,6 +159,23 @@ typedef struct MkGnss {
      *    (A/V)와는 무관하다. mk_gnssctl 이 초기화 재시도를 멈출 근거로
      *    쓰고, $STAT 의 gnss.sentence_seen 이 그대로 싣는다(규격 §7.4). */
     uint32_t sentences_seen_count;
+
+    /* ---- 측위 레코드(규격 §7.8) --------------------------------------- */
+
+    /* 마지막 GGA 에서 뽑아 둔 값들. RMC 가 완성될 때 **시각이 같으면**
+     * 그 레코드에 실린다. `gga_tod_ms` 는 그날 자정부터의 ms 다 — 날짜가
+     * 없는 GGA 와 날짜가 있는 RMC 를 비교할 수 있는 유일한 공통 값이다. */
+    int32_t  gga_tod_ms;
+    int      gga_have_tod;
+    int      gga_have_alt;
+    int32_t  gga_alt_mm;
+    int      gga_have_hdop;
+    uint16_t gga_hdop_1e2;
+
+    /* 측위 레코드 링. raw_q 와 같은 관례(head = 다음에 쓸 자리). */
+    MkGnssFix fix_q[MK_GNSS_FIX_QUEUE_CAP];
+    size_t    fix_head;
+    size_t    fix_tail;
 } MkGnss;
 
 void mk_gnss_init(MkGnss *g);
@@ -132,6 +201,26 @@ int mk_gnss_take_raw(MkGnss *g, char *out, size_t cap, size_t *out_len);
 
 /* 체크섬이 통과한 RMC·GGA 를 한 번이라도 받았으면 1, 아직이면 0. */
 int mk_gnss_any_sentence_seen(const MkGnss *g);
+
+/* 새 측위 레코드가 있으면 out 에 담고 1, 없으면 0 (규격 §7.8).
+ *
+ * 🔴 `mk_gnss_take_rmc` 와 **별개의 큐**다. 저쪽은 시간축(mk_timeax)이
+ *    비우고 이쪽은 텔레메트리(mk_telem)가 비운다 — 하나를 둘이 나눠 가지면
+ *    먼저 꺼낸 쪽만 값을 보고 다른 쪽은 영영 못 본다. */
+int mk_gnss_take_fix(MkGnss *g, MkGnssFix *out);
+
+/* 도-분(`ddmm.mmmmmmmm`) 문자열을 1e-7 도 정수로. 부동소수를 쓰지 않는다.
+ *
+ * `hemi` 는 'N'/'S'/'E'/'W' 중 하나이며 'S'·'W' 면 음수가 된다. 성공하면
+ * 1 이고 `*out` 을 채운다. 자릿수가 안 맞거나 범위(위도 ±90, 경도 ±180)를
+ * 벗어나면 0 이고 `*out` 은 건드리지 않는다.
+ *
+ * 🔴 헤더에 올린 이유는 시험이 이 변환 하나만 겨눠야 하기 때문이다.
+ *    도-분을 그대로 십진도로 쓰면 위치가 수십 km 어긋나는데 값은
+ *    그럴듯해 보인다(규격 §7.8.2) — 문장 파싱 전체로만 시험하면 그 자리가
+ *    가려진다. */
+int mk_gnss_ddmm_to_1e7(const char *text, size_t len, char hemi, int is_lat,
+                        int32_t *out);
 
 /* UTC 달력 시각 -> epoch_ms. 윤년(그레고리력 400 규칙 포함)을 직접 계산한다.
  * 범위를 벗어난 입력(month 0/13, day 0/32 등)은 검증하지 않는다 — 호출
