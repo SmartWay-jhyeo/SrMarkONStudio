@@ -104,11 +104,25 @@ MK_LINKBAUD_CHOICE_LIST(MK_LB_CHECK)
  *    안전 검사(test_firmware_safety.py)가 빠짐없이 돌게 하기 위해서다.
  *    여기서는 mk_rails_led() 를 부르기만 한다. */
 
-/* mk_hostlink 가 줄을 내보낼 때 부른다. */
+/* mk_hostlink 가 줄을 내보낼 때 부른다 — 명령 응답·오류·하트비트다.
+ *
+ * 🔴 이쪽은 링의 예약 몫까지 쓴다. 텔레메트리가 링을 채운 상태에서도
+ *    `$SACK` 은 나가야 한다 — 링크를 포화시킨 것이 바로 그 설정인데
+ *    되돌릴 응답이 사라지면 사람이 아무것도 못 하는 상태가 된다
+ *    (app/mk_txring.h 의 예약 몫 주석). */
 static void emit(void *ctx, const char *line, size_t len)
 {
     (void)ctx;
     mk_uart_write(line, len);
+}
+
+/* mk_telem 이 줄을 내보낼 때 부른다 — 초당 수백 줄인 쪽이다.
+ *
+ * 🔴 예약 몫을 남기고 넣는다. 위 emit 과 이것을 가르는 것이 예약의 전부다. */
+static void emit_telem(void *ctx, const char *line, size_t len)
+{
+    (void)ctx;
+    mk_uart_write_bulk(line, len);
 }
 
 static MkConfig s_cfg;
@@ -668,7 +682,7 @@ int main(void)
                             mk_gnss_io_write, NULL);
         }
 
-        mk_telem_tick(&s_telem, now, emit, NULL);
+        mk_telem_tick(&s_telem, now, emit_telem, NULL);
 
         /* 살아 있음 표시. 모드에 따라 주기를 바꿔 눈으로 구분한다.
          *   RUN    2초에 한 번 (느리게)

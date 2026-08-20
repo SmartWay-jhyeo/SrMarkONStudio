@@ -104,6 +104,17 @@ void DMA1_Stream3_IRQHandler(void)   /* SPI2 TX — LCD */
     mk_lcd_io_dma_tx_isr();
 }
 
+/* 🔴 호스트 링크 송신(USART3 TX). DMA1 은 Stream0~3 이 SPI4·WS2812·LCD 로
+ *    차 있어 DMA2 로 갔다 — 겹치면 수집이 깨지고, 그것이 이 프로젝트에서
+ *    가장 나쁜 실패다.
+ *
+ *    이 벡터가 없으면 첫 조각만 나가고 링크가 통째로 선다. 다음 조각을
+ *    잇는 것도, 링이 감기는 자리를 잇는 것도 여기서 시작된다. */
+void DMA2_Stream0_IRQHandler(void)   /* USART3 TX — 호스트 링크 */
+{
+    mk_uart_dma_isr();
+}
+
 /* 🔴 SPI4 와 같은 이유로 SPI2 자신의 인터럽트도 필요하다 — H7 은 전송
  *    종료를 EOT 로 알린다. 없으면 첫 전송에서 화면이 그대로 선다. */
 void SPI2_IRQHandler(void)
