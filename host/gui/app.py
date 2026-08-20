@@ -155,6 +155,10 @@ class MainWindow(QMainWindow):
         self._pages_scroll.setWidget(self._pages)
         self._pages_scroll.setWidgetResizable(True)
         self._pages_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        # 🔴 대시보드 칸 수의 기준은 **뷰포트 폭**이다 — 대시보드 자신의
+        #    resizeEvent 는 스크롤 영역이 최소폭에서 멈추는 순간 오지 않아,
+        #    좁힌 창에서 칸 수가 넓던 시절에 박힌다(dashboard.py 주석).
+        self._pages_scroll.viewport().installEventFilter(self)
 
         # 🔴 세 구역으로 나눈다: 정체성 바(위) · 레일(왼쪽) · 캔버스.
         #
@@ -266,6 +270,13 @@ class MainWindow(QMainWindow):
         self._stream_state.connector_names = names
         #: 대시보드 렌더링(_named)도 같은 사전을 쓴다.
         self._conn_names = names
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt 서명)
+        from PyQt6.QtCore import QEvent
+        if (obj is self._pages_scroll.viewport()
+                and event.type() == QEvent.Type.Resize):
+            self._dashboard.set_available_width(event.size().width())
+        return super().eventFilter(obj, event)
 
     def _named(self, state: ScreenState) -> ScreenState:
         """카드 이름표에 사용자가 붙인 이름을 앞세운 사본을 돌려준다.

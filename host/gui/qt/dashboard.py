@@ -577,12 +577,21 @@ class Dashboard(QWidget):
         for c in range(max(cols, 8)):
             sg.setColumnStretch(c, 1 if c < cols else 0)
 
-    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 서명)
-        super().resizeEvent(event)
-        # 칸 하나에 필요한 폭 어림 — 게이지 최소폭 + 카드 안쪽 여백 + 간격.
-        # 이 값을 줄이면 같은 폭에서 칸이 늘어난다(카드가 작아진다).
-        per = 330
-        self._reflow(max(1, min(self.width() // per, 5)))
+    def set_available_width(self, width: int) -> None:
+        """스크롤 뷰포트가 알려주는 실제 가용 폭으로 칸 수를 정한다.
+
+        🔴 자기 `resizeEvent` 를 쓰면 안 된다 — 대시보드는 QScrollArea 안에
+           있어서, 창이 자신의 최소폭(칸수 × 카드 최소폭)보다 좁아지면
+           스크롤 영역이 **줄이는 대신 가로 스크롤바를 내고 멈춘다.**
+           그러면 resizeEvent 가 다시 안 오고 칸 수가 넓던 시절(5칸)에
+           박힌 채, 사용자는 5칸 배치의 첫 열(J3·J8)만 보게 된다 —
+           실기기 스크린샷으로 확인(2026-08-20). 뷰포트 폭은 창을 줄이는
+           만큼 정직하게 줄므로 이것이 기준이어야 한다.
+
+        칸 하나에 필요한 폭 어림 330px — 게이지 최소폭 + 카드 안쪽 여백 +
+        간격. 이 값을 줄이면 같은 폭에서 칸이 늘어난다(카드가 작아진다).
+        """
+        self._reflow(max(1, min(width // 330, 5)))
 
     def _render_sensors(self, state: ScreenState) -> None:
         """🔴 카드를 매번 새로 만들지 않는다. 텔레메트리는 초당 열 번 오는데
