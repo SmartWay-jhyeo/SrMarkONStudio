@@ -55,8 +55,16 @@ void mk_gnssctl_tick(MkGnssCtl *c, int enabled, int sentence_seen,
      *    시험된다 — bsp 는 HAL 이 있어야 링크되므로 이 저장소에서
      *    돌릴 수 없다. `$GNSS` 명령 전달(mk_hostlink.c 의 on_gnss)도 같은
      *    규칙을 따른다. 길이는 리터럴이라 sizeof-1 로 안전하게 구한다. */
-    send(ctx, "LOG GPRMC ONTIME 1\r\n", sizeof "LOG GPRMC ONTIME 1\r\n" - 1u);
-    send(ctx, "LOG GPGGA ONTIME 1\r\n", sizeof "LOG GPGGA ONTIME 1\r\n" - 1u);
+    /* 🔴 ONTIME 0.05 = 20 Hz — 이 모듈(UM981)의 실측 상한이다 [2026-08-20].
+     *    실기기에서 1 → 0.2 → 0.1 → 0.05 → 0.02 를 차례로 요구해 레코드
+     *    수를 세었다: 초당 1 → 5 → 10 → 20 → 10. 0.02(50 Hz)를 요구하면
+     *    오히려 10 Hz 로 떨어진다 — 못 하는 요구는 거절한다. 사용자 지시
+     *    ("주기를 없애줘, 받을 수 있는 한계치를 전부") 로 상한에 맞춘다.
+     *    20 Hz × 레코드 ~135 B ≈ 2.7 KB/s — 921600 의 3 % 라 링크는 넉넉하다. */
+    send(ctx, "LOG GPRMC ONTIME 0.05\r\n",
+         sizeof "LOG GPRMC ONTIME 0.05\r\n" - 1u);
+    send(ctx, "LOG GPGGA ONTIME 0.05\r\n",
+         sizeof "LOG GPGGA ONTIME 0.05\r\n" - 1u);
 
     c->attempts++;
     c->last_attempt_ms = now_ms;
