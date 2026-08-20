@@ -54,6 +54,22 @@ TYPE_FAMILIES: dict[str, tuple[int, ...]] = {
     "din": tuple(sorted(DIN_PORTS)),
 }
 
+
+#: 트리에서 타입이 앉는 순서. 사람이 찾는 것이 위에 있어야 한다 —
+#: 센서(커넥터 가족)가 먼저, 측위·이벤트가 다음, 카탈로그 소음이 맨 뒤.
+#: 여기 없는 타입은 그 사이(2류)에 이름순으로 앉는다.
+#: 🔴 도착 순서로 앉히면 안 된다 — 연결 직후 카탈로그 91줄이 먼저 와서
+#:    cfg_* 가 맨 위를 차지하고, 정작 gnss 는 스크롤 밑에 숨는다
+#:    (사용자 보고 2026-08-20 "필터에 GNSS가 없다").
+def type_sort_key(t: str) -> tuple[int, str]:
+    if t in TYPE_FAMILIES:
+        return (0, t)
+    if t in ("gnss", "stat"):
+        return (1, t)
+    if t.startswith("cfg_"):
+        return (3, t)
+    return (2, t)
+
 #: 화면에 보여줄 최근 줄 수이자 창(window) 기반 계산의 표본 상한.
 #:
 #: 🔴 근거: `host/core/records.py` 가 이미 쓰는 이론적 상한

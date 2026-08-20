@@ -62,6 +62,7 @@ from host.gui.stream import (
     StreamRow,
     StreamState,
     TYPE_FAMILIES,
+    type_sort_key,
     connector_label,
     filter_note,
     format_gap,
@@ -155,7 +156,7 @@ class StreamView(QWidget):
         #    가로 폭 문제도 세로로 풀린다 — 트리는 제 스크롤을 가진다.
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
-        self._tree.setFixedHeight(150)
+        self._tree.setFixedHeight(210)
         self._tree.itemChanged.connect(self._on_tree_changed)
         #: itemChanged 를 프로그램이 낸 것인지 사람이 낸 것인지 가른다.
         self._tree_updating = False
@@ -346,7 +347,11 @@ class StreamView(QWidget):
         self._tree_updating = True
         try:
             for t in new_types:
-                item = QTreeWidgetItem(self._tree, [t])
+                # 우선순위 자리에 끼운다 — 도착 순서가 아니라 중요도순.
+                item = QTreeWidgetItem([t])
+                keys = [type_sort_key(x) for x in self._type_items]
+                pos = sum(1 for k in keys if k <= type_sort_key(t))
+                self._tree.insertTopLevelItem(pos, item)
                 on = t not in DEFAULT_HIDDEN_TYPES
                 kids = TYPE_FAMILIES.get(t, ())
                 if kids:
