@@ -2,11 +2,18 @@
 
 /* 🔴 <string.h> 도 <stdio.h> 도 필요 없다. 이 파일은 libc 를 부르지 않는다. */
 
-/* 10^0 .. 10^6 — digits 상한이 6인 이유가 이 표다.
- * 🔴 mk_json_f32 의 클램프가 이 배열의 범위를 지킨다. 클램프를 지우면
- *    digits=10 같은 호출이 POW10[10] 을 읽는다. */
-static const int64_t POW10[7] = {
-    1, 10, 100, 1000, 10000, 100000, 1000000
+/* 10^0 .. 10^9.
+ * 🔴 mk_json_f32·mk_json_fixed 의 클램프가 이 배열의 범위를 지킨다.
+ *    클램프를 지우면 digits=12 같은 호출이 POW10[12] 를 읽는다.
+ *
+ * 🔴 [확장, 2026-08-20] 예전에는 10^6 까지였고 그것이 f32 의 digits 상한
+ *    6과 같은 근거였다(float 의 유효숫자로 그 이상은 뜻이 없다). 위·경도는
+ *    소수 7자리라(규격 §7.8.2) 그 상한 안에 못 들어간다 — 그래서
+ *    mk_json_fixed 가 생겼고, 이 표가 그만큼 길어졌다. f32 쪽 상한 6은
+ *    그대로다. */
+static const int64_t POW10[10] = {
+    1, 10, 100, 1000, 10000, 100000, 1000000,
+    10000000, 100000000, 1000000000
 };
 
 static void put(MkJson *j, char c)
@@ -260,6 +267,45 @@ void mk_json_f32(MkJson *j, const char *key, float val, int digits)
             }
         }
         put_u64(j, (uint64_t)fp);
+    }
+}
+
+void mk_json_fixed(MkJson *j, const char *key, int64_t scaled, int digits)
+{
+    put_key(j, key);
+
+    if (digits < 0) {
+        digits = 0;
+    }
+    if (digits > 9) {
+        digits = 9;
+    }
+
+    int neg = scaled < 0;
+    /* 🔴 -2^63 은 부호를 뒤집을 수 없다(같은 값으로 되돌아온다). 부호 없는
+     *    쪽으로 옮겨 담아 그 한 값에서만 나는 오작동을 막는다. */
+    uint64_t a = neg ? (uint64_t)(-(scaled + 1)) + 1u : (uint64_t)scaled;
+
+    uint64_t ip = a / (uint64_t)POW10[digits];
+    uint64_t fp = a % (uint64_t)POW10[digits];
+
+    if (neg && (ip != 0u || fp != 0u)) {
+        put(j, '-');
+    }
+    put_u64(j, ip);
+
+    if (digits > 0) {
+        put(j, '.');
+        /* 앞자리 0 을 채운다. 1e-7 도 정수 3190694 는 .3190694 가 아니라
+         * 소수부 그대로 일곱 자리여야 한다. */
+        for (int d = digits - 1; d > 0; d--) {
+            if (fp < (uint64_t)POW10[d]) {
+                put(j, '0');
+            } else {
+                break;
+            }
+        }
+        put_u64(j, fp);
     }
 }
 

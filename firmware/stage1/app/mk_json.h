@@ -83,6 +83,21 @@ void mk_json_str_array(MkJson *j, const char *key,
  *    이미 유한하지 않은 값을 "값 없음" 으로 표시하도록 되어 있다. */
 void mk_json_f32(MkJson *j, const char *key, float val, int digits);
 
+/* 이미 10^digits 배로 스케일된 **정수**를 십진 소수로 찍는다. digits 는 0~9.
+ *
+ * 🔴 `mk_json_f32` 와 목적이 다르다. 저쪽은 float 값을 반올림해 찍고,
+ *    이쪽은 부동소수를 **한 번도 거치지 않는다.**
+ *
+ *    위·경도가 그 이유다(규격 §7.8.2). `float`(가수 24비트)은 유효숫자가
+ *    약 7자리라 `127.3405907`(10자리)을 담지 못한다 — 담으면 약 1 m 가
+ *    조용히 날아가고, 소수점은 여전히 그럴듯하게 붙어 있어 아무도
+ *    눈치채지 못한다. `double` 은 Cortex-M7 에서도 소프트 부동소수라 비싸고
+ *    애초에 필요가 없다: 값이 정수로 들어와 문자열로 나가는데 그 사이에
+ *    부동소수를 끼워 넣을 이유가 없다.
+ *
+ *    NaN·Inf 가 없으므로 `null` 로 떨어지는 경로도 없다. */
+void mk_json_fixed(MkJson *j, const char *key, int64_t scaled, int digits);
+
 /* 중첩 객체와 배열.
  *
  * 규격 §7.4 의 `stat` 레코드가 이 둘을 쓴다.

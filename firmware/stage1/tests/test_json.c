@@ -118,6 +118,79 @@ static void test_short_escapes_match_python(void)
     CHECK_EQ(b, "{\"s\":\"a\x7f" "b\"}", "0x7F 는 그대로");
 }
 
+/* ---- mk_json_fixed — 부동소수를 한 번도 거치지 않는 십진 소수 ------------
+ *
+ * 🔴 이것이 생긴 이유는 위·경도다(규격 §7.8.2). `float`(가수 24비트)은
+ *    유효숫자가 약 7자리라 `127.3405907`(10자리)을 담지 못한다 — 담으면
+ *    약 1 m 가 조용히 날아가고, 소수점은 여전히 그럴듯하게 붙어 있어
+ *    아무도 눈치채지 못한다. `mk_json_f32` 로는 이 값을 낼 수 없다. */
+static void test_fixed_point(void)
+{
+    char b[64];
+    MkJson j;
+
+    /* 실기기(UM981, 2026-08-20)가 낸 좌표. 1e-7 도 정수 그대로. */
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "lat", 373190694LL, 7);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"lat\":37.3190694}", "위도 7자리");
+
+    /* 🔴 float 로는 못 담는 자릿수다 — 이 값이 이 함수의 존재 이유다. */
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "lon", 1273405907LL, 7);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"lon\":127.3405907}", "경도 10자리 유효숫자");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "lat", -373190694LL, 7);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"lat\":-37.3190694}", "남위는 음수");
+
+    /* 앞자리 0 을 채운다 — 안 채우면 0.3190694 가 0.319069 처럼 보인다. */
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "lat", 3190694LL, 7);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"lat\":0.3190694}", "정수부가 0 이어도 소수 7자리");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "alt", 100852LL, 3);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"alt\":100.852}", "고도 mm -> m");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "speed", 72LL, 3);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"speed\":0.072}", "0.072 — 앞자리 0 두 개");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "hdop", 120LL, 2);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"hdop\":1.20}", "자릿수만큼 0 을 채운다(f32 와 같은 관례)");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "n", -1LL, 0);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"n\":-1}", "digits 0 이면 정수 그대로");
+
+    /* 🔴 클램프. 없으면 POW10 배열 밖을 읽는다(mk_json.c 머리말). */
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "v", 5LL, 20);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"v\":0.000000005}", "digits 는 9 로 클램프된다");
+
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "v", 5LL, -3);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"v\":5}", "음수 digits 는 0 으로 클램프된다");
+
+    /* 🔴 -2^63 은 부호를 뒤집을 수 없다(같은 값으로 되돌아온다). 부호 없는
+     *    쪽으로 옮겨 담지 않으면 이 한 값에서만 값이 깨진다. */
+    mk_json_begin(&j, b, sizeof b);
+    mk_json_fixed(&j, "v", (int64_t)(-9223372036854775807LL - 1LL), 0);
+    mk_json_end(&j);
+    CHECK_EQ(b, "{\"v\":-9223372036854775808}", "int64 최솟값도 깨지지 않는다");
+}
+
 static void test_float_digits(void)
 {
     char b[64];
@@ -420,6 +493,7 @@ int main(int argc, char **argv)
     test_short_escapes_match_python();
     test_float_digits();
     test_float_digits_are_clamped();
+    test_fixed_point();
     test_tiny_and_null_buffers();
     test_float_non_finite_is_null();
     test_overflow_is_sticky_and_yields_nothing();
