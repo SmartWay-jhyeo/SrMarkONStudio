@@ -239,6 +239,10 @@ class StreamView(QWidget):
         self._detail_table.setSelectionMode(
             QTableWidget.SelectionMode.NoSelection)
         self._detail_table.setMaximumHeight(240)
+        self._detail_table.setShowGrid(False)
+        self._detail_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._detail_table.setAlternatingRowColors(False)
+        self._detail_table.verticalHeader().setDefaultSectionSize(24)
         from PyQt6.QtWidgets import QHeaderView
         self._detail_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch)
@@ -253,6 +257,10 @@ class StreamView(QWidget):
         self._gaps_table.setSelectionMode(
             QTableWidget.SelectionMode.NoSelection)
         self._gaps_table.setMaximumHeight(120)
+        self._gaps_table.setShowGrid(False)
+        self._gaps_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._gaps_table.verticalHeader().setDefaultSectionSize(24)
+        self._gaps_table.horizontalHeader().setStretchLastSection(True)
 
         self._footer_label = QLabel("")
         self._footer_label.setObjectName("dim")

@@ -228,4 +228,35 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border: 2px solid {Color.PROBING};
 }}
+
+/* 🔴 표 — 기본 Qt 표는 회색 격자에 옛날 헤더라 앱과 따로 논다(사용자
+   피드백 2026-08-20 "디자인이 구리다"). 격자 대신 아래 실선 한 줄,
+   납작한 헤더, 고정폭 숫자로 이 앱의 시각 언어에 맞춘다. */
+QTableWidget {{
+    background: {Color.SURFACE};
+    border: 1px solid {Color.LINE};
+    border-radius: 6px;
+    gridline-color: transparent;
+    font-family: {Font.MONO};
+    font-size: {Font.SIZE_SM}pt;
+    selection-background-color: transparent;
+}}
+QTableWidget::item {{
+    padding: 3px {Space.SM}px;
+    border-bottom: 1px solid {Color.GROUND};
+}}
+QHeaderView::section {{
+    background: {Color.SURFACE};
+    color: {Color.INK_DIM};
+    border: none;
+    border-bottom: 1px solid {Color.LINE};
+    padding: 4px {Space.SM}px;
+    font-family: {Font.UI};
+    font-size: {Font.SIZE_SM}pt;
+    font-weight: 600;
+}}
+QTableWidget QTableCornerButton::section {{
+    background: {Color.SURFACE};
+    border: none;
+}}
 """
