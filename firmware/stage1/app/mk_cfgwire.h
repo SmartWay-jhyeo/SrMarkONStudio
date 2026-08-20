@@ -34,6 +34,11 @@ typedef enum {
     MK_FIELD_AIN = 1u << 0,
     MK_FIELD_I2C = 1u << 1,
     MK_FIELD_DIN = 1u << 2,
+    /* 🔴 [신설, 2026-08-20] 네 번째. GNSS 측위 레코드(규격 §7.8)가
+     *    자기 마스크 `tx.fields_gnss` 를 갖는다 — 위치가 나가는 자리와
+     *    아날로그 채널을 같은 스위치로 묶으면, 아날로그를 가벼게 하려다
+     *    위성 수가 같이 사라진다. */
+    MK_FIELD_GNSS = 1u << 3,
 } MkFieldKind;
 
 /* NDJSON 필드 마스크의 비트 하나 (규격 §7.2). */

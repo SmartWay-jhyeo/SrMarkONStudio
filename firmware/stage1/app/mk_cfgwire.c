@@ -150,10 +150,11 @@ void mk_cfgwire_list(const MkConfig *cfg,
          *    2026-08-19). 호스트가 이것으로 마스크 카드를 ain·i2c·din
          *    셋으로 나눠 그린다 — 없으면 어느 카드에도 못 그린다. */
         {
-            const char *names[3];
+            const char *names[4];
             size_t n_names = 0;
             if (fields[i].kinds & MK_FIELD_AIN) { names[n_names++] = "ain"; }
             if (fields[i].kinds & MK_FIELD_I2C) { names[n_names++] = "i2c"; }
+            if (fields[i].kinds & MK_FIELD_GNSS) { names[n_names++] = "gnss"; }
             if (fields[i].kinds & MK_FIELD_DIN) { names[n_names++] = "din"; }
             mk_json_str_array(&j, "records", names, n_names);
         }

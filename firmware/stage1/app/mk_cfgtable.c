@@ -60,11 +60,11 @@ static const char *const I2C_KIND_LABELS[] = {
     "없음", "조도", "온습도", "적외 온도", "방수 온도"
 };
 
-/* dev 1 + tx 5(마스크 3 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
+/* dev 1 + tx 6(마스크 4 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
  * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
  * + link 1(호스트 링크 속도)
  * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기) */
-#define ITEM_COUNT   (1 + 5 + 4 + 2 + MK_AIN_COUNT * 5 \
+#define ITEM_COUNT   (1 + 6 + 4 + 2 + MK_AIN_COUNT * 5 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 5 \
@@ -133,11 +133,23 @@ static size_t s_gen;              /* 다음에 쓸 자리 */
  *    각각의 최댓값·기본값을 끌어내고, mk_cfgwire.c 가 여기서 `cfg_field`
  *    의 `records` 배열을 만들고, mk_telem.c 의 field_on() 이 여기서
  *    "해당 없는 비트는 마스크에 서 있어도 무시" 를 판정한다. */
+/* 🔴 [신설, 2026-08-20] 비트 10~15 는 GNSS 측위 레코드(규격 §7.8)의 것이다.
+ *
+ *    기본값을 이렇게 고른 근거(규격 §7.8.5): 켜 둔 셋(alt·sats·fix)은
+ *    "어디에 있고 그 값을 믿어도 되는가" 에 답한다. 꺼 둔 셋은 이차적이다 —
+ *    hdop 은 sats·fix 가 이미 말한 신뢰도를 한 번 더 말하는 수이고,
+ *    speed·course 는 위치가 아니라 운동이라 쓰는 쪽이 정해져 있지 않다.
+ *    이 레코드는 1 Hz 라 셋을 다 켜도 30 B/s 남짓이므로, 필요하면 망설일
+ *    이유 없이 켜면 된다.
+ *
+ *    🔴 lat·lon·fix_t 는 여기 없다 — 마스크 비트가 아예 없고 항상 실린다.
+ *    위치가 빠진 GNSS 레코드는 아무 말도 안 한다(i2c 의 quantity·value,
+ *    din 의 connector_id·state 와 같은 자리, 규격 §7.8.5). */
 static const MkFieldBit FIELDS[] = {
     { 0, "device_id",       0, "보드 식별자",
-      MK_FIELD_AIN | MK_FIELD_I2C | MK_FIELD_DIN },
+      MK_FIELD_AIN | MK_FIELD_I2C | MK_FIELD_DIN | MK_FIELD_GNSS },
     { 2, "time_quality",    0, "시간 품질",
-      MK_FIELD_AIN | MK_FIELD_I2C | MK_FIELD_DIN },
+      MK_FIELD_AIN | MK_FIELD_I2C | MK_FIELD_DIN | MK_FIELD_GNSS },
     { 3, "raw",             1, "ADS1256 원시 카운트",  MK_FIELD_AIN },
     { 4, "ma",              1, "전류 (mA)",            MK_FIELD_AIN },
     { 5, "value",           1, "물리량 환산",          MK_FIELD_AIN },
@@ -146,6 +158,12 @@ static const MkFieldBit FIELDS[] = {
     { 8, "capture_counter", 0, "획득 카운터",          MK_FIELD_AIN },
     { 9, "connector_id",    1, "커넥터 번호",
       MK_FIELD_AIN | MK_FIELD_I2C },
+    { 10, "alt",            1, "고도 (m)",             MK_FIELD_GNSS },
+    { 11, "sats",           1, "위성 수",              MK_FIELD_GNSS },
+    { 12, "fix",            1, "측위 품질",            MK_FIELD_GNSS },
+    { 13, "hdop",           0, "HDOP",                 MK_FIELD_GNSS },
+    { 14, "speed",          0, "대지 속도 (m/s)",      MK_FIELD_GNSS },
+    { 15, "course",         0, "대지 방위 (도)",       MK_FIELD_GNSS },
 };
 
 const MkFieldBit *mk_cfgtable_fields(size_t *count)
@@ -282,6 +300,18 @@ static size_t add_tx(size_t i)
                               .vtype = MK_VT_U32, .min = 0,
                               .has_min = 1, .has_max = 1,
                               .label = "NDJSON 필드 마스크 (디지털 입력)" };
+    s_items[i].def.u = def_u;
+    s_items[i].max = (float)max_u;
+    i++;
+
+    /* 🔴 [신설, 2026-08-20] 네 번째 마스크. GNSS 측위 레코드(규격 §7.8)는
+     *    주기가 다르고(모듈이 정하는 1 Hz) 성격도 다르다 — 아날로그를
+     *    가볍게 하려고 비트를 끄다가 위성 수가 같이 사라지면 안 된다. */
+    field_mask_bounds(MK_FIELD_GNSS, &max_u, &def_u);
+    s_items[i] = (MkCfgItem){ .key = "tx.fields_gnss", .group = "tx",
+                              .vtype = MK_VT_U32, .min = 0,
+                              .has_min = 1, .has_max = 1,
+                              .label = "NDJSON 필드 마스크 (GNSS)" };
     s_items[i].def.u = def_u;
     s_items[i].max = (float)max_u;
     i++;

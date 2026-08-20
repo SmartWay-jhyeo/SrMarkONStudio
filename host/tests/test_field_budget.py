@@ -269,12 +269,17 @@ def test_all_fields_on_is_measurable():
     """전부 켰을 때가 얼마인지 실제로 잴 수 있어야 한다.
 
     사용자가 고르기 전에 결과를 보는 것이 이 화면의 요점이다.
+
+    🔴 "전부" 를 `1 << len(FIELD_BITS)` 로 만들면 안 된다 — 비트 **번호**와
+    비트 **개수**는 다르고(1번은 비어 있다, 규격 §7.2), 게다가 마스크마다
+    자기 종류의 비트만 켤 수 있다. 카탈로그가 알려 주는 상한을 그대로 쓴다
+    — 비트를 늘려도 이 시험이 따라온다.
     """
-    from tools.simulator.config_store import FIELD_BITS, default_store
+    from tools.simulator.config_store import default_store
     from tools.simulator.telemetry import build_ain_record
 
     store = default_store()
-    store.set("tx.fields_ain", str((1 << len(FIELD_BITS)) - 1))
+    store.set("tx.fields_ain", str(int(store.items["tx.fields_ain"].maximum)))
     rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
                            raw=8388608, capture_counter=123456789)
     b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=115200)

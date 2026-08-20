@@ -42,9 +42,13 @@ from host.core.records import SCHEMA_VER
 #:    비트 번호는 이 표 하나를 셋이 공유하지만 해당 레코드는 비트마다
 #:    다르다 — mk_cfgtable.c 의 FIELDS 와 한 글자도 다르면 안 된다
 #:    (crosscheck_cfgtable.py 가 대조한다).
+#: 🔴 [신설, 2026-08-20] 비트 10~15 는 GNSS 측위 레코드(규격 §7.8)의 것이다.
+#:    기본값 근거는 규격 §7.8.5 — 켜 둔 셋(alt·sats·fix)은 "어디에 있고 그
+#:    값을 믿어도 되는가" 에 답하고, 꺼 둔 셋(hdop·speed·course)은 이차적이다.
+#:    `lat`·`lon`·`fix_t` 는 여기 없다 — 마스크 비트가 아예 없고 항상 실린다.
 FIELD_BITS: tuple[tuple[int, str, bool, str, tuple[str, ...]], ...] = (
-    (0, "device_id", False, "보드 식별자", ("ain", "i2c", "din")),
-    (2, "time_quality", False, "시간 품질", ("ain", "i2c", "din")),
+    (0, "device_id", False, "보드 식별자", ("ain", "i2c", "din", "gnss")),
+    (2, "time_quality", False, "시간 품질", ("ain", "i2c", "din", "gnss")),
     (3, "raw", True, "ADS1256 원시 카운트", ("ain",)),
     (4, "ma", True, "전류 (mA)", ("ain",)),
     (5, "value", True, "물리량 환산", ("ain",)),
@@ -52,15 +56,23 @@ FIELD_BITS: tuple[tuple[int, str, bool, str, tuple[str, ...]], ...] = (
     (7, "status", True, "채널 상태", ("ain", "i2c")),
     (8, "capture_counter", False, "획득 카운터", ("ain",)),
     (9, "connector_id", True, "커넥터 번호", ("ain", "i2c")),
+    (10, "alt", True, "고도 (m)", ("gnss",)),
+    (11, "sats", True, "위성 수", ("gnss",)),
+    (12, "fix", True, "측위 품질", ("gnss",)),
+    (13, "hdop", False, "HDOP", ("gnss",)),
+    (14, "speed", False, "대지 속도 (m/s)", ("gnss",)),
+    (15, "course", False, "대지 방위 (도)", ("gnss",)),
 )
 
-#: 레코드 종류 → 자기 마스크 설정 키. `tx.fields` 를 나눈 세 항목이다
-#: (규격 §7.2·§7.5·§7.6). `gnss_raw` 는 전용 키가 없다 — `ain` 을 빌려
-#: 쓴다(§7.7, mk_telem.c build_gnss_raw_record 와 같은 판단).
+#: 레코드 종류 → 자기 마스크 설정 키. `tx.fields` 를 나눈 네 항목이다
+#: (규격 §7.2·§7.5·§7.6·§7.8). `gnss_raw` 는 전용 키가 없다 — `ain` 을 빌려
+#: 쓴다(§7.7, mk_telem.c build_gnss_raw_record 와 같은 판단). `gnss`(측위)는
+#: 그와 달리 **측정값** 이라 자기 마스크를 갖는다(§7.8.5).
 FIELD_MASK_KEYS: dict[str, str] = {
     "ain": "tx.fields_ain",
     "i2c": "tx.fields_i2c",
     "din": "tx.fields_din",
+    "gnss": "tx.fields_gnss",
 }
 
 #: 전선 위 JSON 형식. 🔴 보드가 쓰는 것과 같아야 한다.
@@ -553,6 +565,9 @@ def default_store(path: Path | None = None) -> ConfigStore:
     mask_ain = _default_field_mask("ain")
     mask_i2c = _default_field_mask("i2c")
     mask_din = _default_field_mask("din")
+    # 🔴 [신설, 2026-08-20] 네 번째. GNSS 측위 레코드(규격 §7.8)는 주기도
+    #    성격도 달라 아날로그와 같은 스위치에 묶으면 안 된다.
+    mask_gnss = _default_field_mask("gnss")
     items: list[SimConfigItem] = [
         SimConfigItem("dev.id", "dev", "str", "1", "1", maximum=15,
                       label="장치 ID"),
@@ -565,6 +580,9 @@ def default_store(path: Path | None = None) -> ConfigStore:
         SimConfigItem("tx.fields_din", "tx", "u32", mask_din, mask_din,
                       minimum=0, maximum=_all_field_mask("din"),
                       label="NDJSON 필드 마스크 (디지털 입력)"),
+        SimConfigItem("tx.fields_gnss", "tx", "u32", mask_gnss, mask_gnss,
+                      minimum=0, maximum=_all_field_mask("gnss"),
+                      label="NDJSON 필드 마스크 (GNSS)"),
         SimConfigItem("tx.period_ms", "tx", "u16", 100, 100,
                       minimum=10, maximum=10000, unit="ms", label="전송 주기"),
         SimConfigItem("tx.float_digits", "tx", "u8", 4, 4,
