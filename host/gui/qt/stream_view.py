@@ -305,7 +305,13 @@ class StreamView(QWidget):
         col.addWidget(hairline())
         col.addLayout(control_row)
         col.addWidget(self._header_label)
+        # 🔴 콘솔 높이 상한 (사용자 요청 2026-08-20 "너무 길다").
+        #    ~22줄이면 흐름을 보기에 충분하고 나머지는 콘솔 제 스크롤로
+        #    본다. 남는 세로는 아래 addStretch 가 모은다 — 지난번에 이걸
+        #    빼먹어 여백이 구획 사이에 흩뿌려졌다.
+        self._console.setMaximumHeight(380)
         col.addWidget(self._console, 1)
+        col.addStretch(1)
         canvas = QWidget()
         canvas.setLayout(col)
 
