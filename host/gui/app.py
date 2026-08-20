@@ -159,6 +159,13 @@ class MainWindow(QMainWindow):
         #    resizeEvent 는 스크롤 영역이 최소폭에서 멈추는 순간 오지 않아,
         #    좁힌 창에서 칸 수가 넓던 시절에 박힌다(dashboard.py 주석).
         self._pages_scroll.viewport().installEventFilter(self)
+        # 🔴 가로 스크롤은 없다 (사용자 결정 2026-08-20). 칸 수가 뷰포트
+        #    폭을 따라 1칸까지 접히므로 가로로 넘칠 정당한 사유가 없다 —
+        #    가로 스크롤바가 나타난다는 것 자체가 배치 결함이라는 뜻이고,
+        #    그때는 숨어서 반쯤 보이느니 잘리는 편이 결함을 빨리 드러낸다.
+        from PyQt6.QtCore import Qt as _Qt
+        self._pages_scroll.setHorizontalScrollBarPolicy(
+            _Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         # 🔴 세 구역으로 나눈다: 정체성 바(위) · 레일(왼쪽) · 캔버스.
         #
