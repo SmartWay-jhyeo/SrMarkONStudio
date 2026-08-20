@@ -149,6 +149,23 @@ class StreamView(QWidget):
         analysis_row.setSpacing(Space.LG)
         analysis_row.addWidget(self._interval_label, 2)
         analysis_row.addWidget(self._gaps_label, 1)
+        # 🔴 넓은 내용은 **제 상자 안에서만** 스크롤한다 (사용자 제안
+        #    2026-08-20 — "텍스트 박스에 전부 넣을 필요 없이 스크롤만 따로").
+        #    이 라벨들은 데이터가 글 길이를 정해서, 그냥 두면 최소폭이
+        #    QStackedWidget 을 타고 대시보드를 창 밖으로 민다 — 오늘 세 번
+        #    재발한 병의 마지막 뿌리다. 콘솔이 제 가로 스크롤을 갖는 것과
+        #    같은 꼴로, 여기도 제 스크롤을 갖는다. 페이지 폭과는 절연된다.
+        from PyQt6.QtWidgets import QScrollArea as _QScrollArea
+        from PyQt6.QtWidgets import QFrame as _QFrame
+        analysis_host = QWidget()
+        analysis_host.setLayout(analysis_row)
+        analysis_scroll = _QScrollArea()
+        analysis_scroll.setWidget(analysis_host)
+        analysis_scroll.setWidgetResizable(True)
+        analysis_scroll.setFrameShape(_QFrame.Shape.NoFrame)
+        analysis_scroll.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                      QSizePolicy.Policy.Preferred)
+        analysis_scroll.setFixedHeight(110)
 
         # ---- 필터 · 조작 -------------------------------------------------
         # 🔴 트리 (사용자 요청 2026-08-20 — "일자로 쭉 늘어트리지 말고 트리
@@ -235,7 +252,7 @@ class StreamView(QWidget):
         col.addWidget(self._type_label)
         col.addLayout(summary_row)
         col.addWidget(hairline())
-        col.addLayout(analysis_row)
+        col.addWidget(analysis_scroll)
         col.addWidget(hairline())
         col.addLayout(control_row)
         col.addWidget(self._header_label)
@@ -354,7 +371,11 @@ class StreamView(QWidget):
                 keys = [type_sort_key(x) for x in self._type_items]
                 pos = sum(1 for k in keys if k <= type_sort_key(t))
                 self._tree.insertTopLevelItem(pos, item)
-                on = t not in DEFAULT_HIDDEN_TYPES
+                # 🔴 기본은 전부 꺼짐 (사용자 결정 2026-08-20). 다 켜 두면
+                #    연결하자마자 초당 천 줄이 쏟아져 아무것도 못 읽는다 —
+                #    보고 싶은 것을 골라 켜는 화면이다. 빈 콘솔에는
+                #    placeholder 가 이유를 적는다(filter_note).
+                on = False
                 kids = TYPE_FAMILIES.get(t, ())
                 if kids:
                     # 🔴 AutoTristate — 부모를 누르면 자식이 다 따라가고,

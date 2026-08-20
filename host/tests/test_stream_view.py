@@ -103,6 +103,7 @@ def test_console_shows_the_raw_line_verbatim(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
 
     assert line in view._console.toPlainText()
 
@@ -113,6 +114,7 @@ def test_console_shows_raw_and_ma_separately_from_value(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
 
     text = view._console.toPlainText()
     assert "65528" in text
@@ -140,6 +142,7 @@ def test_second_render_only_appends_new_lines_not_a_full_redraw(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
     assert view._last_ordinal_shown == 0
 
     state.ingest([_ain_line(2), _ain_line(3)], now_s=0.1)
@@ -174,6 +177,7 @@ def test_pause_freezes_the_console(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
     view._pause_btn.click()
     assert state.paused is True
 
@@ -190,6 +194,7 @@ def test_resume_appends_what_arrived_while_paused(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
     view._pause_btn.click()
     state.ingest([_ain_line(2)], now_s=1.0)
     view.render(state, now_s=1.0)
@@ -203,19 +208,18 @@ def test_resume_appends_what_arrived_while_paused(app):
 
 # --------------------------------------------------------------------- 필터
 
-def test_catalog_types_are_hidden_by_default(app):
-    """🔴 카탈로그 91줄이 텔레메트리를 파묻으면 안 된다."""
+def test_catalog_types_also_start_unchecked(app):
+    """🔴 기본은 전부 꺼짐 (사용자 결정 2026-08-20). 다 켜 두면 연결하자마자
+    초당 천 줄이 쏟아져 아무것도 못 읽는다 — 보고 싶은 것을 골라 켠다."""
     state = StreamState()
     state.ingest([_cfg_item_line(1), _ain_line(2)], now_s=0.0)
 
     view = StreamView()
     view.render(state, now_s=0.0)
 
-    text = view._console.toPlainText()
-    assert _ain_line(2) in text
-    assert "rail_24v" not in text
+    assert view._console.toPlainText() == ""
     assert _is_on(view._type_items["cfg_item"]) is False
-    assert _is_on(view._type_items["ain"]) is True
+    assert _is_on(view._type_items["ain"]) is False
 
 
 def test_checking_a_hidden_catalog_type_reveals_it_retroactively(app):
@@ -226,6 +230,7 @@ def test_checking_a_hidden_catalog_type_reveals_it_retroactively(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    _set_on(view._type_items["ain"], True)      # 기본 전체 해제 — ain 만 켠 상태에서
     assert "rail_24v" not in view._console.toPlainText()
 
     _set_on(view._type_items["cfg_item"], True)
@@ -240,6 +245,7 @@ def test_unchecking_a_shown_type_hides_it_retroactively(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
     text = view._console.toPlainText()
     assert _ain_line(1) in text and _i2c_line(2) in text
 
@@ -256,6 +262,7 @@ def test_rechecking_every_box_shows_everything_again(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
     _set_on(view._type_items["i2c"], False)
     assert _i2c_line(2) not in view._console.toPlainText()
 
@@ -411,6 +418,7 @@ def test_select_all_and_clear_all_cover_types_and_connectors(app):
     state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
     assert all(_is_on(cb) for cb in view._type_items.values()
                if cb.text(0) not in ("cfg_item", "cfg_field", "cfg_end"))
 
@@ -459,6 +467,7 @@ def test_unchecking_a_connector_hides_it_retroactively(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
     text = view._console.toPlainText()
     assert _ain_line(1) in text and _i2c_line(2) in text
 
@@ -475,6 +484,7 @@ def test_rechecking_every_connector_shows_everything_again(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
+    view._type_all_btn.click()   # 기본은 전체 해제(2026-08-20) — 이 시험의 주제가 아니라 켠다
     _set_on(view._conn_items[10], False)
     assert _i2c_line(2) not in view._console.toPlainText()
 
@@ -483,13 +493,10 @@ def test_rechecking_every_connector_shows_everything_again(app):
     assert _ain_line(1) in text and _i2c_line(2) in text
 
 
-def test_a_record_type_nobody_has_seen_yet_is_shown_by_default(app):
-    """🔴 곧 `gnss`·`imu` 레코드가 생긴다(다른 작업에서 만드는 중이다).
-
-    숨김 목록(`DEFAULT_HIDDEN_TYPES`)은 **카탈로그 응답 전용**이다 —
-    새 텔레메트리가 기본으로 숨으면, 그것을 만든 사람이 "안 온다" 고
-    판단하게 된다. 이 화면의 존재 이유가 정확히 그 판단이라 더 나쁘다.
-    """
+def test_everything_starts_unchecked_by_user_decision(app):
+    """🔴 기본은 전부 꺼짐 (사용자 결정 2026-08-20). 다만 **목록에는 있어야
+    한다** — '꺼짐(0건)' 과 '그런 것 없음' 은 다른 말이다. 켜면 이미 온
+    줄도 소급해서 보인다."""
     line = ('{"schema_ver":3,"seq":1,"t":100,"type":"gnss",'
             '"lat":37.5,"lon":127.0,"status":0}')
     state = StreamState()
@@ -498,5 +505,8 @@ def test_a_record_type_nobody_has_seen_yet_is_shown_by_default(app):
     view = StreamView()
     view.render(state, now_s=0.0)
 
-    assert _is_on(view._type_items["gnss"]) is True
-    assert line in view._console.toPlainText()
+    assert "gnss" in view._type_items          # 목록에는 있다
+    assert _is_on(view._type_items["gnss"]) is False
+    assert view._console.toPlainText() == ""
+    _set_on(view._type_items["gnss"], True)    # 켜면
+    assert line in view._console.toPlainText()  # 소급해서 보인다
