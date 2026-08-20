@@ -47,7 +47,7 @@ static void emit_sack_err(MkHostlink *h, const char *verb, const char *reason)
     emit_line(h, payload);
 }
 
-/* 장치 카운터(ms)를 규격 §7.1 의 시간축으로 옛긴다.
+/* 장치 카운터(ms)를 규격 §7.1 의 시간축으로 옮긴다.
  *
  * 🔴 [정정, 2026-08-20] 명령 응답의 `t` 가 시간축을 안 따르고 있었다.
  *    실기기에서 텔레메트리는 `t: 1787193172927`(UTC epoch)인데 같은 순간의
@@ -122,19 +122,103 @@ static int emit_json(MkHostlink *h, char *body, size_t cap, int n)
     return 1;
 }
 
-/* mk_cfgwire 가 카탈로그 한 줄을 만들 때마다 부른다. */
-static void catalog_sink(void *ctx, const char *line, size_t len)
-{
-    MkHostlink *h = (MkHostlink *)ctx;
-    char body[400];
+/* 🔴 카탈로그를 이어서 내보내는 데 쓰는 시한 (ms).
+ *
+ *    이만큼 **한 줄도** 못 나가면 포기하고 호스트에 ERR 로 알린다.
+ *    끝없이 기다리면 다음 `$CFG,LIST` 도 영영 못 받는 상태가 되고,
+ *    그것은 화면이 조용히 죽는 방식이다.
+ *
+ *    한 줄이라도 나가면 시한이 다시 선다. 그래서 이 값은 "카탈로그
+ *    전체가 나가는 데 걸리는 시간" 이 아니라 "링이 통째로 막혀 있는
+ *    시간" 이다 — 가장 느린 115200 에서 링 8,192 B 가 다 빠지는 데
+ *    711 ms 이므로, 10초는 정상 상태에서는 절대 안 닿는다. */
+#define MK_CATALOG_STALL_MS  10000
 
-    if (h->emit == NULL || len + 2u > sizeof body) {
+/* 이어서 내보내는 통로로 한 줄. 자리가 없으면 0.
+ *
+ * 🔴 `stream` 이 없으면(시뮬레이터·호스트 시험) 예전처럼 그냥 낸다 —
+ *    받는 쪽이 무한 버퍼라 거절이 없다. */
+static int stream_line(MkHostlink *h, const char *line, size_t len)
+{
+    if (h->stream != NULL) {
+        return h->stream(h->ctx, line, len);
+    }
+    if (h->emit == NULL) {
+        return 0;
+    }
+    h->emit(h->ctx, line, len);
+    return 1;
+}
+
+/* 내보내다 만 카탈로그를 링이 받아 주는 만큼 잇는다.
+ *
+ * 🔴 이번 결함의 고침 자리다 (실기기 2026-08-20).
+ *
+ *    예전에는 `$CFG,LIST` 를 받은 그 자리에서 103줄 ≈ 25 KB 를 통째로
+ *    쏟았다. 송신이 블로킹이던 때에는 느릴 뿐 전부 나갔지만, 링버퍼+DMA
+ *    로 바꾼 뒤에는 4,096 B 를 넘는 순간부터 버려졌다 — 43줄만 도착하고
+ *    호스트는 "cfg_end 가 없다" 로 카탈로그를 통째로 거부했다. 설정 폼이
+ *    안 만들어지니 레일 표시도 틀리고 토글도 안 먹었다.
+ *
+ *    고침은 **역압**이다. 자리가 있는 만큼만 내고, 거절당한 줄은 버리지
+ *    않고 그 자리에 그대로 두었다가 다음 바퀴에 다시 낸다. 기다리지
+ *    않으므로 슈퍼루프는 안 선다.
+ */
+static void catalog_pump(MkHostlink *h, int64_t now_ms)
+{
+    if (!h->catalog.active || h->cfg == NULL) {
         return;
     }
-    memcpy(body, line, len);
-    body[len]     = '\n';
-    body[len + 1] = '\0';
-    h->emit(h->ctx, body, len + 1u);
+
+    char line[MK_CFGWIRE_LIST_LINE_MAX];
+    char body[MK_CFGWIRE_LIST_LINE_MAX + 16];
+    size_t total = mk_cfgwire_list_count(h->cfg, h->n_fields);
+
+    while (h->catalog.index < total) {
+        int n = mk_cfgwire_list_line(h->cfg, h->fields, h->n_fields,
+                                     h->catalog.index, h->catalog.now_ms,
+                                     line, sizeof line);
+        if (n <= 0) {
+            /* 줄을 못 만들었다(버퍼 부족). 여기서 멈추면 카탈로그가 영영
+             * 안 끝나므로 건너뛴다 — 빠진 것은 `cfg_end` 의 count 대조가
+             * 잡는다(규격 §7.3). 링 문제가 아니므로 시한도 새로 센다. */
+            h->catalog.index++;
+            h->catalog.progress_ms = now_ms;
+            continue;
+        }
+        memcpy(body, line, (size_t)n);
+        body[n]     = '\n';
+        body[n + 1] = '\0';
+
+        if (!stream_line(h, body, (size_t)n + 1u)) {
+            /* 자리가 없다. **버리지 않고** 다음 바퀴에 이 줄부터 다시
+             * 낸다. 이것이 이 함수의 전부다. */
+            if (now_ms - h->catalog.progress_ms > MK_CATALOG_STALL_MS) {
+                /* 🔴 조용히 멈추지 않는다. 못 낸 줄을 세는 경로(emit =
+                 *    제어 유실 계수)로 한 번 밀어 본 뒤 — 거의 확실히
+                 *    거절당하고 그것이 $STAT 의 ctl_drops 로 보인다 —
+                 *    호스트에는 ERR 로 답한다. 무응답보다 낫다: 호스트는
+                 *    기다리다 타임아웃하는 대신 즉시 다시 물을 수 있다. */
+                if (h->emit != NULL) {
+                    h->emit(h->ctx, body, (size_t)n + 1u);
+                }
+                h->catalog.active = 0;
+                emit_sack_err(h, "CFG", "BUSY");
+            }
+            return;
+        }
+        h->catalog.index++;
+        h->catalog.progress_ms = now_ms;
+    }
+
+    /* 본문이 다 나갔다. 규격 §5.2 — 마지막에 $SACK 로 닫는다.
+     *
+     * 🔴 SACK 는 예약 몫을 쓰는 경로(emit)로 낸다. 이어서 내보내는 쪽은
+     *    예약 몫을 남기므로 링이 텔레메트리로 가득해도 SACK 가 나갈 자리는
+     *    남아 있다 — 본문을 다 보내 놓고 SACK 만 잃으면 호스트는 결국
+     *    타임아웃한다. */
+    h->catalog.active = 0;
+    emit_sack_ok(h, "CFG");
 }
 
 /* MkCfgResult 를 SACK 사유로. */
@@ -161,10 +245,24 @@ static void on_cfg(MkHostlink *h, const MkCommand *c, int64_t now_ms)
     const char *sub = c->args[0];
 
     if (strcmp(sub, "LIST") == 0) {
-        /* 규격 §5.2 — 본문을 먼저 보내고 $SACK 로 끝낸다. */
-        mk_cfgwire_list(h->cfg, h->fields, h->n_fields, axis_ms(h, now_ms),
-                        catalog_sink, h);
-        emit_sack_ok(h, "CFG");
+        /* 규격 §5.2 — 본문을 먼저 보내고 $SACK 로 끝낸다.
+         *
+         * 🔴 여기서 다 내지 않는다 [2026-08-20]. 카탈로그는 103줄 ≈ 25 KB
+         *    인데 송신 링은 4,096 B 다 — 한 자리에서 쏟으면 넘치는 만큼이
+         *    버려지고, 카탈로그는 한 줄만 잃어도 통째로 못 쓴다. 첫 몫만
+         *    내고 나머지는 `catalog_pump` 가 다음 바퀴들에 잇는다.
+         *    $SACK 도 그때 나간다 — 본문보다 먼저 나가면 호스트가 다 받은
+         *    줄 알고 절단된 카탈로그로 화면을 그린다.
+         *
+         * 🔴 내보내는 중에 또 요청이 오면 처음부터 다시 낸다. 호스트가
+         *    다시 물었다는 것은 앞의 것을 이미 버렸다는 뜻이다. 중복 줄이
+         *    섞여도 호스트는 키·비트로 덮어쓰므로(host/core/config_schema.py)
+         *    개수가 어긋나지 않는다. */
+        h->catalog.active      = 1;
+        h->catalog.index       = 0;
+        h->catalog.now_ms      = axis_ms(h, now_ms);
+        h->catalog.progress_ms = now_ms;
+        catalog_pump(h, now_ms);
         return;
     }
 
@@ -591,6 +689,23 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
     /* 🔴 호스트 링크 속도(규격 §4.2·§7.4). 안 붙어 있으면 NULL 을 넘겨
      *    `baud`·`confirmed` 가 null 로 나간다 — clock 과 같은 결로,
      *    속도를 지어내지 않는다. */
+    /* 🔴 송신 링 (규격 §7.4, 신설 2026-08-20). 안 붙어 있으면 NULL 을
+     *    넘겨 `tx` 가 통째로 null 로 나간다 — 링이 없는 장치(시뮬레이터)와
+     *    "링이 있는데 한 번도 안 찼다" 는 다른 말이다.
+     *
+     *    이 값들이 전선에 없어서, 카탈로그가 잘리는 결함을 GDB 로
+     *    `p 'mk_uart.c'::s_tx` 를 해서야 찾았다. 같은 일을 두 번 하지
+     *    않으려고 싣는다. */
+    MkTxStat txs;
+    if (h->txring != NULL) {
+        txs.cap               = mk_txring_cap(h->txring);
+        txs.peak              = mk_txring_peak(h->txring);
+        txs.drops             = mk_txring_drops(h->txring);
+        txs.dropped_bytes     = mk_txring_dropped_bytes(h->txring);
+        txs.ctl_drops         = mk_txring_ctl_drops(h->txring);
+        txs.ctl_dropped_bytes = mk_txring_ctl_dropped_bytes(h->txring);
+    }
+
     MkLinkStat lks;
     if (h->linkbaud != NULL) {
         lks.baud            = mk_linkbaud_active(h->linkbaud);
@@ -617,8 +732,11 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
      *    **진단 창구가 통째로 닫힌다**(이 파일 위 실기기 기록).
      *
      *    [신규, 2026-08-20] `link` 객체가 최악 ~175바이트를 더 먹는다
-     *    (u32 넷이 각각 10자리 + remaining_ms 가 i64). 1664 로 올린다. */
-    char body[1664];
+     *    (u32 넷이 각각 10자리 + remaining_ms 가 i64). 1664 로 올린다.
+     *
+     *    [신규, 2026-08-20] `tx` 객체가 최악 ~110바이트를 더 먹는다
+     *    (u32 여섯이 각각 10자리 + 이름표). 1792 로 올린다. */
+    char body[1792];
     int n = mk_cfgwire_stat(
         axis_ms(h, now_ms),
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
@@ -634,6 +752,7 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         n_din > 0 ? ds : NULL, n_din,
         n_q > 0 ? qs : NULL, n_q,
         h->linkbaud != NULL ? &lks : NULL,
+        h->txring != NULL ? &txs : NULL,
         h->lcd != NULL ? &ls : NULL,
         body, sizeof body);
 
@@ -642,6 +761,16 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         return;
     }
     emit_sack_ok(h, "STAT");
+}
+
+void mk_hostlink_attach_stream(MkHostlink *h, MkEmitStream stream)
+{
+    h->stream = stream;
+}
+
+void mk_hostlink_attach_txring(MkHostlink *h, const MkTxRing *ring)
+{
+    h->txring = ring;
 }
 
 void mk_hostlink_attach_config(MkHostlink *h, MkConfig *cfg,
@@ -743,6 +872,15 @@ void mk_hostlink_feed(MkHostlink *h, const char *line, size_t len,
 
 void mk_hostlink_tick(MkHostlink *h, int64_t now_ms)
 {
+    /* 🔴 카탈로그를 **먼저** 잇는다.
+     *
+     *    슈퍼루프에서 이 함수는 텔레메트리(mk_telem_tick)보다 앞에 있다.
+     *    그래서 한 바퀴 동안 링에서 빠져나간 자리를 카탈로그가 먼저
+     *    가져간다 — 둘 다 예약 몫을 남기고 넣으므로 경쟁하는데, 순서가
+     *    곧 우선순위다. 텔레메트리는 못 넣으면 그 줄 하나를 잃고 끝나지만
+     *    카탈로그는 한 줄만 늦어도 전체가 그만큼 늦어진다. */
+    catalog_pump(h, now_ms);
+
     /* 🔴 호스트가 사라지면 테스트도 끝난다 (규격 §6.4).
      *
      *    하트비트가 이미 데드맨이므로 방아쇠를 새로 만들지 않는다. 그리고

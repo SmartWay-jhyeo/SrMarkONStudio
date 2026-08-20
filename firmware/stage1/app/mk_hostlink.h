@@ -18,6 +18,7 @@
 #include "mk_config.h"
 #include "mk_framing.h"
 #include "mk_gnss.h"   /* MkGnssSend — $GNSS 명령 전달(규격 §4.1)에 쓴다 */
+#include "mk_txring.h" /* MkTxRing — $STAT 의 `tx`(규격 §7.4)를 읽어 싣는다 */
 
 /* 규격 §6.2 */
 #define MK_HB_TIMEOUT_MS   3000
@@ -44,6 +45,23 @@ typedef enum {
 /* 한 줄을 내보낸다. 줄끝(`\r\n` 또는 `\n`)은 이미 붙어 있다. */
 typedef void (*MkEmit)(void *ctx, const char *line, size_t len);
 
+/* 이어서 내보낼 수 있는 줄 하나. **자리가 없으면 0 을 돌려준다.**
+ *
+ * 🔴 [신설, 2026-08-20] `MkEmit` 과의 차이가 이번 결함의 핵심이다.
+ *
+ *    `MkEmit` 은 "냈다" 와 "못 냈다" 를 구별하지 않으므로, 부르는 쪽은
+ *    받는 쪽이 감당하든 말든 계속 쏟는다. 카탈로그(103줄 ≈ 25 KB)를
+ *    4,096 B 짜리 송신 링에 그렇게 쏟았더니 43줄만 들어가고 나머지가
+ *    버려졌다 — 호스트는 `cfg_end` 가 없다며 카탈로그를 통째로 거부했고,
+ *    GUI 는 설정 폼을 아예 못 만들었다(실기기 2026-08-20).
+ *
+ *    이 콜백은 거절을 돌려준다. 그래야 부르는 쪽이 **멈췄다가 다음
+ *    바퀴에 이어서** 낼 수 있다. 기다리는 것(블로킹)이 아니다 — 기다리면
+ *    슈퍼루프가 서고, 그것이 어제 없앤 32 ms 짜리 한 바퀴다.
+ *
+ * 반환: 냈으면 1, 자리가 없어 못 냈으면 0(유실이 아니다 — 다시 온다). */
+typedef int (*MkEmitStream)(void *ctx, const char *line, size_t len);
+
 /* 설정을 영구 저장한다. 없으면(NULL) $CFG,SAVE 가 BUSY 를 돌려준다.
  * 반환: 성공이면 0. Flash 를 다루는 것은 bsp 쪽이다. */
 typedef int (*MkCfgSave)(void *ctx);
@@ -51,6 +69,15 @@ typedef int (*MkCfgSave)(void *ctx);
 typedef struct {
     MkEmit      emit;
     void       *ctx;
+
+    /* 이어서 내보내는 통로. NULL 이면 카탈로그를 예전처럼 한 호출에 전부
+     * 쏟는다 — 시뮬레이터·호스트 시험처럼 받는 쪽이 무한 버퍼인 곳에서는
+     * 그것이 맞고, 실물 보드만 이것을 붙인다. */
+    MkEmitStream stream;
+
+    /* 송신 링. 붙어 있으면 `$STAT` 의 `tx` 가 실제 수위·유실을 싣는다.
+     * 없으면 null 이다 — 지어내지 않는다(clock 과 같은 결). */
+    const MkTxRing *txring;
 
     const char *device_id;
     const char *fw;
@@ -123,12 +150,43 @@ typedef struct {
     int64_t     last_hb_tx_ms;   /* 우리가 $HB 를 마지막으로 보낸 시각 */
     int         hb_seen;         /* 아직 한 번도 못 받았으면 0 */
 
+    /* 내보내다 만 카탈로그 (규격 §5.2·§7.3).
+     *
+     * 🔴 [신설, 2026-08-20] 카탈로그는 25 KB 인데 송신 링은 4,096 B 다.
+     *    한 바퀴에 다 못 내므로 **어디까지 냈는지**를 들고 있어야 한다.
+     *    이 셋이 그 전부다. */
+    struct {
+        int      active;         /* 내보내는 중인가 */
+        size_t   index;          /* 다음에 낼 줄 번호 */
+        /* 🔴 카탈로그 한 벌은 **같은 `t`** 를 쓴다. 줄마다 지금 시각을
+         *    새로 넣으면 한 응답 안에서 시각이 흩어진다 — 한 번에 쏟던
+         *    때에는 저절로 같았던 성질이라, 나눠 내면서 지켜야 한다. */
+        int64_t  now_ms;
+        /* 마지막으로 한 줄이라도 나간 시각. 여기서 너무 오래 못 나가면
+         * 포기하고 호스트에 ERR 로 알린다 — 조용히 멈추지 않는다. */
+        int64_t  progress_ms;
+    } catalog;
+
     char        out[MK_LINE_MAX + 8];
 } MkHostlink;
 
 void mk_hostlink_init(MkHostlink *h, MkEmit emit, void *ctx,
                       const char *device_id, const char *fw,
                       const char *board_rev);
+
+/* 이어서 내보내는 통로를 붙인다 (`ctx` 는 `mk_hostlink_init` 의 것을 쓴다).
+ *
+ * 🔴 붙이면 `$CFG,LIST` 가 **한 줄씩 자리를 봐 가며** 나간다. 안 붙이면
+ *    예전처럼 한 호출에 전부 쏟는다 — 받는 쪽이 무한 버퍼인 곳(시뮬레이터·
+ *    호스트 시험)에서는 그것이 맞다. 실물 보드는 반드시 붙인다. */
+void mk_hostlink_attach_stream(MkHostlink *h, MkEmitStream stream);
+
+/* 송신 링을 붙인다. 부르지 않으면 $STAT 의 `tx` 가 null 이다.
+ *
+ * 🔴 읽기만 한다. 링을 밀고 빼는 것은 bsp 쪽 일이고, 여기서는 그 수를
+ *    전선에 실어 사람이 볼 수 있게 하는 것이 전부다 — 그 수가 밖에서
+ *    안 보여서 이번 결함을 GDB 로 찾아야 했다. */
+void mk_hostlink_attach_txring(MkHostlink *h, const MkTxRing *ring);
 
 /* 설정 저장소를 붙인다. 부르지 않으면 $CFG 는 UNSUPPORTED 다. */
 void mk_hostlink_attach_config(MkHostlink *h, MkConfig *cfg,

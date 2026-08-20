@@ -14,6 +14,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* 송신 링은 app/ 의 것이다(HAL 비의존). 여기서는 그것을 DMA 에 물리는
+ * 일만 한다 — `$STAT` 이 링 상태를 싣기 위해 형을 알아야 한다. */
+#include "mk_txring.h"
+
 /* 받은 바이트를 담아 두는 링. 한 줄이 다 모이면 꺼내 쓴다. */
 #define MK_RX_RING_SIZE   512
 
@@ -60,20 +64,50 @@ void mk_uart_write(const char *data, size_t len);
  *    나갈 자리가 없어 사람이 아무것도 못 하는 상태가 된다. */
 void mk_uart_write_bulk(const char *data, size_t len);
 
-/* 링이 차서 버린 줄 수와 바이트 수.
+/* 이어서 낼 수 있는 흐름 한 줄 (카탈로그).
+ *
+ * 🔴 [신설, 2026-08-20] 자리가 없으면 **버리지 않고 0 을 돌려준다.**
+ *    부른 쪽이 다음 바퀴에 같은 줄을 다시 준다 — 유실이 아니라 역압이라
+ *    계수기도 안 움직인다.
+ *
+ *    `$CFG,LIST` 가 이것을 쓴다. 103줄 ≈ 25 KB 를 한 번에 쏟던 것이
+ *    링(4,096 B)을 넘겨 43줄만 도착했고, 카탈로그는 한 줄만 잃어도
+ *    통째로 못 쓰기 때문에 GUI 가 설정 폼을 아예 못 만들었다
+ *    (실기기 2026-08-20).
+ *
+ * 🔴 텔레메트리와 같은 예약 몫을 남긴다. 카탈로그가 링을 끝까지 채우면
+ *    그 몇 초 동안 `$SACK`·`$HB` 가 나갈 자리가 없어진다.
+ *
+ * 반환: 넣었으면 1, 자리가 없으면 0. */
+int mk_uart_write_stream(const char *data, size_t len);
+
+/* 링이 차서 버린 줄 수와 바이트 수 (텔레메트리).
  *
  * 🔴 호스트는 이 수를 직접 못 보지만 **알아챌 수 있다** — 버려진 줄의
- *    `seq` 가 비기 때문이다(규격 §7.1). 이 함수들은 보드에서 GDB 로 볼
- *    때와, 나중에 `$STAT` 에 실을 때를 위한 것이다. */
+ *    `seq` 가 비기 때문이다(규격 §7.1). */
 uint32_t mk_uart_tx_drops(void);
 uint32_t mk_uart_tx_dropped_bytes(void);
 
+/* 제어 경로에서 버린 줄 수와 바이트 수.
+ *
+ * 🔴 이쪽은 0 이 아니면 그 자체로 경고다. 명령 응답의 `seq` 는 항상 0
+ *    이라(규격 §5.2) 호스트가 유실을 알아챌 방법이 이 수 말고는 없다. */
+uint32_t mk_uart_tx_ctl_drops(void);
+uint32_t mk_uart_tx_ctl_dropped_bytes(void);
+
 /* 아직 안 나간 바이트 수와, 여태 가장 많이 쌓였던 양.
  *
- * 🔴 `peak` 가 링 크기(4,096)에 붙어 있으면 버린 줄이 0 이어도 다음 번엔
+ * 🔴 `peak` 가 링 크기에 붙어 있으면 버린 줄이 0 이어도 다음 번엔
  *    버린다 — 링 크기가 적절한지 실기기에서 볼 수 있는 유일한 수다. */
 size_t   mk_uart_tx_pending(void);
 uint16_t mk_uart_tx_peak(void);
+
+/* 송신 링 자체. `$STAT` 의 `tx`(규격 §7.4)를 만드는 데 쓴다 —
+ * mk_hostlink 가 읽기만 한다.
+ *
+ * 🔴 이것이 전선에 없어서 이번 결함을 GDB 로 `p 'mk_uart.c'::s_tx` 를
+ *    해서야 찾았다. 밖에서 볼 수 없는 계수기는 없는 것과 같다. */
+const MkTxRing *mk_uart_tx_ring(void);
 
 /* 송신 DMA 완료 인터럽트에서 부른다. */
 void mk_uart_dma_isr(void);

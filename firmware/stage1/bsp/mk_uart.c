@@ -44,16 +44,33 @@ static UART_HandleTypeDef s_uart;
  *    맞다(mk_txring.h 의 판단 근거).
  *
  *    비용은 D2 SRAM 4 KB 다. 32 KB 구역에서 지금 쓰는 것이 LCD 행버퍼
- *    960 B + WS2812 + ADS 16 B 뿐이라 문제가 되지 않는다. */
-#define MK_TX_RING_SIZE   4096u
+ *    960 B + WS2812 + ADS 16 B 뿐이라 문제가 되지 않는다.
+ *
+ * 🔴 4,096 -> 8,192 [2026-08-20]. 예약 몫을 512 에서 2,048 로 올리면서
+ *    함께 키웠다(아래 MK_TX_RESERVE 의 근거). 링을 그대로 두고 예약만
+ *    올리면 텔레메트리가 쓸 수 있는 자리가 4,095 에서 2,047 로 **반이
+ *    되어** 어제 얻은 10 ms 수집을 도로 잃는다. 8,192 로 하면 6,143 이
+ *    남아 예전보다 넉넉하다.
+ *
+ *    비용은 D2 SRAM 4 KB 가 더. 맵을 보면 .dma_buffers 가 0x1540(5,440 B)
+ *    이므로 32 KB 중 9,536 B 를 쓰게 된다 — 여전히 3분의 1 이 안 된다. */
+#define MK_TX_RING_SIZE   8192u
 
-/* 🔴 명령 응답 몫. 텔레메트리는 이만큼을 남기고 넣는다.
+/* 🔴 명령 응답 몫. 텔레메트리와 카탈로그는 이만큼을 남기고 넣는다.
  *
  *    링을 포화시킨 것은 설정(채널 수·주기·baud)인데, 그것을 되돌리는
  *    `$SACK` 이 나갈 자리가 없으면 사람이 아무것도 못 하는 상태가 된다.
- *    512 B 는 최대 길이 줄(MK_LINE_MAX+1 = 193 B) 두 개에 여유를 더한
- *    값이다 — 한 바퀴에 나가는 응답은 $SACK 하나와 $HB 하나가 전부다. */
-#define MK_TX_RESERVE     512u
+ *
+ * 🔴 512 -> 2,048 [2026-08-20]. 512 로는 **`$STAT` 한 줄이 안 들어간다.**
+ *    그 줄은 7채널·din·gnss·lcd·link·tx 를 다 실어 최악 1.7 KB 이고
+ *    (app/mk_hostlink.c 의 body[1792]), 실측으로도 900 B 를 넘는다.
+ *    텔레메트리가 링을 채운 상태에서 `$STAT` 을 물으면 예약 몫이 모자라
+ *    응답이 통째로 버려졌다 — 유실을 찾으려고 여는 창구가 바로 그때
+ *    닫히는 셈이다. 카탈로그 결함과 같은 부류다(한 줄이 예약보다 크다).
+ *
+ *    2,048 은 최악 $STAT(1,792) + 최대 길이 줄(MK_LINE_MAX+1 = 193) 두
+ *    개에 여유를 더한 값이다. */
+#define MK_TX_RESERVE     2048u
 
 /* 🔴 수집(MK_ADS_IRQ_PRIO = 6)보다 **덜** 급하게 둔다. Cortex-M 은 숫자가
  *    작을수록 급하다. 송신 완료가 몇 µs 늦는 것은 아무 일도 아니지만,
@@ -63,11 +80,17 @@ static UART_HandleTypeDef s_uart;
 
 /* 🔴 baud 를 바꾸기 전에 링이 빠지기를 기다리는 시한.
  *
- *    가장 느린 115200 에서 링 4,096 B 가 다 빠지는 데 356 ms 다. 500 ms
- *    면 그것을 덮는다. 시한을 두는 이유는 이 파일에 원래 있던 것과
- *    같다 — TC 가 안 서는 고장에서 여기 갇히면 보드가 통째로 멈추고,
- *    되돌림 시한도 못 돌아 안전장치가 그 자리에서 벽돌을 만든다. */
-#define MK_TX_DRAIN_MS    500u
+ *    가장 느린 115200 에서 링 8,192 B 가 다 빠지는 데 711 ms 다
+ *    (8192 × 10 bit ÷ 115200). 1,000 ms 면 그것을 덮는다 — 링을 4,096
+ *    에서 8,192 로 키우면서 500 ms 로는 모자라게 됐고, 그대로 두면 링이
+ *    가득 찬 상태의 baud 변경에서 마지막 응답이 잘린다(규격 §4.2.2 규칙 1
+ *    위반).
+ *
+ *    시한을 두는 이유는 그대로다 — TC 가 안 서는 고장에서 여기 갇히면
+ *    보드가 통째로 멈추고, 되돌림 시한도 못 돌아 안전장치가 그 자리에서
+ *    벽돌을 만든다. 1초를 서는 것은 baud 변경에서만, 그것도 링이 가득
+ *    찼을 때만 일어난다. */
+#define MK_TX_DRAIN_MS    1000u
 
 static DMA_HandleTypeDef  s_hdma_tx;
 /* 🔴 DMA 가 읽을 곳이므로 D2(0x3000_0000)에 둔다. 그냥 static 이면
@@ -328,8 +351,12 @@ void mk_uart_isr(void)
 void mk_uart_write(const char *data, size_t len)
 {
     /* 예약 몫까지 쓴다 — 명령 응답·오류·하트비트는 텔레메트리에 밀려
-     * 사라지면 안 된다. 자세한 이유는 mk_uart_write_bulk 아래. */
-    (void)mk_txring_push(&s_tx, data, len, 0u);
+     * 사라지면 안 된다. 자세한 이유는 mk_uart_write_bulk 아래.
+     *
+     * 🔴 그래도 못 넣었으면 **제어 유실**로 센다(텔레메트리와 다른 계기).
+     *    명령 응답의 seq 는 항상 0 이라(규격 §5.2) 호스트가 유실을
+     *    알아챌 방법이 그 수 말고는 없다 — app/mk_txring.h 의 근거. */
+    (void)mk_txring_push_ctl(&s_tx, data, len);
     tx_kick();
 }
 
@@ -343,6 +370,21 @@ void mk_uart_write_bulk(const char *data, size_t len)
     tx_kick();
 }
 
+int mk_uart_write_stream(const char *data, size_t len)
+{
+    /* 🔴 못 넣어도 **세지 않는다.** 부른 쪽(카탈로그 펌프)이 다음 바퀴에
+     *    같은 줄을 다시 준다 — 유실이 아니라 역압이다. 여기서 세면
+     *    정상 동작에서도 제어 유실이 계속 올라 그 수가 아무 말도 못 하게
+     *    된다.
+     *
+     * 🔴 예약 몫을 남긴다. 카탈로그(25 KB)가 링을 끝까지 채우면 그 몇 초
+     *    동안 `$SACK`·`$HB` 가 나갈 자리가 없어진다 — 카탈로그를 살리려다
+     *    명령 응답을 죽이는 셈이다. */
+    int ok = mk_txring_offer(&s_tx, data, len, MK_TX_RESERVE);
+    tx_kick();
+    return ok;
+}
+
 uint32_t mk_uart_tx_drops(void)
 {
     return mk_txring_drops(&s_tx);
@@ -351,6 +393,21 @@ uint32_t mk_uart_tx_drops(void)
 uint32_t mk_uart_tx_dropped_bytes(void)
 {
     return mk_txring_dropped_bytes(&s_tx);
+}
+
+uint32_t mk_uart_tx_ctl_drops(void)
+{
+    return mk_txring_ctl_drops(&s_tx);
+}
+
+uint32_t mk_uart_tx_ctl_dropped_bytes(void)
+{
+    return mk_txring_ctl_dropped_bytes(&s_tx);
+}
+
+const MkTxRing *mk_uart_tx_ring(void)
+{
+    return &s_tx;
 }
 
 size_t mk_uart_tx_pending(void)

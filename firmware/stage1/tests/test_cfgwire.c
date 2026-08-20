@@ -291,7 +291,7 @@ static void test_stat_shape(void)
                             "device_clock", 0u,
                             842, 842, 118u, NULL, 11,
                             1, 0, 1,
-                            &RS, d, 3, q, 2, NULL, NULL,
+                            &RS, d, 3, q, 2, NULL, NULL, NULL,
                             buf, sizeof buf);
     CHECK(n > 0, "stat 을 만든다");
     CHECK_HAS(buf, "\"type\":\"stat\"", "type");
@@ -330,7 +330,7 @@ static void test_stat_with_no_queues(void)
                             "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
-                            &RS, NULL, 0, NULL, 0, NULL, NULL,
+                            &RS, NULL, 0, NULL, 0, NULL, NULL, NULL,
                             buf, sizeof buf);
     CHECK(n > 0, "큐가 없어도 만든다");
     CHECK_HAS(buf, "\"queues\":[]", "빈 배열");
@@ -357,7 +357,7 @@ static void test_stat_pps_raw_present_while_paired_age_is_null(void)
                             "hse_pll", 64000000u, "device_clock", 0u,
                             -1, 300, 7u, "no_valid_nmea", 3,
                             0, 0, 1,
-                            &RS, NULL, 0, NULL, 0, NULL, NULL,
+                            &RS, NULL, 0, NULL, 0, NULL, NULL, NULL,
                             buf, sizeof buf);
     CHECK(n > 0, "원시만 있어도 만든다");
     CHECK_HAS(buf,
@@ -378,7 +378,7 @@ static void test_stat_with_no_din(void)
                             "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
-                            &RS, NULL, 0, NULL, 0, NULL, NULL,
+                            &RS, NULL, 0, NULL, 0, NULL, NULL, NULL,
                             buf, sizeof buf);
     CHECK(n > 0, "din 이 없어도 만든다");
     CHECK_HAS(buf, "\"din\":[]", "빈 배열");
@@ -399,7 +399,7 @@ static void test_queue_channel_comes_from_the_struct(void)
                     "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
-                    &RS, NULL, 0, q, 2, NULL, NULL, buf, sizeof buf);
+                    &RS, NULL, 0, q, 2, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf,
               "\"queues\":[{\"ch\":2,\"depth\":0,\"peak\":0,\"drops\":0},"
               "{\"ch\":6,\"depth\":0,\"peak\":0,\"drops\":41}]",
@@ -419,7 +419,8 @@ static void test_missing_rail_reads_as_off(void)
     setup();
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
-                    0, 0, 0, NULL, NULL, 0, NULL, 0, NULL, NULL, buf, sizeof buf);
+                    0, 0, 0, NULL, NULL, 0, NULL, 0, NULL, NULL, NULL,
+                    buf, sizeof buf);
     CHECK_HAS(buf, "\"rails\":{\"v24\":false,\"v14v9\":false,\"v5\":false}",
               "제어기가 없으면 전부 꺼진 것으로");
 
@@ -428,7 +429,8 @@ static void test_missing_rail_reads_as_off(void)
     if (v5 != NULL) { v5->cur.u = 1; }
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
-                    0, 0, 0, NULL, NULL, 0, NULL, 0, NULL, NULL, buf, sizeof buf);
+                    0, 0, 0, NULL, NULL, 0, NULL, 0, NULL, NULL, NULL,
+                    buf, sizeof buf);
     CHECK_HAS(buf, "\"v5\":false",
               "설정이 ON 이어도 아직 안 냈으면 false — 설정표를 안 읽는다");
 }
@@ -448,7 +450,7 @@ static void test_stat_carries_the_lcd_recovery_counters(void)
                             "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
-                            &RS, NULL, 0, NULL, 0, NULL, &ls,
+                            &RS, NULL, 0, NULL, 0, NULL, NULL, &ls,
                             buf, sizeof buf);
     CHECK(n > 0, "계수기를 실어도 만든다");
     CHECK_HAS(buf,
@@ -472,7 +474,7 @@ static void test_unknown_readback_goes_out_as_null(void)
                     "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
-                    &RS, NULL, 0, NULL, 0, NULL, &ls, buf, sizeof buf);
+                    &RS, NULL, 0, NULL, 0, NULL, NULL, &ls, buf, sizeof buf);
     CHECK_HAS(buf, "\"readback\":null",
               "안 물어봤으면 null 이다 — false 를 지어내지 않는다");
 
@@ -481,12 +483,56 @@ static void test_unknown_readback_goes_out_as_null(void)
                     "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
-                    &RS, NULL, 0, NULL, 0, NULL, NULL, buf, sizeof buf);
+                    &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf,
               "\"lcd\":{\"epoch\":0,\"reinit\":0,\"redraw\":0,"
               "\"verify_ok\":0,\"verify_fail\":0,\"rejected\":0,"
               "\"readback\":null}",
               "화면을 안 붙였으면 전부 0 · readback 은 null");
+}
+
+/* 🔴 송신 링 상태 (규격 §7.4, 신설 2026-08-20).
+ *
+ *    이 값들이 전선에 없어서, 카탈로그가 잘려 GUI 가 통째로 못 쓰게 된
+ *    결함을 GDB 로 `p 'mk_uart.c'::s_tx` 를 해서야 찾았다. 밖에서 볼 수
+ *    없는 계수기는 없는 것과 같다 — `pps_raw_count` 와 같은 이유로 싣는다.
+ *
+ *    `drops` 와 `ctl_drops` 를 **따로** 싣는 것이 요점이다. 텔레메트리
+ *    유실은 흔한 상태이고 제어 유실은 사고다. 한 수로 뭉치면 흔한 쪽에
+ *    묻혀 드문 쪽이 안 보인다. */
+static void test_stat_carries_the_tx_ring(void)
+{
+    char buf[960];
+    setup();
+    MkTxStat tx = { 8192u, 6100u, 12u, 1620u, 1u, 193u };
+    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
+                    "hse_pll", 64000000u, "device_clock", 0u,
+                    -1, -1, 0u, NULL, -1,
+                    0, 0, 0,
+                    &RS, NULL, 0, NULL, 0, NULL, &tx, NULL, buf, sizeof buf);
+    CHECK_HAS(buf,
+              "\"tx\":{\"cap\":8192,\"peak\":6100,\"drops\":12,"
+              "\"dropped_bytes\":1620,\"ctl_drops\":1,"
+              "\"ctl_dropped_bytes\":193}",
+              "송신 링 상태 — 제어 유실이 텔레메트리 유실과 따로 실린다");
+}
+
+/* 링이 없는 장치(시뮬레이터)는 0 을 지어내지 않는다.
+ *
+ * 🔴 0 을 채우면 "링이 있는데 한 번도 안 찼다" 로 읽힌다. 진단 화면이
+ *    그것을 "이상 없음" 으로 말하게 되는데, 실은 아무것도 모르는 것이다
+ *    (clock 의 null 과 같은 결). */
+static void test_stat_without_a_tx_ring_is_null(void)
+{
+    char buf[960];
+    setup();
+    mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
+                    "hse_pll", 64000000u, "device_clock", 0u,
+                    -1, -1, 0u, NULL, -1,
+                    0, 0, 0,
+                    &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
+    CHECK_HAS(buf, "\"tx\":null",
+              "링이 없으면 통째로 null — 0 을 지어내지 않는다");
 }
 
 /* 🔴 클럭 출처는 시간축 신뢰도의 일부다(규격 §7.4).
@@ -505,7 +551,7 @@ static void test_stat_carries_the_clock_source(void)
                     "hse_pll", 64000000u, "gnss_pps", 2u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
-                    &RS, NULL, 0, NULL, 0, NULL, NULL, buf, sizeof buf);
+                    &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"clock\":{\"src\":\"hse_pll\",\"sysclk_hz\":64000000}",
               "크리스털로 돌면 그렇게 말한다");
 
@@ -517,7 +563,7 @@ static void test_stat_carries_the_clock_source(void)
                     "hsi", 64000000u, "gnss_pps", 2u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
-                    &RS, NULL, 0, NULL, 0, NULL, NULL, buf, sizeof buf);
+                    &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"clock\":{\"src\":\"hsi\",\"sysclk_hz\":64000000}",
               "폴백했으면 그것도 그대로 말한다");
     CHECK_HAS(buf, "\"time_quality\":2",
@@ -536,7 +582,7 @@ static void test_missing_clock_goes_out_as_null(void)
                     NULL, 0u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
-                    &RS, NULL, 0, NULL, 0, NULL, NULL, buf, sizeof buf);
+                    &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"clock\":{\"src\":null,\"sysclk_hz\":null}",
               "답할 수 없으면 null — 값을 지어내지 않는다");
 }
@@ -548,7 +594,7 @@ static void test_stat_rejects_small_buffer(void)
     CHECK(mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u,
                           "device_clock",
                           0u, -1, -1, 0u, NULL, -1, 0, 0, 0, &RS, NULL, 0, NULL, 0,
-                          NULL, NULL, tiny, sizeof tiny) < 0,
+                          NULL, NULL, NULL, tiny, sizeof tiny) < 0,
           "버퍼가 작으면 실패하고 잘린 줄을 내지 않는다");
 }
 
@@ -586,6 +632,8 @@ int main(int argc, char **argv)
     test_queue_channel_comes_from_the_struct();
     test_missing_rail_reads_as_off();
     test_stat_carries_the_lcd_recovery_counters();
+    test_stat_carries_the_tx_ring();
+    test_stat_without_a_tx_ring_is_null();
     test_stat_carries_the_clock_source();
     test_missing_clock_goes_out_as_null();
     test_unknown_readback_goes_out_as_null();

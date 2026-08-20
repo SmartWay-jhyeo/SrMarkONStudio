@@ -55,34 +55,28 @@ static void common(MkJson *j, int64_t now_ms, const char *type)
     mk_json_str(j, "type", type);
 }
 
-void mk_cfgwire_list(const MkConfig *cfg,
-                     const MkFieldBit *fields, size_t n_fields,
-                     int64_t now_ms, MkCfgEmit emit, void *ctx)
+size_t mk_cfgwire_list_count(const MkConfig *cfg, size_t n_fields)
 {
-    /* 🔴 줄이 이 버퍼를 넘으면 `mk_json_end` 가 0 을 돌려주고 그 항목이
-     *    **조용히 빠진다.** 카탈로그가 한 줄 모자란 채로 가고, 화면에는
-     *    그 설정만 없다 — 왜 없는지 알 방법이 없다.
-     *
-     *    막는 것은 `cfg_end` 의 count 다. 선언한 수와 실제로 온 수가 다르면
-     *    호스트가 거부한다(규격 §7.3). 실제로 그것이 잡았다 — I2C 종류
-     *    항목의 안내문이 길어 6개가 통째로 빠진 것을 대조 시험이 걸렀다
-     *    [2026-08-17]. 안내문을 길게 쓸 때는 이 상한을 기억한다.
-     *
-     * 🔴 320 -> 384 [2026-08-20]. `link.baud`(규격 §4.2)에서 다시 걸렸다 —
-     *    choices 여섯에 한글 라벨·안내문까지 붙어 343 바이트였고, 그 항목이
-     *    조용히 빠졌다(대조 시험이 "선언 111, 수신 110" 으로 잡았다).
-     *
-     *    이번에는 안내문을 줄이지 않고 버퍼를 키운다. 이 항목의 안내문은
-     *    꾸밈말이 아니라 **안전 경고**이고("바꾸면 링크가 끊긴다"), 그것을
-     *    줄여서 자리를 맞추면 가장 위험한 설정에 가장 짧은 설명이 붙는다.
-     *    64바이트는 슈퍼루프 스택에서 무시할 만한 값이다. */
-    char buf[384];
+    /* +1 은 `cfg_end` 다. 그것도 한 줄이고, 이어서 내보내는 쪽에서는
+     * 다른 줄과 똑같이 자리를 기다려야 한다. */
+    return cfg->count + n_fields + 1u;
+}
+
+int mk_cfgwire_list_line(const MkConfig *cfg,
+                         const MkFieldBit *fields, size_t n_fields,
+                         size_t index, int64_t now_ms,
+                         char *out, size_t cap)
+{
     MkJson j;
 
-    for (size_t i = 0; i < cfg->count; i++) {
-        const MkCfgItem *it = &cfg->items[i];
+    if (index >= mk_cfgwire_list_count(cfg, n_fields)) {
+        return -1;                      /* 카탈로그가 끝났다 */
+    }
 
-        mk_json_begin(&j, buf, sizeof buf);
+    if (index < cfg->count) {
+        const MkCfgItem *it = &cfg->items[index];
+
+        mk_json_begin(&j, out, cap);
         common(&j, now_ms, "cfg_item");
         mk_json_str(&j, "key", it->key);
         mk_json_str(&j, "grp", it->group);
@@ -131,14 +125,13 @@ void mk_cfgwire_list(const MkConfig *cfg,
                                   it->choice_labels, it->n_choices);
             }
         }
-        int n = mk_json_end(&j);
-        if (n > 0 && emit) {
-            emit(ctx, buf, (size_t)n);
-        }
+        return mk_json_end(&j);
     }
 
-    for (size_t i = 0; i < n_fields; i++) {
-        mk_json_begin(&j, buf, sizeof buf);
+    if (index < cfg->count + n_fields) {
+        size_t i = index - cfg->count;
+
+        mk_json_begin(&j, out, cap);
         common(&j, now_ms, "cfg_field");
         mk_json_u32(&j, "bit", fields[i].bit);
         mk_json_str(&j, "name", fields[i].name);
@@ -154,25 +147,44 @@ void mk_cfgwire_list(const MkConfig *cfg,
             size_t n_names = 0;
             if (fields[i].kinds & MK_FIELD_AIN) { names[n_names++] = "ain"; }
             if (fields[i].kinds & MK_FIELD_I2C) { names[n_names++] = "i2c"; }
-            if (fields[i].kinds & MK_FIELD_GNSS) { names[n_names++] = "gnss"; }
             if (fields[i].kinds & MK_FIELD_DIN) { names[n_names++] = "din"; }
+            if (fields[i].kinds & MK_FIELD_GNSS) { names[n_names++] = "gnss"; }
             mk_json_str_array(&j, "records", names, n_names);
         }
-        int n = mk_json_end(&j);
-        if (n > 0 && emit) {
-            emit(ctx, buf, (size_t)n);
-        }
+        return mk_json_end(&j);
     }
 
     /* 🔴 count 는 cfg_item + cfg_field 합계다(규격 §7.3). 수신측이 이것을
      *    대조해 전송이 중간에 잘렸는지 판정한다 — 링크가 나쁠 때 절반만
      *    온 카탈로그로 화면을 그리면 안 된다. */
-    mk_json_begin(&j, buf, sizeof buf);
+    mk_json_begin(&j, out, cap);
     common(&j, now_ms, "cfg_end");
     mk_json_u32(&j, "count", (uint32_t)(cfg->count + n_fields));
-    int n = mk_json_end(&j);
-    if (n > 0 && emit) {
-        emit(ctx, buf, (size_t)n);
+    return mk_json_end(&j);
+}
+
+void mk_cfgwire_list(const MkConfig *cfg,
+                     const MkFieldBit *fields, size_t n_fields,
+                     int64_t now_ms, MkCfgEmit emit, void *ctx)
+{
+    /* 상한의 근거는 헤더의 MK_CFGWIRE_LIST_LINE_MAX 주석에 있다. */
+    char buf[MK_CFGWIRE_LIST_LINE_MAX];
+
+    /* 🔴 [2026-08-20] 줄 만들기를 `mk_cfgwire_list_line` 으로 떼어냈다.
+     *
+     *    이 함수는 103줄을 한 호출에 전부 쏟는다. 그것이 되는 곳(시뮬레이터·
+     *    호스트 시험)에서는 그대로 두고, 실물 보드는 이어서 내보내는 쪽
+     *    (mk_hostlink 의 카탈로그 펌프)을 쓴다 — 링이 4,096 B 라 한 번에
+     *    못 담고, 못 담은 줄을 버리면 카탈로그 전체가 못 쓰게 된다. */
+    for (size_t i = 0; ; i++) {
+        int n = mk_cfgwire_list_line(cfg, fields, n_fields, i, now_ms,
+                                     buf, sizeof buf);
+        if (n < 0) {
+            break;                       /* 카탈로그가 끝났다 */
+        }
+        if (n > 0 && emit) {
+            emit(ctx, buf, (size_t)n);
+        }
     }
 }
 
@@ -192,6 +204,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
                     const MkLinkStat *link,
+                    const MkTxStat *tx,
                     const MkLcdStat *lcd,
                     char *out, size_t cap)
 {
@@ -345,6 +358,29 @@ int mk_cfgwire_stat(int64_t now_ms,
     mk_json_u32(&j, "confirmed_count", link != NULL ? link->confirmed_count : 0u);
     mk_json_u32(&j, "reverted",        link != NULL ? link->reverted : 0u);
     mk_json_object_end(&j);
+
+    /* 🔴 송신 링 (규격 §7.4, 신설 2026-08-20).
+     *
+     *    `link` 가 "선이 몇 bps 인가" 라면 이것은 "그 선에 대기줄이 얼마나
+     *    밀려 있나" 다. 카탈로그가 잘려 GUI 가 통째로 못 쓰게 된 결함을
+     *    GDB 로 `s_tx` 를 들여다보고서야 알았기 때문에 싣는다 — 헤더의
+     *    MkTxStat 주석에 근거가 있다.
+     *
+     *    링이 없는 장치(시뮬레이터)는 **지어내지 않는다.** `clock` 과 같은
+     *    결로 통째로 null 이다 — 0 을 채우면 "링이 있는데 한 번도 안 찼다"
+     *    로 읽혀, 진단이 거짓말을 하게 된다. */
+    if (tx != NULL) {
+        mk_json_object_begin(&j, "tx");
+        mk_json_u32(&j, "cap",               tx->cap);
+        mk_json_u32(&j, "peak",              tx->peak);
+        mk_json_u32(&j, "drops",             tx->drops);
+        mk_json_u32(&j, "dropped_bytes",     tx->dropped_bytes);
+        mk_json_u32(&j, "ctl_drops",         tx->ctl_drops);
+        mk_json_u32(&j, "ctl_dropped_bytes", tx->ctl_dropped_bytes);
+        mk_json_object_end(&j);
+    } else {
+        mk_json_null(&j, "tx");
+    }
 
     /* 🔴 화면 회복 계수기 (규격 §7.4). "몇 번 깨졌고 몇 번 되살렸나" 를
      *    모르면 이 문제가 해결됐는지 덮였는지 알 수 없다 — PPS 의

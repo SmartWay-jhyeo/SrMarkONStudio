@@ -125,6 +125,20 @@ static void emit_telem(void *ctx, const char *line, size_t len)
     mk_uart_write_bulk(line, len);
 }
 
+/* mk_hostlink 가 카탈로그를 **이어서** 내보낼 때 부른다.
+ *
+ * 🔴 [신설, 2026-08-20] 위 emit 과의 차이가 이번 결함의 고침 자리다.
+ *    `$CFG,LIST` 는 103줄 ≈ 25 KB 인데 링은 8,192 B 다. 자리가 없으면
+ *    0 을 돌려주고, 그 줄은 버려지지 않은 채 다음 슈퍼루프 바퀴에 다시
+ *    온다. 버리면 카탈로그가 통째로 못 쓰게 되고(호스트가 cfg_end 의
+ *    count 로 절단을 판정한다), 기다리면 슈퍼루프가 선다 — 어느 쪽도
+ *    안 되므로 이어서 낸다. */
+static int emit_stream(void *ctx, const char *line, size_t len)
+{
+    (void)ctx;
+    return mk_uart_write_stream(line, len);
+}
+
 static MkConfig s_cfg;
 static MkAds    s_ads;
 static MkRailCtl s_rails;
@@ -439,6 +453,16 @@ int main(void)
 
     MkHostlink link;
     mk_hostlink_init(&link, emit, NULL, DEVICE_ID, FW_VERSION, BOARD_REV);
+
+    /* 🔴 카탈로그를 이어서 내보내는 통로. 이것을 안 붙이면 `$CFG,LIST` 가
+     *    25 KB 를 한 자리에서 쏟아 링(8,192 B)을 넘기고, 넘친 줄이 버려져
+     *    호스트가 카탈로그를 통째로 거부한다 — GUI 가 설정 폼을 못 만든다
+     *    (실기기 2026-08-20). */
+    mk_hostlink_attach_stream(&link, emit_stream);
+
+    /* 🔴 송신 링 상태를 `$STAT` 에 싣는다(규격 §7.4). 이 수가 전선에
+     *    없어서 위 결함을 GDB 로 `p 'mk_uart.c'::s_tx` 를 해서야 찾았다. */
+    mk_hostlink_attach_txring(&link, mk_uart_tx_ring());
 
     /* 🔴 무엇으로 도는지 호스트에 알린다(규격 §7.4). 크리스털이 안 떠서
      *    내부 RC 로 폴백했으면 초 안쪽 보간이 두 자릿수 나빠지는데, 그것을

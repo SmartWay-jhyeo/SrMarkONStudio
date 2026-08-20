@@ -2,10 +2,11 @@
 CC ?= gcc
 CFLAGS = -std=c11 -Wall -Wextra -Werror -O1 -g
 
-TESTS = test_txring test_framing test_json test_hostlink test_config test_cfgwire test_crc test_sol test_cfgtable test_i2c test_lcd test_screen
+TESTS = test_txring test_catalog test_framing test_json test_hostlink test_config test_cfgwire test_crc test_sol test_cfgtable test_i2c test_lcd test_screen
 
 all: $(TESTS)
 	./test_txring
+	./test_catalog
 	./test_framing
 	./test_json
 	./test_hostlink
@@ -27,7 +28,11 @@ test_framing: test_framing.c ../app/mk_framing.c
 test_json: test_json.c ../app/mk_json.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test_hostlink: test_hostlink.c ../app/mk_hostlink.c ../app/mk_framing.c ../app/mk_json.c ../app/mk_config.c ../app/mk_cfgwire.c ../app/mk_lcd.c
+test_hostlink: test_hostlink.c ../app/mk_hostlink.c ../app/mk_framing.c ../app/mk_json.c ../app/mk_config.c ../app/mk_cfgwire.c ../app/mk_lcd.c ../app/mk_txring.c
+	$(CC) $(CFLAGS) -o $@ $^
+
+# 실제 설정표(103항목)를 작은 링에 흘려 보내, 카탈로그가 한 줄도 안 빠지는지 본다.
+test_catalog: test_catalog.c ../app/mk_hostlink.c ../app/mk_framing.c ../app/mk_json.c ../app/mk_config.c ../app/mk_cfgwire.c ../app/mk_cfgtable.c ../app/mk_txring.c ../app/mk_lcd.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh1750.c ../app/mk_i2c_am2320.c ../app/mk_i2c_mlx90614.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_config: test_config.c ../app/mk_config.c

@@ -36,7 +36,7 @@ typedef enum {
     MK_FIELD_DIN = 1u << 2,
     /* 🔴 [신설, 2026-08-20] 네 번째. GNSS 측위 레코드(규격 §7.8)가
      *    자기 마스크 `tx.fields_gnss` 를 갖는다 — 위치가 나가는 자리와
-     *    아날로그 채널을 같은 스위치로 묶으면, 아날로그를 가벼게 하려다
+     *    아날로그 채널을 같은 스위치로 묶으면, 아날로그를 가볍게 하려다
      *    위성 수가 같이 사라진다. */
     MK_FIELD_GNSS = 1u << 3,
 } MkFieldKind;
@@ -53,11 +53,55 @@ typedef struct {
 /* 한 줄을 만들어 콜백에 넘긴다. 줄바꿈은 포함하지 않는다. */
 typedef void (*MkCfgEmit)(void *ctx, const char *line, size_t len);
 
+/* 카탈로그 한 줄의 최대 길이.
+ *
+ * 🔴 줄이 이 버퍼를 넘으면 `mk_json_end` 가 0 을 돌려주고 그 항목이
+ *    **조용히 빠진다.** 카탈로그가 한 줄 모자란 채로 가고, 화면에는
+ *    그 설정만 없다 — 왜 없는지 알 방법이 없다.
+ *
+ *    막는 것은 `cfg_end` 의 count 다. 선언한 수와 실제로 온 수가 다르면
+ *    호스트가 거부한다(규격 §7.3). 실제로 그것이 잡았다 — I2C 종류
+ *    항목의 안내문이 길어 6개가 통째로 빠진 것을 대조 시험이 걸렀다
+ *    [2026-08-17]. 안내문을 길게 쓸 때는 이 상한을 기억한다.
+ *
+ * 🔴 320 -> 384 [2026-08-20]. `link.baud`(규격 §4.2)에서 다시 걸렸다 —
+ *    choices 여섯에 한글 라벨·안내문까지 붙어 343 바이트였고, 그 항목이
+ *    조용히 빠졌다(대조 시험이 "선언 111, 수신 110" 으로 잡았다).
+ *
+ *    이번에는 안내문을 줄이지 않고 버퍼를 키웠다. 이 항목의 안내문은
+ *    꾸밈말이 아니라 **안전 경고**이고("바꾸면 링크가 끊긴다"), 그것을
+ *    줄여서 자리를 맞추면 가장 위험한 설정에 가장 짧은 설명이 붙는다. */
+#define MK_CFGWIRE_LIST_LINE_MAX  384
+
+/* 카탈로그가 몇 줄인가 — cfg_item + cfg_field + cfg_end(1줄). */
+size_t mk_cfgwire_list_count(const MkConfig *cfg, size_t n_fields);
+
+/* 카탈로그의 `index` 번째 줄을 만든다. 줄바꿈은 포함하지 않는다.
+ *
+ * 🔴 [신설, 2026-08-20] 한 줄씩 만들 수 있어야 **이어서 내보내기**가
+ *    가능하다. 아래 `mk_cfgwire_list` 는 103줄 ≈ 25 KB 를 한 호출에
+ *    쏟아내는데, 실물 보드의 송신 링은 4,096 B 다 — 못 담은 줄이 버려져
+ *    카탈로그 전체가 못 쓰게 됐다(실기기 2026-08-20, mk_txring.h 참고).
+ *    부르는 쪽이 링에 자리가 있는 만큼만 내보내고 나머지를 다음 바퀴로
+ *    미루려면, 어디까지 냈는지를 이 `index` 하나로 기억할 수 있어야 한다.
+ *
+ * 반환:  > 0  줄 길이
+ *          0  이 index 는 줄을 못 만들었다(버퍼 부족) — 건너뛴다.
+ *             빠진 것은 `cfg_end` 의 count 대조가 잡는다(규격 §7.3)
+ *        < 0  index 가 카탈로그 끝을 넘었다 */
+int mk_cfgwire_list_line(const MkConfig *cfg,
+                         const MkFieldBit *fields, size_t n_fields,
+                         size_t index, int64_t now_ms,
+                         char *out, size_t cap);
+
 /* `$CFG,LIST` 응답 본문. cfg_item · cfg_field · cfg_end 순서로 낸다.
  *
  * 🔴 `cfg_end` 의 `count` 는 cfg_item + cfg_field 합계다(규격 §7.3).
  *    수신측이 이것을 대조해 전송이 중간에 잘렸는지 판정한다 — 링크가
- *    나쁠 때 절반만 온 카탈로그로 화면을 그리면 안 된다. */
+ *    나쁠 때 절반만 온 카탈로그로 화면을 그리면 안 된다.
+ *
+ * 🔴 한 호출에 전부 쏟는다. 받는 쪽이 그것을 감당할 수 있을 때만 쓴다 —
+ *    실물 보드는 `mk_cfgwire_list_line` 으로 나눠 내보낸다. */
 void mk_cfgwire_list(const MkConfig *cfg,
                      const MkFieldBit *fields, size_t n_fields,
                      int64_t now_ms, MkCfgEmit emit, void *ctx);
@@ -117,6 +161,28 @@ typedef struct {
     uint32_t confirmed_count;
     uint32_t reverted;
 } MkLinkStat;
+
+/* 송신 링의 상태 (규격 §7.4, 신설 2026-08-20).
+ *
+ * 🔴 왜 전선에 싣나. 이 값들을 보려면 GDB 로 `p 'mk_uart.c'::s_tx` 를
+ *    해야 했다. 그래서 카탈로그가 잘려 GUI 가 통째로 못 쓰게 된 결함을
+ *    **디버거를 붙이고서야** 알았다. 같은 날 PPS 에서도 똑같이 겪었고,
+ *    그때 얻은 교훈이 `pps_raw_count` 다 — 밖에서 볼 수 없는 계수기는
+ *    없는 것과 같다.
+ *
+ * 🔴 `drops` 와 `ctl_drops` 는 **급이 다르다.** 텔레메트리 유실은 "설정이
+ *    링크 용량을 넘었다" 는 흔한 상태이고(호스트는 seq 구멍으로도 안다),
+ *    제어 유실은 "호스트가 명령의 답을 영영 못 받았다" 는 사고다. 명령
+ *    응답의 seq 는 항상 0 이라(규격 §5.2) 이 수 말고는 알 방법이 없다.
+ *    한 수로 뭉치면 흔한 쪽에 묻혀 드문 쪽이 안 보인다. */
+typedef struct {
+    uint32_t cap;                /* 링의 전체 바이트 수 */
+    uint32_t peak;               /* 여태 최고 수위 — cap 에 붙으면 다음엔 버린다 */
+    uint32_t drops;              /* 텔레메트리에서 버린 줄 수 */
+    uint32_t dropped_bytes;
+    uint32_t ctl_drops;          /* 🔴 제어 경로에서 버린 줄 수 — 0 이 아니면 경고 */
+    uint32_t ctl_dropped_bytes;
+} MkTxStat;
 
 /* 🔴 `time_source`·`time_quality` 는 규격 §7.4 예시에는 없지만 시뮬레이터와
  *    함께 낸다. 규격 §7.1.2 대로 `t` 는 시간 소스에 따라 UTC epoch 이기도
@@ -205,6 +271,7 @@ int mk_cfgwire_stat(int64_t now_ms,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
                     const MkLinkStat *link,
+                    const MkTxStat *tx,
                     const MkLcdStat *lcd,
                     char *out, size_t cap);
 
