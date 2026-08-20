@@ -23,6 +23,7 @@ $suites = @(
     @{ exe = "test_cfgwire.exe";  src = "test_cfgwire.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
     @{ exe = "test_crc.exe";      src = "test_crc.c ..\app\mk_crc.c" },
     @{ exe = "test_queue.exe";    src = "test_queue.c ..\app\mk_queue.c" },
+    @{ exe = "test_txring.exe";   src = "test_txring.c ..\app\mk_txring.c" },
     @{ exe = "test_ads1256.exe"; src = "test_ads1256.c ..\app\mk_ads1256.c ..\app\mk_queue.c" },
     @{ exe = "test_railctl.exe";  src = "test_railctl.c ..\app\mk_railctl.c" },
     @{ exe = "test_cfgtable.exe"; src = "test_cfgtable.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c" },

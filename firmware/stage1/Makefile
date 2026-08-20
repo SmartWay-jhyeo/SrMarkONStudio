@@ -38,6 +38,7 @@ C_SRC = \
   app/mk_crc.c \
   app/mk_cfgtable.c \
   app/mk_queue.c \
+  app/mk_txring.c \
   app/mk_ads1256.c \
   app/mk_railctl.c \
   app/mk_telem.c \

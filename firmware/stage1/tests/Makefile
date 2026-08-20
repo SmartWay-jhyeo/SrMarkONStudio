@@ -2,9 +2,10 @@
 CC ?= gcc
 CFLAGS = -std=c11 -Wall -Wextra -Werror -O1 -g
 
-TESTS = test_framing test_json test_hostlink test_config test_cfgwire test_crc test_sol test_cfgtable test_i2c test_lcd test_screen
+TESTS = test_txring test_framing test_json test_hostlink test_config test_cfgwire test_crc test_sol test_cfgtable test_i2c test_lcd test_screen
 
 all: $(TESTS)
+	./test_txring
 	./test_framing
 	./test_json
 	./test_hostlink
@@ -16,6 +17,9 @@ all: $(TESTS)
 	./test_i2c
 	./test_lcd
 	./test_screen
+
+test_txring: test_txring.c ../app/mk_txring.c
+	$(CC) $(CFLAGS) -o $@ $^
 
 test_framing: test_framing.c ../app/mk_framing.c
 	$(CC) $(CFLAGS) -o $@ $^
