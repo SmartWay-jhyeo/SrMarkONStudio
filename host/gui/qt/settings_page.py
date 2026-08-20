@@ -224,6 +224,10 @@ class SettingsPage(QWidget):
 
         self._status = QLabel("보드에 연결되면 설정을 불러온다.")
         self._status.setObjectName("dim")
+        # 🔴 이 라벨의 글 길이가 창 최소폭이 되면 안 된다 — 상단 바의
+        #    _ident 와 같은 이유(2026-08-20). 좁으면 뒤가 잘린다.
+        self._status.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                   QSizePolicy.Policy.Preferred)
 
         self._apply = QPushButton("보드에 적용")
         self._apply.setEnabled(False)
