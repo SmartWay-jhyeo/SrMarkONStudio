@@ -461,9 +461,8 @@ def i2c_record_count(kind_value: int) -> int:
     """I2C 종류 하나가 주기마다 내는 **레코드 수** = 그 종류가 내는 양의 수.
 
     🔴 표를 여기에 다시 적지 않는다. `host/gui/screen.py`의
-       `I2C_KIND_QUANTITIES`가 유일한 출처이고, 그것은 시뮬레이터
-       (`config_store.I2C_KINDS`)·펌웨어와 대조돼 있다
-       (`host/tests/test_i2c_quantities_crosscheck.py`). 두 벌이 되면
+       `I2C_KIND_QUANTITIES`가 유일한 출처다(짝은 펌웨어 `mk_i2c.c`).
+       두 벌이 되면
        대시보드가 세우는 카드 수와 대역폭 계산이 갈린다.
 
     함수 안에서 import 하는 이유는 순환을 피하려는 것이 아니라, 설정 폼이

@@ -58,7 +58,7 @@ foreach ($s in $suites) {
     Write-Output ""
 }
 
-# 🔴 C 와 Python 시뮬레이터 대조. 여기서 돌리지 않으면 아무도 돌리지 않는다.
+# 🔴 C 와 Python 호스트 코드 대조. 여기서 돌리지 않으면 아무도 돌리지 않는다.
 #
 #    실제로 그랬다. 대조 도구는 "$CFG 는 1단계 미구현" 이라고 적힌 채로
 #    $CFG 가 구현된 뒤에도 한참을 통과했다 — 손으로만 돌렸기 때문이다.
@@ -66,11 +66,14 @@ foreach ($s in $suites) {
 #
 #    시험이 깨졌으면 대조는 건너뛴다. 깨진 바이너리로 대조해 봐야
 #    무엇이 원인인지 흐려질 뿐이다.
+#
+# 🔴 [2026-08-20] 시뮬레이터를 상대로 하던 다섯(crosscheck_cfgtable ·
+#    crosscheck_hostlink · crosscheck_i2c · crosscheck_i2c_quantities ·
+#    crosscheck_din)은 시뮬레이터와 함께 지웠다. 남은 넷은 상대가
+#    `host/core` 라 그대로 유효하다 — 그쪽은 실제로 보드와 말을 하는 코드다.
 if ($failed -eq 0) {
     $checks = @("check_sources.py", "crosscheck.py", "crosscheck_json.py", "crosscheck_crc.py",
-                "crosscheck_cfg.py", "crosscheck_cfgtable.py",
-                "crosscheck_hostlink.py", "crosscheck_i2c.py", "crosscheck_i2c_quantities.py",
-                "crosscheck_din.py")
+                "crosscheck_cfg.py")
     foreach ($c in $checks) {
         Write-Output "-- $c"
         cmd /c "chcp 65001 >nul && python $c"

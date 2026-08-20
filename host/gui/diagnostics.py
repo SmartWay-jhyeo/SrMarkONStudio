@@ -217,11 +217,11 @@ def _clock_group(stat: dict | None) -> Group:
     hz = _int(clock, "sysclk_hz")
 
     if clock is None or src is None:
-        # 🔴 시뮬레이터·클럭을 안 붙인 빌드는 `null` 을 낸다(규격 §7.4).
+        # 🔴 클럭을 안 붙인 빌드는 `null` 을 낸다(규격 §7.4).
         #    "이 장치는 답할 수 없다" 이지 고장이 아니다.
         src_r = _unknown("clock.src", "시스템 클럭 출처",
-                         "이 장치는 클럭 출처를 답하지 않는다(시뮬레이터 또는 "
-                         "클럭 보고가 없는 펌웨어). 고장이 아니라 답이 없는 것이다")
+                         "이 장치는 클럭 출처를 답하지 않는다(클럭 보고가 없는 "
+                         "펌웨어). 고장이 아니라 답이 없는 것이다")
     elif src == "hse_pll":
         src_r = Reading(
             "clock.src", "시스템 클럭 출처", "크리스털 → PLL (HSE)",
@@ -494,8 +494,8 @@ def _lcd_group(stat: dict | None) -> Group:
     if readback is None:
         readback_r = Reading(
             "lcd.readback", "되읽기", UNKNOWN_TEXT,
-            "아직 한 번도 안 물어봤다. 화면이 안 붙은 보드(시뮬레이터 포함)가 "
-            "정확히 이 값을 낸다 — 못 믿는다는 뜻이 아니다",
+            "아직 한 번도 안 물어봤다. 화면이 안 붙은 보드가 정확히 이 값을 "
+            "낸다 — 못 믿는다는 뜻이 아니다",
             Level.IDLE, Verification.UNKNOWN)
     elif readback:
         readback_r = Reading(
@@ -750,12 +750,12 @@ def _tx_group(stat: dict | None) -> Group:
     """
     tx = _sub(stat, "tx")
     if tx is None:
-        # `tx` 가 없거나 null 이다. 링이 없는 장치(시뮬레이터)와 구형
-        # 펌웨어가 여기로 온다 — 어느 쪽이든 **모름**이지 0 이 아니다.
+        # `tx` 가 없거나 null 이다. 링을 안 붙인 빌드와 구형 펌웨어가
+        # 여기로 온다 — 어느 쪽이든 **모름**이지 0 이 아니다.
         return Group("tx", "송신 링", (
             _unknown("tx.ctl_drops", "명령 응답 유실",
-                     "이 장치는 송신 링을 답하지 않는다. 시뮬레이터에는 링이 "
-                     "없고(소켓이 버퍼링한다), 구형 빌드는 이 필드를 안 보낸다"),
+                     "이 장치는 송신 링을 답하지 않는다. 링을 안 붙인 빌드와 "
+                     "구형 빌드가 이 필드를 안 보낸다"),
             _unknown("tx.drops", "텔레메트리 유실"),
             _unknown("tx.peak", "최고 수위"),
         ))

@@ -9,7 +9,7 @@ dependencies = ["pyserial>=3.5"]
 dev = ["pytest>=8.0"]
 
 # setuptools 자동탐색은 최상위 패키지를 하나만 골라 tools 를 누락한다.
-# Task 6~11 이 전부 tools.simulator.* 를 import 하므로 명시한다.
+# 시험과 GUI 가 tools.cli.* 를 import 하므로 명시한다.
 [tool.setuptools.packages.find]
 include = ["host*", "tools*"]
 

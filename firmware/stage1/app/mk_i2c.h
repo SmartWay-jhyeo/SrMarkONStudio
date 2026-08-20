@@ -94,7 +94,7 @@ typedef struct {
  *    out[MK_I2C_VALUES_MAX] 를 채우고 채운 개수를 돌려준다. 모르는
  *    종류(카탈로그에 없는 값 포함 MK_I2C_KIND_NONE)는 0.
  *
- *    시뮬레이터(tools/simulator/config_store.py 의 I2C_QUANTITIES)와 같은
+ *    호스트의 화면 표(host/gui/screen.py 의 I2C_KIND_QUANTITIES)와 같은
  *    표여야 한다 — crosscheck_i2c_quantities.py 가 대조한다. */
 int mk_i2c_kind_quantities(uint8_t kind, const char *out[MK_I2C_VALUES_MAX]);
 

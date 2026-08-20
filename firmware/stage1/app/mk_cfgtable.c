@@ -26,8 +26,8 @@
  *    새 칩을 살 때마다 카탈로그를 고쳐야 한다.
  *
  * 🔴 값이 둘인 종류는 온습도뿐이다. 나머지는 전부 하나다.
- *    시뮬레이터(tools/simulator/config_store.py)의 I2C_KINDS 와 같아야
- *    하고, crosscheck_cfgtable.py 가 그것을 대조한다. */
+ *    호스트의 화면 표(host/gui/screen.py 의 I2C_KIND_QUANTITIES)와 같아야
+ *    한다. 🔴 [2026-08-20] 자동 대조는 없다 — 시뮬레이터와 함께 지웠다. */
 /* LCD SPI 클럭으로 고를 수 있는 값(kHz).
  *
  * 🔴 분주비로 실제로 낼 수 있는 값만 넣는다. SPI2 커널 클럭이 64 MHz 이고
@@ -36,8 +36,8 @@
  *    ILI9488 의 쓰기 상한 20 MHz(twc MIN 50 ns, p.332 §17.4.3)를 넘으므로
  *    목록에 없다.
  *
- * 🔴 시뮬레이터(tools/simulator/config_store.py 의 LCD_SPI_KHZ_CHOICES)와
- *    같아야 하고, crosscheck_cfgtable.py 가 그것을 대조한다. */
+ * 🔴 [2026-08-20] 이 목록의 짝이던 시뮬레이터 상수는 지웠다. 화면은 이제
+ *    카탈로그가 실어 보내는 choices 만 보므로 맞출 상대가 없다. */
 static const uint32_t LCD_SPI_KHZ_CHOICES[] = { 2000u, 4000u, 8000u, 16000u };
 
 /* 호스트 링크 속도 (규격 §4.2.6).
@@ -458,9 +458,8 @@ static size_t add_sol(size_t i)
      *    남긴다. `out` 이 아니다 — 켜고 끄는 출력이 아니라 필터 값이라
      *    TEST 이탈 때 되돌릴 "출력" 이 없다.
      *
-     * 🔴 값·라벨·note·범위가 시뮬레이터(tools/simulator/config_store.py
-     *    의 sol.debounce_ms)와 한 글자도 다르면 안 된다 —
-     *    crosscheck_cfgtable.py 가 대조한다. */
+     * 🔴 [2026-08-20] 짝이던 시뮬레이터 항목은 지웠다. 이 항목의 값·라벨·
+     *    note·범위는 이제 여기가 유일한 출처다. */
     s_items[i] = (MkCfgItem){
         .key = "sol.debounce_ms", .group = "sol", .vtype = MK_VT_U16,
         .min = 0, .max = 1000, .has_min = 1, .has_max = 1, .unit = "ms",
@@ -474,9 +473,8 @@ static size_t add_sol(size_t i)
 /* GNSS/PPS 시간축(J16, 데이터시트 §5.5, Phase 3). */
 static size_t add_gnss(size_t i)
 {
-    /* 🔴 값·라벨·note·범위가 시뮬레이터(tools/simulator/config_store.py
-     *    의 gnss.* )와 한 글자도 다르면 안 된다 — crosscheck_cfgtable.py
-     *    가 대조한다(sol.debounce_ms 와 같은 관례). */
+    /* 🔴 [2026-08-20] 짝이던 시뮬레이터 항목은 지웠다 — 이제 여기가
+     *    유일한 출처다(sol.debounce_ms 와 같은 사정). */
     s_items[i] = (MkCfgItem){
         .key = "gnss.enabled", .group = "gnss", .vtype = MK_VT_BOOL,
         .label = "GNSS 사용",
@@ -522,9 +520,8 @@ static size_t add_link(size_t i)
      * 🔴 note 는 짧게 둔다. choices 가 여섯이라 mk_cfgwire_list 의
      *    320바이트 줄 상한에 여유가 적다(gnss.baud 와 같은 사정).
      *
-     * 🔴 값·라벨·note·choices 가 시뮬레이터(tools/simulator/config_store.py
-     *    의 link.baud)와 한 글자도 다르면 안 된다 — crosscheck_cfgtable.py
-     *    가 대조한다. */
+     * 🔴 [2026-08-20] 짝이던 시뮬레이터 항목은 지웠다 — 이제 여기가
+     *    유일한 출처다. */
     s_items[i] = (MkCfgItem){
         .key = "link.baud", .group = "link", .vtype = MK_VT_ENUM,
         .choices = LINK_BAUD_CHOICES, .n_choices = LINK_BAUD_CHOICE_COUNT,
@@ -543,9 +540,8 @@ static size_t add_lcd(size_t i)
      *    매번 밀면 ADS1256 표본과 텔레메트리가 그만큼 뒤로 밀린다 —
      *    gnss.echo 를 기본으로 끈 것과 같은 이유다.
      *
-     * 🔴 값·라벨·note 가 시뮬레이터(tools/simulator/config_store.py 의
-     *    lcd.* )와 한 글자도 다르면 안 된다 — crosscheck_cfgtable.py 가
-     *    대조한다.
+     * 🔴 [2026-08-20] 짝이던 시뮬레이터 항목은 지웠다 — 이제 여기가
+     *    유일한 출처다.
      *
      * 🔴 out 이 아니다. TEST 모드를 빠져나올 때 되돌릴 "출력" 이 아니라
      *    화면을 쓸 것인가라는 설정이다 — led.grb 와 같은 결. */

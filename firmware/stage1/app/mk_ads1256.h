@@ -27,7 +27,8 @@
  * 🔴 118 ms 라는 **주기 자체는 이 층이 줄이지 못한다.** 그것은 ΔΣ 필터의
  *    정착시간이고 데이터시트 값이다. 이 층이 하는 일은 그 시간 동안 CPU 를
  *    풀어 주는 것이다. 주기를 줄이려면 DRATE 를 올려야 하고, 그 계산은
- *    호스트의 용량 검사(tools/simulator/capacity.py)가 한다.
+ *    호스트가 하던 용량 검사(tools/simulator/capacity.py)는
+ *    시뮬레이터와 함께 사라졌다 [2026-08-20] — 지금은 보드가 유일한 자리다.
  *
  * ── 정착 시간 (ADS1256.pdf SBAS288K, fCLKIN = 7.68 MHz — 이 보드와 같다)
  *
@@ -62,7 +63,8 @@
  *
  *      "+SPI" 는 이 절차가 SPI 로 쓰는 시간 0.155 ms 를 더한 것이다
  *      (500 kHz SCLK 에서 9 B = 144 µs, t11 4 µs, t6 7 µs).
- *      같은 계산이 tools/simulator/capacity.py 에 있고 시험이 지킨다.
+ *      같은 계산이 호스트에도 있었으나(tools/simulator/capacity.py)
+ *      시뮬레이터와 함께 지웠다 [2026-08-20].
  *
  *    p.13 Table 6 "Noise-Free Resolution (bits), Buffer Off"(PGA=1) — 속도의
  *    대가:  60 SPS 21.2 b · 500 SPS 20.0 b · 1000 SPS 19.0 b ·
