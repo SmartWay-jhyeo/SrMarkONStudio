@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -242,6 +243,27 @@ class MainWindow(QMainWindow):
             self._top.set_link("보드가 설정 카탈로그를 주지 않았다", bad=True)
             return
         self._settings.set_form(SettingsForm(schema))
+        self._apply_connector_names(schema)
+
+    def _apply_connector_names(self, schema) -> None:
+        """카탈로그의 `*.name` 항목을 커넥터 번호 → 이름 사전으로.
+
+        🔴 키 규칙이 그룹마다 다르다 — `ain0` 은 0부터 세는 채널이라
+           커넥터는 +3 이고(J3), `i2c10`·`din18` 은 숫자가 커넥터 번호
+           그대로다. 사용자가 나중에 ain 키를 바꾸겠다고 했으니(2026-08-19)
+           그때 이 갈림도 없어진다.
+        """
+        names: dict[int, str] = {}
+        for key, item in schema.items.items():
+            m = re.fullmatch(r"(ain|i2c|din)(\d+)\.name", key)
+            if not m:
+                continue
+            value = str(getattr(item, "current", "") or "").strip()
+            if not value:
+                continue
+            n = int(m.group(2))
+            names[3 + n if m.group(1) == "ain" else n] = value
+        self._stream_state.connector_names = names
 
     def _load_din_state(self) -> None:
         """`$STAT` 을 한 번 읽어 din(J18~J20) 의 지금 상태를 세운다.

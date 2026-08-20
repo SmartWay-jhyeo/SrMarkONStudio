@@ -429,7 +429,8 @@ class StreamView(QWidget):
         if not new_conns:
             return
         for c in new_conns:
-            cb = QCheckBox(connector_label(c, state.connector_counts.get(c, 0)))
+            cb = QCheckBox(connector_label(c, state.connector_counts.get(c, 0),
+                                           state.connector_names.get(c, "")))
             cb.setChecked(True)
             cb.toggled.connect(self._on_connector_toggled)
             self._connector_filter_row.addWidget(cb)
@@ -444,7 +445,8 @@ class StreamView(QWidget):
            지켜 온 것과 같은 규칙이다(머리말).
         """
         for c, cb in self._connector_checks.items():
-            text = connector_label(c, state.connector_counts.get(c, 0))
+            text = connector_label(c, state.connector_counts.get(c, 0),
+                                   state.connector_names.get(c, ""))
             if cb.text() != text:
                 cb.setText(text)
 

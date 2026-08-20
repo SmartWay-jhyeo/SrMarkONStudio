@@ -73,7 +73,7 @@ static const char *const I2C_KIND_LABELS[] = {
                       + 5)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
-#define GEN_COUNT    (MK_AIN_COUNT * 5 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 5)
+#define GEN_COUNT    (MK_AIN_COUNT * 6 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 6 + 3)
 
 static MkCfgItem s_items[ITEM_COUNT];
 
@@ -437,6 +437,18 @@ static size_t add_ain(size_t i)
                                   .vtype = MK_VT_STR, .max = 7, .has_max = 1,
                                   .label = s_labels[k] };
         i++;
+
+        /* 🔴 사용자가 붙이는 이름 — "J3" 대신 "유압" (사용자 요청
+         *    2026-08-20). 보드에 저장해야 하는 이유: 이름은 이 커넥터에
+         *    물리적으로 무엇이 물렸는가의 이름이라, 호스트를 바꿔도(PC →
+         *    Jetson) 따라가야 한다. 비면 화면이 J 번호로 돌아간다.
+         *    최대 23바이트 = MK_ARG_MAX — UTF-8 한글 7자다. */
+        k = gen("ain", (unsigned)ch, ".name", jack, "이름");
+        s_items[i] = (MkCfgItem){ .key = s_keys[k], .group = "ain",
+                                  .vtype = MK_VT_STR, .max = 23, .has_max = 1,
+                                  .label = s_labels[k],
+                                  .note = "비우면 커넥터 번호로 보인다" };
+        i++;
     }
     return i;
 }
@@ -467,6 +479,17 @@ static size_t add_sol(size_t i)
         .note = "이보다 짧게 흔들리는 신호는 상태 변화로 보지 않는다" };
     s_items[i].def.u = 5;
     i++;
+
+    /* 사용자가 붙이는 이름 — ain 의 .name 과 같다(그쪽 주석 참고).
+     * 키의 숫자가 커넥터 번호 그대로다(J18~J20). */
+    for (unsigned jack = 18; jack <= 20; jack++) {
+        size_t k = gen("din", jack, ".name", jack, "이름");
+        s_items[i] = (MkCfgItem){
+            .key = s_keys[k], .group = "sol", .vtype = MK_VT_STR,
+            .max = 23, .has_max = 1, .label = s_labels[k],
+            .note = "비우면 커넥터 번호로 보인다" };
+        i++;
+    }
     return i;
 }
 
@@ -751,6 +774,14 @@ static size_t add_i2c(size_t i)
             .min = 10, .max = 60000, .has_min = 1, .has_max = 1,
             .unit = "ms", .label = s_labels[k] };
         s_items[i].def.u = 200;
+        i++;
+
+        /* ain 의 .name 과 같다 — 사용자가 붙이는 이름. */
+        k = gen("i2c", jack, ".name", jack, "이름");
+        s_items[i] = (MkCfgItem){
+            .key = s_keys[k], .group = "i2c", .vtype = MK_VT_STR,
+            .max = 23, .has_max = 1, .label = s_labels[k],
+            .note = "비우면 커넥터 번호로 보인다" };
         i++;
     }
     return i;

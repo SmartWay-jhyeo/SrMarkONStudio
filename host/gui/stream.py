@@ -270,15 +270,20 @@ def format_row(row: StreamRow) -> str:
     return f"{seq} {t} {typ} {conn} {value} {raw} {ma}  {row.line}"
 
 
-def connector_label(connector: int, count: int) -> str:
+def connector_label(connector: int, count: int, name: str = "") -> str:
     """커넥터 필터 한 칸의 이름표.
 
     🔴 **0 건을 이름표에 적는다.** 목록에 있기만 하면 "안 꽂은 것" 과 "꽂았는데
        값이 안 오는 것" 이 똑같이 보인다 — 0 이라고 말해 줘야 사용자가 그
        커넥터를 의심할 수 있다. 값이 오기 시작하면 표시를 뗀다(오는 것이
        정상이라 굳이 셀 이유가 없고, 이름표가 매 틱 바뀌면 눈이 아프다).
+
+    🔴 사용자가 붙인 이름(`ainN.name` 등, 보드 저장)이 있으면 그것이 먼저다
+       (사용자 요청 2026-08-20 — "J3" 가 아니라 "유압"). J 번호를 괄호로
+       남기는 이유: 배선을 만질 때는 결국 보드의 실크(J3)를 찾아야 한다.
     """
-    return f"J{connector}" if count else f"J{connector} (0)"
+    base = f"{name} (J{connector})" if name else f"J{connector}"
+    return base if count else f"{base} (0)"
 
 
 # ------------------------------------------------------- 전체 선택/해제 판정
@@ -524,6 +529,9 @@ class StreamState:
         self.filter_types: set[str] | None = None
         #: `None` = 커넥터로 거르지 않는다. 타입 필터와 AND 로 겹친다.
         self.filter_connectors: set[int] | None = None
+        #: 커넥터 번호 → 사용자가 붙인 이름 (카탈로그의 `*.name` 항목).
+        #: 화면이 J 번호 대신 이것을 앞세운다. 비면 J 번호 그대로다.
+        self.connector_names: dict[int, str] = {}
 
         #: (타입, 커넥터) 별 최근 간격 창. 커넥터가 없는 레코드(cmd 응답
         #: 등)는 키의 커넥터 자리가 `None` 이다.
