@@ -158,32 +158,18 @@ def test_real_commands_fit():
     build_command("CFG", "GET", "tx.period_ms")
 
 
-def test_catalog_items_fit_the_wire():
-    """카탈로그의 어떤 항목도 보드가 못 받는 값을 허용하지 않는다.
-
-    키 이름은 인자 하나로 실려 가고(`$CFG,SET,<key>,<value>`), 문자열 항목의
-    `maximum` 은 값이 인자 하나에 들어갈 수 있는지를 정한다. 둘 중 하나라도
-    상한을 넘으면 GUI 가 만들어낸 명령을 보드가 조용히 버린다.
-    """
-    from tools.simulator.config_store import default_store
-
-    store = default_store()
-    over_key = [
-        i.key for i in store.items.values()
-        if len(i.key.encode("utf-8")) > limits.MAX_ARG_BYTES
-    ]
-    assert not over_key, f"키가 {limits.MAX_ARG_BYTES} 바이트를 넘는다: {over_key}"
-
-    over_value = [
-        (i.key, i.maximum)
-        for i in store.items.values()
-        if i.vtype == "str"
-        and i.maximum is not None
-        and int(i.maximum) > limits.MAX_ARG_BYTES
-    ]
-    assert not over_value, (
-        f"문자열 항목의 maximum 이 {limits.MAX_ARG_BYTES} 를 넘는다: {over_value}"
-    )
+# 🔴 [정리, 2026-08-20] `test_catalog_items_fit_the_wire` 는 여기서 걷어냈다.
+#
+#    시뮬레이터의 설정표를 훑어 "키가 MAX_ARG_BYTES 를 넘지 않는가" 를 봤다.
+#    시뮬레이터가 사라진 지금 그 자리를 얼린 스냅샷으로 대신하면, 펌웨어가
+#    긴 키를 넣어도 계속 통과하는 **거짓 안전망**이 된다.
+#
+#    그리고 그 보증은 이미 두 겹으로 있다:
+#      1. 펌웨어가 키·문자열 값을 타입으로 묶어 둔다 —
+#         `mk_config.h`: `MK_CFG_KEY_MAX = MK_CFG_STR_MAX = MK_ARG_MAX`.
+#         길이가 넘는 항목은 애초에 담기지 않는다.
+#      2. 위 `_PAIRS` 가 `MAX_ARG_BYTES == MK_ARG_MAX` 를 대조한다.
+#    호스트가 따로 셀 것이 남지 않는다.
 
 
 # ---- 링크 속도 (규격 §4.2) ---------------------------------------------------

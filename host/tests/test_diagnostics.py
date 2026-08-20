@@ -82,7 +82,7 @@ def test_internal_rc_is_a_warning_that_says_how_bad():
 
 
 def test_clock_the_device_cannot_answer_is_unknown_not_a_warning():
-    """시뮬레이터는 발진기가 없어 `null` 을 낸다 — 고장이 아니다."""
+    """발진기가 없는 보드는 `null` 을 낸다 — 고장이 아니다."""
     r = _read(_stat(clock={"src": None, "sysclk_hz": None}), "clock.src")
     assert r.warning is False
     assert r.verification is Verification.UNKNOWN
@@ -295,7 +295,7 @@ def test_readback_never_asked_is_unknown():
 
 
 def test_board_without_a_panel_raises_nothing():
-    """화면이 안 붙은 보드(시뮬레이터 포함)는 전부 0 과 `readback: null` 이다."""
+    """화면이 안 붙은 보드는 전부 0 과 `readback: null` 이다."""
     d = build_diagnostics(_stat(
         lcd={"epoch": 0, "reinit": 0, "redraw": 0, "verify_ok": 0,
              "verify_fail": 0, "rejected": 0, "readback": None}))
@@ -389,38 +389,34 @@ def test_headline_counts_the_warnings():
     assert "1" in d.headline
 
 
-# ---------------------------------------------------------------- 시뮬레이터
+# ------------------------------------------------------------------ 스텁 보드
 
 @pytest.fixture
 def sim_stat():
-    """시뮬레이터가 실제로 내는 `$STAT` 을 그대로 받아온다.
+    """스텁 보드가 실제로 내는 `$STAT` 을 그대로 받아온다.
 
-    🔴 손으로 지은 사전이 아니라 **장치가 내는 것**으로 확인한다. 시뮬레이터는
+    🔴 손으로 지은 사전이 아니라 **장치가 내는 것**으로 확인한다. 스텁은
        `clock` 을 둘 다 `null` 로 내므로(발진기가 없다), 없는 항목을 그대로
        다룰 수 있는지가 여기서 드러난다.
     """
-    from host.service.board_service import BoardService, LoopbackTransport
-    from tools.simulator.config_store import default_store
-    from tools.simulator.device_sim import DeviceSim
+    from host.tests.fake_board import fake_service
 
-    svc = BoardService(LoopbackTransport(DeviceSim(default_store())),
-                       clock=lambda: 0)
-    return svc.fetch_stat()
+    return fake_service(clock=lambda: 0).fetch_stat()
 
 
-def test_the_simulator_produces_no_false_warning(sim_stat):
+def test_the_stub_board_produces_no_false_warning(sim_stat):
     d = build_diagnostics(sim_stat, age_s=0.0)
     assert d.warnings == (), [(w.key, w.value) for w in d.warnings]
     assert d.fresh is True
 
 
-def test_the_simulator_clock_reads_as_unknown(sim_stat):
+def test_the_stub_board_clock_reads_as_unknown(sim_stat):
     d = build_diagnostics(sim_stat)
     assert d.reading("clock.src").value == UNKNOWN_TEXT
     assert d.reading("clock.sysclk_hz").value == UNKNOWN_TEXT
 
 
-def test_the_simulator_queues_are_read(sim_stat):
+def test_the_stub_board_queues_are_read(sim_stat):
     d = build_diagnostics(sim_stat)
     assert d.reading("queues.drops").value != UNKNOWN_TEXT
 
@@ -548,7 +544,7 @@ def test_a_peak_at_the_brim_warns_even_with_zero_drops():
 
 
 def test_a_device_without_a_send_ring_is_unknown_not_zero():
-    """🔴 시뮬레이터는 링이 없어 `tx` 가 null 이다.
+    """🔴 링이 없는 보드는 `tx` 가 null 이다.
 
     0 으로 읽어 "한 번도 안 찼다" 로 말하면 화면이 거짓 안심을 준다 —
     `clock` 의 null 과 같은 결이다.

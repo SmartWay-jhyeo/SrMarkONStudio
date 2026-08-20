@@ -69,7 +69,7 @@ STALE_WARN_S = 1.0
 
 #: 이 시간이 지나면 "멈췄다" 로 본다.
 #:
-#: 🔴 `tools/simulator/device_sim.HB_TIMEOUT_MS` (3000ms) 과 맞춘다 — 그
+#: 🔴 펌웨어 `mk_hostlink.h` 의 `MK_HB_TIMEOUT_MS` (3000ms) 과 맞춘다 — 그
 #:    시간이 지나면 보드는 이미 CONFIG 에서 RUN 으로 떨어져 있다. 그 전은
 #:    "느려짐" 이고 그 후는 "고장" 이다.
 STALE_FAULT_S = 3.0

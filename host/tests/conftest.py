@@ -16,19 +16,19 @@ from __future__ import annotations
 
 import pytest
 
-from tools.simulator.config_store import ConfigStore, SimConfigItem
+from host.tests.fake_board import FakeItem, FakeStore
 
 
-def _items() -> list[SimConfigItem]:
+def _items() -> list[FakeItem]:
     return [
         # 🔴 인터록과 읽기 전용이 **둘 다** 걸린 항목. 그래야 어느 쪽이
         #    먼저 보고되는지 판가름할 수 있다 — 하나만 걸린 항목으로는
         #    순서를 확인할 수 없다.
-        SimConfigItem("test.locked", "test", "bool", True, True,
-                      readonly=True, interlocked=True, label="시험용 잠금",
-                      note="시험용 인터록 — 안전 정책상 바꿀 수 없다"),
-        SimConfigItem("test.plain", "test", "u16", 100, 100,
-                      minimum=10, maximum=1000, label="시험용 값"),
+        FakeItem("test.locked", "test", "bool", True, True,
+                 readonly=True, interlocked=True, label="시험용 잠금",
+                 note="시험용 인터록 — 안전 정책상 바꿀 수 없다"),
+        FakeItem("test.plain", "test", "u16", 100, 100,
+                 minimum=10, maximum=1000, label="시험용 값"),
     ]
 
 
@@ -39,5 +39,5 @@ def interlocked_items():
 
 
 @pytest.fixture
-def interlocked_store() -> ConfigStore:
-    return ConfigStore(_items())
+def interlocked_store() -> FakeStore:
+    return FakeStore(_items())

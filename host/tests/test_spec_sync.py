@@ -70,89 +70,37 @@ def test_reason_constants_equal_their_names():
 
 
 def test_schema_ver_matches():
-    """규격의 `schema_ver` 와 시뮬레이터가 쓰는 값이 같아야 한다."""
-    from tools.simulator.device_sim import SCHEMA_VER
+    """규격의 `schema_ver` 와 호스트가 쓰는 값이 같아야 한다.
+
+    🔴 [정정, 2026-08-20] 예전에는 시뮬레이터의 상수를 봤다. 시뮬레이터가
+       사라졌고, 애초에 규격의 짝은 **호스트가 실제로 파싱에 쓰는 값**이다
+       (`host/core/records.SCHEMA_VER`). C 쪽은
+       `firmware/stage1/tests/crosscheck_json.py` 가 같은 값으로 맞춘다.
+    """
+    from host.core.records import SCHEMA_VER
 
     text = _spec_text()
     m = re.search(r"\|\s*`schema_ver`\s*\|\s*int\s*\|\s*항상\s*(\d+)\s*\|", text)
     assert m, "§7.1 에서 schema_ver 를 못 찾았다"
     assert int(m.group(1)) == SCHEMA_VER, (
-        f"규격은 schema_ver {m.group(1)} 인데 시뮬레이터는 {SCHEMA_VER} 다"
+        f"규격은 schema_ver {m.group(1)} 인데 호스트는 {SCHEMA_VER} 다"
     )
 
 
-def test_all_ndjson_uses_the_compact_wire_format():
-    """🔴 전선 위 JSON 은 한 형식이어야 한다.
-
-    json.dumps 기본값은 `", "` 와 `": "` 로 공백을 넣어 줄을 12% 늘린다.
-    대역폭 계산(docs/measurements/2026-08-14_link_budget.md)에서 기본 설정이
-    115200 의 94.8% 를 쓰고 있으므로 그 공백은 공짜가 아니다.
-
-    더 중요한 것은 펌웨어의 `mk_json` 이 압축 형식만 낸다는 점이다. 두
-    형식이 섞이면 C 와 Python 을 바이트로 대조할 수 없고, 대조가 없으면
-    보드와 호스트가 갈려도 실기기에서만 드러난다.
-
-    실제로 카탈로그(`cfg_item`·`cfg_field`·`cfg_end`)만 공백 형식이었고,
-    C 쪽 대조 도구가 그것을 잡았다.
-    """
-    import json
-
-    from host.core.framing import build_command
-    from tools.simulator.config_store import default_store
-    from tools.simulator.device_sim import DeviceSim
-
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-
-    lines: list[str] = []
-    lines += sim.feed(build_command("CFG", "LIST"))
-    lines += sim.feed(build_command("ID"))
-    lines += sim.feed(build_command("STAT"))
-    lines += sim.feed(build_command("CFG", "GET", "tx.period_ms"))
-    lines += [ln for ln in sim.tick(1000) if ln.startswith("{")]
-
-    records = [ln for ln in lines if ln.startswith("{")]
-    assert len(records) > 50, "레코드를 충분히 모으지 못했다"
-
-    for ln in records:
-        want = json.dumps(json.loads(ln), ensure_ascii=False,
-                          separators=(",", ":"))
-        assert ln == want, (
-            f"압축 형식이 아니다 — 공백이 들어 있다.\n"
-            f"  받음: {ln[:120]}\n  기대: {want[:120]}"
-        )
-
-
-def test_no_pin_names_on_the_wire():
-    """🔴 설계 원칙 1 — 핀 번호를 노출하지 않는다 (CLAUDE.md §3).
-
-    화면과 프로토콜은 `PD8` 이 아니라 `24V 전원` 을 쓴다. PCB 배선은
-    고정이므로 사용자가 핀을 알아야 할 이유가 없고, 알려 주면 임의로 바꿀
-    수 있다는 인상을 준다 — 이 프로젝트는 핀 재배치 도구를 만들지 않는다.
-
-    실제로 설정 카탈로그의 전원 항목 라벨에 `(PD8)` 이 들어가 있었고,
-    GUI 를 띄워 보고서야 발견했다.
-    """
-    import re
-
-    from host.core.framing import build_command
-    from tools.simulator.config_store import default_store
-    from tools.simulator.device_sim import DeviceSim
-
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-
-    lines: list[str] = []
-    lines += sim.feed(build_command("CFG", "LIST"))
-    lines += sim.feed(build_command("ID"))
-    lines += sim.feed(build_command("STAT"))
-    lines += sim.tick(1000)
-
-    # PA0~PE15 꼴. 단어 경계를 두어 `PGA` 같은 것이 걸리지 않게 한다.
-    pin = re.compile(r"\bP[A-K](?:1[0-5]|[0-9])\b")
-    for ln in lines:
-        found = pin.findall(ln)
-        assert not found, f"전선에 핀 이름이 실렸다 {found}: {ln[:120]}"
+# 🔴 [정리, 2026-08-20] `test_all_ndjson_uses_the_compact_wire_format` 과
+#    `test_no_pin_names_on_the_wire` 는 여기서 걷어냈다.
+#
+#    둘 다 시뮬레이터가 **실제로 내보낸 줄**을 훑었다. 그 자리를 스텁이나
+#    얼린 스냅샷으로 대신하면 검사 대상이 시험 자료 자신이 되어, 보드가 무엇을
+#    내보내든 통과한다 — 없는 안전망보다 있다고 믿는 안전망이 나쁘다.
+#
+#    압축 형식은 `firmware/stage1/tests/crosscheck_json.py` 가 C 의 `mk_json`
+#    출력을 `host/core` 와 바이트로 맞춰 지킨다.
+#
+#    🔴 핀 이름(설계 원칙 1)을 지키는 자리는 **지금 비어 있다.** 예전에는
+#       카탈로그 라벨에 `(PD8)` 이 들어간 것을 이 시험이 잡았다. 같은 검사를
+#       `firmware/stage1/app/mk_cfgtable.c` 의 라벨·사유 문자열에 대고 다시
+#       세워야 한다 — 그것이 이제 라벨의 유일한 출처다.
 
 
 def test_loop_ends_in_the_spec_match_the_code():
@@ -188,11 +136,19 @@ def test_the_worked_example_in_the_spec_is_still_true():
 
 
 def test_heartbeat_timeout_matches():
-    """§6.2 의 3000 ms 와 시뮬레이터의 상수가 같아야 한다."""
-    from tools.simulator import device_sim
+    """§6.2 의 3000 ms 와 펌웨어의 상수가 같아야 한다.
 
+    🔴 [정정, 2026-08-20] 예전에는 시뮬레이터의 `HB_TIMEOUT_MS` 를 봤다.
+       그 시한을 실제로 지키는 것은 보드이므로, 짝은 펌웨어 헤더다.
+    """
+    header = (Path(__file__).resolve().parents[2]
+              / "firmware" / "stage1" / "app" / "mk_hostlink.h")
     text = _spec_text()
     assert "3000 ms" in text, "§6 에서 3000 ms 를 못 찾았다"
-    timeout = getattr(device_sim, "HB_TIMEOUT_MS", None)
-    assert timeout is not None, "device_sim 에 HB_TIMEOUT_MS 가 없다"
-    assert timeout == 3000, f"규격은 3000 ms 인데 device_sim 은 {timeout} 이다"
+
+    m = re.search(r"#define\s+MK_HB_TIMEOUT_MS\s+(\d+)",
+                  header.read_text(encoding="utf-8"))
+    assert m, f"{header.name} 에서 MK_HB_TIMEOUT_MS 를 못 찾았다"
+    assert int(m.group(1)) == 3000, (
+        f"규격은 3000 ms 인데 펌웨어는 {m.group(1)} 이다"
+    )

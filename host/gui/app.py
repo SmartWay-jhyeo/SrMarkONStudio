@@ -1,12 +1,10 @@
 """MarkON Studio GUI 진입점.
 
-    python -m host.gui.app --port sim      보드 없이 (시뮬레이터)
     python -m host.gui.app --port COM23    실물 보드
 
-🔴 `--port sim` 이 기본이다. 보드 없이도 화면이 뜨고 설정을 만질 수 있어야
-   한다. 시뮬레이터와 실물이 같은 답을 낸다는 것은 C 와 Python 을 바이트
-   단위로 대조해 확인해 두었다
-   (`firmware/stage1/tests/crosscheck_hostlink.py`).
+🔴 `--port` 는 필수다. 예전에는 기본값이 `sim`(내장 시뮬레이터)이었지만
+   시뮬레이터는 없앴다(2026-08-20) — 보드가 늘 붙어 있어서 진짜 카탈로그로
+   바로 확인되고, 설정 항목을 늘릴 때마다 두 곳을 맞추는 비용만 남았다.
 """
 
 from __future__ import annotations
@@ -492,9 +490,10 @@ class MainWindow(QMainWindow):
 
 
 def make_service(port: str, baud: int):
-    """`sim` 이면 시뮬레이터, 아니면 실물 시리얼.
+    """실물 시리얼에 붙은 `BoardService` 를 만든다.
 
     CLI 와 같은 함수를 쓴다 — 두 곳에서 따로 만들면 시계 기준이 갈린다.
+    `sim` 은 CLI 쪽에서 "없어졌다" 로 거절된다.
     """
     from tools.cli.markon_cli import make_service as cli_make_service
 
@@ -503,8 +502,9 @@ def make_service(port: str, baud: int):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="markon-gui")
-    parser.add_argument("--port", default="sim",
-                        help="시리얼 포트 또는 sim (기본: sim)")
+    # 🔴 기본값을 두지 않는다 — 예전 기본값이 `sim` 이었다.
+    parser.add_argument("--port", required=True,
+                        help="시리얼 포트 (예: COM23)")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     args = parser.parse_args(argv)
 

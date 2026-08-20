@@ -2,9 +2,13 @@ import pytest
 
 from host.core.errors import ProtocolError
 from host.core.framing import build_command
-from host.service.board_service import BoardService, LoopbackTransport
-from tools.simulator.config_store import default_store
-from tools.simulator.device_sim import HB_TIMEOUT_MS, DeviceSim, Mode
+from host.service.board_service import BoardService
+from host.tests.fake_board import (
+    HB_TIMEOUT_MS,
+    FakeBoard,
+    LoopbackTransport,
+    Mode,
+)
 
 
 class FakeClock:
@@ -21,7 +25,7 @@ class FakeClock:
 @pytest.fixture
 def rig():
     clock = FakeClock()
-    sim = DeviceSim(default_store())
+    sim = FakeBoard()
     svc = BoardService(LoopbackTransport(sim), clock=clock)
     return svc, sim, clock
 
@@ -56,7 +60,7 @@ def test_send_ignores_a_stale_ack_for_another_command(rig):
 def test_send_raises_when_only_foreign_acks_arrive():
     """대응하는 응답이 아예 없으면 남의 것을 돌려주지 않고 예외를 던진다.
 
-    시뮬레이터는 언제나 응답하므로 이 상황을 만들려면 스텁이 필요하다.
+    스텁 보드는 언제나 응답하므로 이 상황을 만들려면 더 좁은 대역이 필요하다.
     실기기에서는 명령이 유실되고 앞선 응답만 도착하면 그대로 재현된다.
     """
 
@@ -86,7 +90,7 @@ def test_send_keeps_pumping_until_the_response_arrives():
     """🔴 한 번만 pump 하면 실기기에서 거의 항상 실패한다.
 
     `$CFG,LIST` 응답은 7 KB 라 115200 baud 에서 600 ms 넘게 걸린다.
-    시뮬레이터는 즉시 답하므로 이 결함은 `--port COM7` 로 바꾸는 순간에만
+    스텁은 즉시 답하므로 이 결함은 `--port COM7` 로 바꾸는 순간에만
     드러난다 — 시험이 그걸 흉내내야 한다.
     """
 
@@ -182,7 +186,7 @@ def test_fetch_stat_returns_the_stat_payload(rig):
     din = stat.get("din")
     assert isinstance(din, list) and len(din) == 3
     assert {d["connector_id"] for d in din} == {18, 19, 20}
-    # 시뮬레이터 기본값은 전부 꺼짐(raw HIGH = 신호 없음)이다.
+    # 스텁은 전부 꺼짐(raw HIGH = 신호 없음)으로 답한다.
     assert all(d["state"] == 0 for d in din)
 
 
@@ -257,7 +261,7 @@ def test_raw_lines_buffer_is_bounded_to_the_most_recent():
     벤치에 하루 켜 두는 사용을 상정하므로 상한이 필수다(CLAUDE.md 의
     "정형화된 부채" 항목, HANDOFF.md §7.4).
     """
-    svc = BoardService(LoopbackTransport(DeviceSim(default_store())),
+    svc = BoardService(LoopbackTransport(FakeBoard()),
                        clock=lambda: 0, raw_buffer_maxlen=3)
     for seq in range(5):
         svc._ingest(_ain_line(seq))
@@ -268,7 +272,7 @@ def test_raw_lines_buffer_is_bounded_to_the_most_recent():
 
 def test_records_buffer_is_bounded_too():
     """🔴 `self.records` 도 원문 버퍼와 뿌리가 같은 부채였다 — 함께 고친다."""
-    svc = BoardService(LoopbackTransport(DeviceSim(default_store())),
+    svc = BoardService(LoopbackTransport(FakeBoard()),
                        clock=lambda: 0, raw_buffer_maxlen=3)
     for seq in range(5):
         svc._ingest(_ain_line(seq))
@@ -305,7 +309,7 @@ def test_line_stats_count_lines_bytes_types_and_last_seen(rig):
 
 def test_corrupt_lines_are_recorded_with_a_corrupt_type():
     """줄 자체가 깨졌어도 원문·통계에는 남아야 한다 — 손상을 눈으로 봐야 한다."""
-    svc = BoardService(LoopbackTransport(DeviceSim(default_store())),
+    svc = BoardService(LoopbackTransport(FakeBoard()),
                        clock=lambda: 0)
     svc._ingest('{"schema_ver":3,"seq":')
     assert svc.type_counts.get("corrupt") == 1
@@ -350,7 +354,7 @@ class FakeMonotonic:
 def baud_rig():
     clock = FakeClock()
     mono = FakeMonotonic()
-    sim = DeviceSim(default_store())
+    sim = FakeBoard()
     svc = BoardService(LoopbackTransport(sim), clock=clock,
                        sleep=mono.sleep, monotonic=mono)
     return svc, sim, clock, mono

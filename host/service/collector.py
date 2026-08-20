@@ -25,7 +25,12 @@ from pathlib import Path
 from host.core.errors import ProtocolError
 from host.core.limits import DEFAULT_BAUD
 from host.core.records import parse_record
-from host.service.board_service import BoardService, SerialTransport
+from host.service.board_service import (
+    RETIRED_SIM_PORT,
+    SIM_REMOVED_MSG,
+    BoardService,
+    SerialTransport,
+)
 from host.storage.store import RecordStore, apply_retention
 
 log = logging.getLogger("markon.collector")
@@ -45,7 +50,7 @@ RECONNECT_BACKOFF_MAX_S = 5.0
 #:
 #: 실물 시리얼(`SerialTransport`)은 `read()`가 포트의 `timeout`(0.1초)
 #: 만큼 자체적으로 블로킹하므로 사실 이 상한이 없어도 CPU 를 다 먹지
-#: 않는다. 그래도 `--port sim`처럼 즉시 반환하는 트랜스포트에서 바쁜
+#: 않는다. 그래도 시험용 스텁처럼 즉시 반환하는 트랜스포트에서 바쁜
 #: 대기(busy loop)가 되는 것을 막기 위해 CLI `monitor`(markon_cli.py)와
 #: 같은 값(0.02초, 50Hz)을 둔다 — 최소 레코드 주기(10ms)보다 촘촘히
 #: 도니 수집 지연으로 느껴지지 않는다.
@@ -247,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--port", required=True,
-        help="시리얼 포트(예: COM23, /dev/ttyUSB0). 'sim' 이면 내장 시뮬레이터",
+        help="시리얼 포트(예: COM23, /dev/ttyUSB0)",
     )
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     parser.add_argument("--data-dir", required=True, help="레코드를 쌓을 디렉터리")
@@ -264,20 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _make_connect(port: str, baud: int) -> Callable[[], Transport]:
-    if port == "sim":
-        # 🔴 보드 없이 수동으로 눈으로 확인해 볼 수 있게 해 둔다 — 실제
-        # COM 포트는 절대 열지 않는다. 재접속마다 새 DeviceSim 을 만드는
-        # 것은 "뽑았다 꽂았다"를 흉내 내지는 못하지만, sim 경로 자체가
-        # 도는지 보는 용도로는 충분하다.
-        from tools.simulator.config_store import default_store
-        from tools.simulator.device_sim import DeviceSim
-
-        from host.service.board_service import LoopbackTransport
-
-        def connect_sim():
-            return LoopbackTransport(DeviceSim(default_store()))
-
-        return connect_sim
+    if port == RETIRED_SIM_PORT:
+        # 🔴 조용히 이상하게 굴지 않는다. 이 이름은 부팅 스크립트와 서비스
+        #    유닛에 남아 있을 수 있고, 그대로 시리얼 포트로 넘기면 "COM 포트를
+        #    못 연다" 는 엉뚱한 오류로 재접속을 무한히 되풀이한다.
+        raise SystemExit(SIM_REMOVED_MSG)
 
     def connect_serial():
         return SerialTransport(port, baud)

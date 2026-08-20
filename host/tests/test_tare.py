@@ -11,15 +11,14 @@ from host.core.config_schema import parse_catalog
 from host.core.framing import build_command
 from host.gui.settings_form import SettingsForm
 from host.gui.tare import NOMINAL_ZERO_MA, tare_rows, tared_zero
-from tools.simulator.config_store import default_store
-from tools.simulator.device_sim import DeviceSim
+from host.tests.fake_board import FakeBoard
 
 
 @pytest.fixture
 def form() -> SettingsForm:
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-    lines = [ln for ln in sim.feed(build_command("CFG", "LIST"))
+    board = FakeBoard()
+    board.feed(build_command("HB"))
+    lines = [ln for ln in board.feed(build_command("CFG", "LIST"))
              if ln.startswith("{")]
     return SettingsForm(parse_catalog(lines))
 

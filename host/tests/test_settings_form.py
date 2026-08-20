@@ -18,14 +18,13 @@ from host.gui.settings_form import (
     record_shape,
     telemetry_shape,
 )
-from tools.simulator.config_store import default_store
-from tools.simulator.device_sim import DeviceSim
+from host.tests.fake_board import FakeBoard, FakeStore, fake_store
 
 
 def _catalog_lines() -> list[str]:
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-    return [ln for ln in sim.feed(build_command("CFG", "LIST"))
+    board = FakeBoard()
+    board.feed(build_command("HB"))
+    return [ln for ln in board.feed(build_command("CFG", "LIST"))
             if ln.startswith("{")]
 
 
@@ -46,11 +45,9 @@ def readonly_form(interlocked_items) -> SettingsForm:
        §7.3 이 정한 계약이다. 지금 그것을 쓰는 제품 항목이 없더라도 계약은
        유효하고, 나중에 필요한 항목이 생겼을 때 동작해야 한다.
     """
-    from tools.simulator.config_store import ConfigStore
-
-    sim = DeviceSim(ConfigStore(interlocked_items()))
-    sim.feed(build_command("HB"))
-    lines = [ln for ln in sim.feed(build_command("CFG", "LIST"))
+    board = FakeBoard(FakeStore(interlocked_items()))
+    board.feed(build_command("HB"))
+    lines = [ln for ln in board.feed(build_command("CFG", "LIST"))
              if ln.startswith("{")]
     return SettingsForm(parse_catalog(lines))
 
@@ -440,7 +437,7 @@ def test_a_missing_cell_leaves_a_hole_not_a_shifted_row():
 def test_telemetry_shape_counts_only_the_channels_that_are_on(form):
     """대역폭은 켜진 채널 수에 곱해진다 — 꺼진 것을 세면 겁만 준다."""
     shape = telemetry_shape(form)
-    assert shape.channels == 1          # 시뮬레이터 기본값은 J3 하나
+    assert shape.channels == 1          # 얼린 카탈로그의 기본값은 J3 하나
     form.edit("ain1.enabled", "true")
     assert telemetry_shape(form).channels == 2
 
@@ -462,7 +459,7 @@ def test_record_shape_i2c_counts_records_not_ports(form):
     🔴 [개정, 2026-08-20] 세는 것은 포트가 아니라 **레코드 수**다.
 
        포트 하나가 레코드 하나가 아니다. 온습도(kind 2)는 `temp` 와
-       `humidity` 를 따로 내고(device_sim `_emit_i2c`), 종류를 안 고른
+       `humidity` 를 따로 내고(펌웨어 `mk_i2c.c`), 종류를 안 고른
        포트는 켜도 아무것도 안 낸다. 포트로 세면 앞은 절반으로, 뒤는 있지도
        않은 트래픽으로 잡힌다.
     """
@@ -481,14 +478,7 @@ def test_record_shape_din_has_no_channel_count():
     """🔴 [신규, 2026-08-19] din(J18~J20)은 켜고 끄는 채널이 없다 — 항상
     감시되는 입력이고, 이벤트성 레코드라(규격 §7.6) 채널 수 × 주기로
     대역폭을 지어낼 근거가 없다."""
-    from tools.simulator.config_store import default_store
-    from tools.simulator.device_sim import DeviceSim
-
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-    lines = [ln for ln in sim.feed(build_command("CFG", "LIST"))
-             if ln.startswith("{")]
-    f = SettingsForm(parse_catalog(lines))
+    f = SettingsForm(parse_catalog(_catalog_lines()))
     assert record_shape(f, "din").channels == 0
 
 
@@ -522,7 +512,7 @@ def test_telemetry_shape_reads_the_spec_named_keys(form):
 # ------------------------------------------------------------- I2C 포트
 
 def test_i2c_ports_default_to_none_and_disabled(form):
-    """🔴 시뮬레이터 기본값은 여섯 포트 전부 종류 없음·꺼짐이다. 대시보드가
+    """🔴 얼린 카탈로그의 기본값은 여섯 포트 전부 종류 없음·꺼짐이다. 대시보드가
     카드를 몇 장 세울지는 이 값에서 정해진다."""
     ports = i2c_ports(form)
     assert set(ports) == {10, 11, 12, 13, 14, 15}
@@ -595,12 +585,10 @@ def test_link_baud_choices_get_labels_the_board_cannot_supply():
     이름표를 안 보내도 화면이 붙인다 — 안 붙이면 콤보에 숫자만 여섯 개
     나열되고, 사용자는 제일 큰 값을 고른다.
     """
-    from tools.simulator.config_store import default_store
-
     from host.core.config_schema import parse_catalog
     from host.gui.settings_form import SettingsForm
 
-    schema = parse_catalog(list(default_store().catalog_lines()))
+    schema = parse_catalog(list(fake_store().catalog_lines()))
     form = SettingsForm(schema)
     row = form.row("link.baud")
 
@@ -613,12 +601,10 @@ def test_link_baud_choices_get_labels_the_board_cannot_supply():
 def test_other_enums_keep_the_catalog_labels():
     """🔴 링크 속도에만 붙인다. 다른 열거까지 손대면 보드가 보낸 이름표를
     호스트가 덮어쓰는 셈이 된다."""
-    from tools.simulator.config_store import default_store
-
     from host.core.config_schema import parse_catalog
     from host.gui.settings_form import SettingsForm
 
-    schema = parse_catalog(list(default_store().catalog_lines()))
+    schema = parse_catalog(list(fake_store().catalog_lines()))
     form = SettingsForm(schema)
 
     assert form.row("gnss.baud").choice_labels == ()      # 숫자가 곧 뜻이다

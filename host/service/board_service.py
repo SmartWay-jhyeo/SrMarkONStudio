@@ -77,69 +77,17 @@ class BaudChangeResult:
     recovered: bool = False
 
 
-class LoopbackTransport:
-    """DeviceSim 을 직접 물리는 트랜스포트. 시리얼 없이 전 구간을 시험한다.
-
-    🔴 **속도가 맞지 않으면 줄이 오가지 않는다** (규격 §4.2).
-
-       진짜 UART 가 없다고 이 통로를 언제나 통하게 두면, 링크 속도 변경의
-       실패 경로 — 이 기능의 본체 — 를 시뮬레이터로는 한 번도 못 밟는다.
-       보드가 새 속도로 말하는데 호스트가 옛 속도로 듣는 상태를 여기서
-       그대로 재현한다: 양쪽 값이 다르면 쓴 것도 읽을 것도 사라진다.
-    """
-
-    def __init__(self, sim, baud: int = DEFAULT_BAUD) -> None:
-        self.sim = sim
-        self.baud = baud
-        #: 🔴 `(내보낸 속도, 줄)`. 속도를 줄마다 붙들어 둬야 하는 이유가
-        #:    있다 — 보드는 응답을 **옛 속도로 내보낸 다음** 속도를 바꾼다
-        #:    (규격 §4.2.2 규칙 1). 읽을 때의 속도로 판정하면 그 응답까지
-        #:    버려져, 규격이 지키라고 한 순서를 시뮬레이터가 어기는 꼴이
-        #:    된다. 실제로 그렇게 만들었다가 잡았다.
-        self._pending: list[tuple[int, str]] = []
-
-    def _board_baud(self) -> int:
-        return getattr(self.sim, "link_baud", self.baud)
-
-    def write(self, data: str) -> None:
-        if self.baud != self._board_baud():
-            return                       # 보드가 못 알아듣는 파형이다
-        for line in data.splitlines():
-            if not line.strip():
-                continue
-            out = self.sim.feed(line + "\r\n")
-            # 🔴 태그는 feed **뒤의** 속도다. 명령 응답은 그 명령을 다 처리한
-            #    끝에 나가므로, 처리 중에 속도가 바뀌었다면 응답은 새 속도로
-            #    나간 것이다 — 그것이 규격 §4.2.2 규칙 1 이 금지하는 순서이고,
-            #    여기서 앞의 속도로 태그하면 그 위반이 시험을 통과해 버린다.
-            #    (제대로 된 구현에서는 feed 가 속도를 안 바꾸므로 앞뒤가 같다.)
-            self._pending.extend((self._board_baud(), ln) for ln in out)
-
-    def read_lines(self) -> Iterator[str]:
-        pending, self._pending = self._pending, []
-        for baud, line in pending:
-            if baud == self.baud:
-                yield line
-            # 속도가 다를 때 온 줄은 **조용히 사라진다.** 실물에서는
-            # 프레이밍 오류가 되고, 어느 쪽이든 호스트에는 안 온 것과 같다.
-
-    def tick(self, now_ms: int) -> None:
-        # 🔴 여기는 반대로 tick **전의** 속도로 태그한다. 주기 송신(하트비트·
-        #    텔레메트리)은 슈퍼루프 위쪽에서 만들어지고 속도 전환은 그 아래
-        #    에서 일어나므로(device_sim._link_tick), 이번 바퀴의 줄들은 옛
-        #    속도로 나간 것이 맞다. `write()` 와 앞뒤가 다른 것은 실수가
-        #    아니라 두 자리의 순서가 실제로 다르기 때문이다.
-        board = self._board_baud()
-        self._pending.extend((board, out) for out in self.sim.tick(now_ms))
-
-    def reopen(self, baud: int) -> None:
-        # 🔴 옛 속도로 오던 바이트는 버린다. 실물에서도 포트를 닫는 순간
-        #    커널 버퍼가 사라지고, 남겨 봐야 새 속도에서는 깨진 바이트다.
-        self._pending = []
-        self.baud = baud
-
-    def close(self) -> None:
-        pass
+#: 🔴 없어진 포트 이름 (시뮬레이터 제거, 2026-08-20).
+#:
+#:    조용히 이상하게 굴지 않고 진입점마다 여기서 잡아 말해 준다. 손가락과
+#:    스크립트와 부팅 서비스 유닛에 아직 남아 있을 이름이라, 모르는 포트로
+#:    그냥 넘기면 "COM 포트를 못 연다" 는 엉뚱한 오류가 되고 수집기는 그
+#:    오류로 재접속을 무한히 되풀이한다.
+RETIRED_SIM_PORT = "sim"
+SIM_REMOVED_MSG = (
+    "--port sim 은 없어졌다 (시뮬레이터 제거, 2026-08-20). "
+    "실제 포트를 지정해라 (예: --port COM23)."
+)
 
 
 class SerialTransport:
@@ -247,8 +195,8 @@ class BoardService:
                  monotonic: Callable[[], float] = time.monotonic):
         self.transport = transport
         self.clock = clock
-        #: 🔴 링크 속도 변경(§4.2)이 쓰는 **벽시계**. `clock` 은 시뮬레이터에
-        #:    주입하는 장치 시간이라 시험에서 멈춰 있을 수 있는데, 보드의
+        #: 🔴 링크 속도 변경(§4.2)이 쓰는 **벽시계**. `clock` 은 장치 시간을
+        #:    주입하는 자리라 시험에서 멈춰 있을 수 있는데, 보드의
         #:    10초 시한은 장치 시간이 아니라 실제 경과 시간의 문제다.
         #:    시험이 10초를 진짜로 기다리지 않도록 주입 가능하게 둔다.
         self._sleep = sleep
@@ -513,9 +461,10 @@ class BoardService:
         for line in self.transport.read_lines():
             self._ingest(line)
 
-        # LoopbackTransport 로 시뮬레이터를 직접 물린 경우에는 모드를 바로
-        # 읽어 온다. 실제 보드(SerialTransport)에는 `sim` 이 없으므로 이
-        # 경로를 건너뛰고, 모드는 $STAT 응답으로만 갱신된다(_ingest 참조).
+        # 시험용 루프백(host/tests/fake_board.LoopbackTransport)으로 스텁을
+        # 직접 물린 경우에는 모드를 바로 읽어 온다. 실제 보드
+        # (SerialTransport)에는 `sim` 이 없으므로 이 경로를 건너뛰고, 모드는
+        # $STAT 응답으로만 갱신된다(_ingest 참조).
         sim = getattr(self.transport, "sim", None)
         if sim is not None:
             self.mode = sim.mode

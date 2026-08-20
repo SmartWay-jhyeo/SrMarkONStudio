@@ -246,23 +246,20 @@ def test_format_bytes_per_s(value, want):
     assert format_bytes_per_s(value) == want
 
 
-# ----------------------------------------------------------------- 실제 설정
-
-def test_default_telemetry_fits_115200():
-    """기본 설정(7채널 100 ms, 기본 필드)이 115200 에 들어가는지.
-
-    들어가지 않으면 기본값 자체가 잘못된 것이다 — 사용자가 아무것도 바꾸지
-    않았는데 유실이 나면 안 된다.
-    """
-    from tools.simulator.config_store import default_store
-    from tools.simulator.telemetry import build_ain_record
-
-    store = default_store()
-    rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
-                           raw=8388608, capture_counter=123456789)
-    b = compute_budget(rec, channels_enabled=7,
-                       period_ms=int(store.get("tx.period_ms")), baud=115200)
-    assert not b.over_capacity, budget_message(b)[1]
+# ------------------------------------------------------- 카탈로그를 물린 계산
+#
+# 🔴 [정리, 2026-08-20] 시뮬레이터를 지우면서 **제품 카탈로그의 실제 숫자를
+#    주장하던 시험 셋을 걷어냈다** — `test_default_telemetry_fits_115200`,
+#    `test_settings_screen_opens_quickly_at_the_default_baud`,
+#    `test_the_old_baud_is_why_we_raised_it`.
+#
+#    셋 다 "기본 설정이 115200 에 들어간다" 류의 **보드에 관한 사실**을 말했다.
+#    입력이 얼린 스냅샷(`catalog_snapshot.jsonl`)으로 바뀐 지금 그 주장은
+#    거짓말이 된다 — 펌웨어가 기본값을 바꿔도 계속 통과한다. 없는 안전망보다
+#    있다고 믿는 안전망이 나쁘다. 그 숫자는 실기기 측정
+#    (`docs/measurements/2026-08-14_baud_921600.md`)이 근거다.
+#
+#    아래 하나는 남는다 — 주장하는 것이 보드가 아니라 **계산이 도는가** 다.
 
 
 def test_all_fields_on_is_measurable():
@@ -275,71 +272,15 @@ def test_all_fields_on_is_measurable():
     자기 종류의 비트만 켤 수 있다. 카탈로그가 알려 주는 상한을 그대로 쓴다
     — 비트를 늘려도 이 시험이 따라온다.
     """
-    from tools.simulator.config_store import default_store
-    from tools.simulator.telemetry import build_ain_record
+    from host.tests.fake_board import build_ain_record, fake_store
 
-    store = default_store()
+    store = fake_store()
     store.set("tx.fields_ain", str(int(store.items["tx.fields_ain"].maximum)))
     rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
                            raw=8388608, capture_counter=123456789)
     b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=115200)
     assert b.line_bytes > 0
     assert b.bytes_per_s > 0
-
-
-def _catalog_bytes_and_budget(baud: int):
-    from host.core.framing import build_command
-    from tools.simulator.config_store import default_store
-    from tools.simulator.device_sim import DeviceSim
-    from tools.simulator.telemetry import build_ain_record
-
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-    catalog = sum(len(ln.encode("utf-8")) + 1
-                  for ln in sim.feed(build_command("CFG", "LIST")))
-    store = default_store()
-    rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
-                           raw=8388608, capture_counter=123456789)
-    return catalog, compute_budget(
-        rec, channels_enabled=7,
-        period_ms=int(store.get("tx.period_ms")), baud=baud,
-    )
-
-
-def test_settings_screen_opens_quickly_at_the_default_baud():
-    """🔴 설정 화면이 실용적인 시간 안에 열려야 한다.
-
-    규격 §6.3 이 "수집과 전송은 두 모드에서 모두 계속된다"고 못박고 있으므로
-    `$CFG,LIST` 카탈로그는 텔레메트리가 쓰고 남은 대역폭으로 흘러야 한다.
-
-    115200 에서는 여유가 초당 600 바이트뿐이라 **16.7 초**가 걸렸다 —
-    사용자 요구의 핵심("USB 를 연결했을 때만 GUI 로 설정하고 제어한다")이
-    기본 설정에서 성립하지 않았다. 921600 으로 올려 해결했고 실기기에서
-    확인했다 (`docs/measurements/2026-08-14_baud_921600.md`).
-
-    이 시험은 그 해결이 되돌아가지 않게 붙든다.
-    """
-    from host.core.limits import DEFAULT_BAUD
-
-    catalog, b = _catalog_bytes_and_budget(DEFAULT_BAUD)
-    assert catalog > 5000, "카탈로그가 갑자기 작아졌다 — 계산을 다시 보라"
-    spare = b.headroom_bytes_per_s
-    assert spare > 0, "텔레메트리만으로 이미 링크가 찬다"
-    seconds = catalog / spare
-    assert seconds < 1.0, (
-        f"설정 화면 열기가 {seconds:.1f}초다. board_service 의 $CFG,LIST "
-        f"타임아웃 안에 들어와야 한다."
-    )
-
-
-def test_the_old_baud_is_why_we_raised_it():
-    """왜 올렸는지를 계산으로 남긴다.
-
-    115200 으로 되돌리자는 이야기가 나올 때 이 숫자가 근거가 된다.
-    """
-    catalog, b = _catalog_bytes_and_budget(115200)
-    assert b.ratio > 0.9, f"115200 에서 {b.ratio*100:.1f}% 를 쓴다"
-    assert catalog / b.headroom_bytes_per_s > 10.0
 
 
 # 🔴 `test_imports_no_qt` 는 여기서 걷어냈다. 파일마다 손으로 복사한

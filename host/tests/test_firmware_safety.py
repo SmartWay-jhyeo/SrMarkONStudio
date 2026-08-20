@@ -176,19 +176,21 @@ def test_five_volt_rail_warns_about_what_it_stops():
     # 🔴 `pwr.5v` 는 문서 주석에도 나온다. **항목 정의** 근처를 봐야 한다 —
     #    처음에 첫 등장을 찾았더니 파일 머리의 설명글에 걸려서, 사유가
     #    멀쩡한데도 없다고 했다.
-    for path, anchor in ((FW / "app" / "mk_cfgtable.c", '.key = "pwr.5v"'),
-                         (FW.parents[1] / "tools" / "simulator"
-                          / "config_store.py", '"pwr.5v", "pwr", "bool"')):
-        text = path.read_text(encoding="utf-8")
-        at = text.find(anchor)
-        assert at >= 0, f"{path.name} 에서 pwr.5v 항목 정의를 못 찾았다"
-        near = text[at:at + 600]
-        for word in ("팬", "수집", "WS2812"):
-            assert word in near, (
-                f"{path.name} 의 pwr.5v 사유에 '{word}' 가 없다. 5V 를 끄면 "
-                f"무엇이 멈추는지 사용자가 알아야 한다 — 그것이 인터록을 "
-                f"푼 대신 남은 유일한 안전장치다."
-            )
+    #
+    # 🔴 [정정, 2026-08-20] 예전에는 시뮬레이터의 설정표도 함께 봤다. 그것이
+    #    사라졌고, 이제 사유를 실어 보내는 곳은 펌웨어 하나뿐이다.
+    path = FW / "app" / "mk_cfgtable.c"
+    anchor = '.key = "pwr.5v"'
+    text = path.read_text(encoding="utf-8")
+    at = text.find(anchor)
+    assert at >= 0, f"{path.name} 에서 pwr.5v 항목 정의를 못 찾았다"
+    near = text[at:at + 600]
+    for word in ("팬", "수집", "WS2812"):
+        assert word in near, (
+            f"{path.name} 의 pwr.5v 사유에 '{word}' 가 없다. 5V 를 끄면 "
+            f"무엇이 멈추는지 사용자가 알아야 한다 — 그것이 인터록을 "
+            f"푼 대신 남은 유일한 안전장치다."
+        )
 
 
 def test_the_rail_sequence_test_still_exists():

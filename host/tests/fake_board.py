@@ -388,6 +388,13 @@ class FakeBoard:
         return Mode.CONFIG
 
     @property
+    def ctl_mode(self) -> str:
+        """제어 모드 (규격 §6.4). 🔴 스텁은 **언제나 ACTIVE** 다 — 여기에는
+        움직일 출력이 없으므로 TEST 가 지킬 것도 없다. `BoardService.pump()`
+        가 이 이름을 읽으므로 자리만 지킨다."""
+        return "ACTIVE"
+
+    @property
     def link_baud(self) -> int:
         """지금 전선에 서 있다고 주장하는 속도."""
         return self._link_active

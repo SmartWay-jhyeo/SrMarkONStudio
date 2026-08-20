@@ -1,3 +1,5 @@
+import pytest
+
 from tools.cli.markon_cli import (
     build_parser,
     cmd_get,
@@ -6,29 +8,45 @@ from tools.cli.markon_cli import (
     cmd_query,
     cmd_set,
 )
-from host.service.board_service import BoardService, LoopbackTransport
 from host.storage.store import RecordStore
-from tools.simulator.config_store import default_store
-from tools.simulator.device_sim import DeviceSim
+from host.tests.fake_board import fake_service
 
 T0 = 1_772_000_000_000
 
 
 def _svc():
-    clock = lambda: 0  # noqa: E731
-    return BoardService(LoopbackTransport(DeviceSim(default_store())), clock=clock)
+    return fake_service(clock=lambda: 0)
 
 
 def test_parser_requires_subcommand():
     parser = build_parser()
-    args = parser.parse_args(["--port", "sim", "get", "tx.period_ms"])
+    args = parser.parse_args(["--port", "COM23", "get", "tx.period_ms"])
     assert args.command == "get"
     assert args.key == "tx.period_ms"
 
 
-def test_parser_defaults_to_simulator_port():
-    args = build_parser().parse_args(["list"])
-    assert args.port == "sim"
+def test_parser_requires_a_port():
+    """🔴 기본 포트가 없다.
+
+    예전 기본값은 `sim`(내장 시뮬레이터)이었다. 그것을 없앤 뒤 기본값을
+    아무 COM 포트로 채우면 사람이 의도하지 않은 장치에 명령을 보낸다 —
+    이 도구는 24V 를 켜고 끈다. 지정하지 않으면 멈추는 편이 맞다.
+    """
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["list"])
+
+
+def test_sim_port_says_it_is_gone_instead_of_failing_strangely():
+    """🔴 `sim` 은 손가락·스크립트·부팅 서비스 유닛에 남아 있을 이름이다.
+
+    그대로 시리얼 포트로 넘기면 "COM 포트를 못 연다" 는 엉뚱한 오류가 되고,
+    수집기는 그 오류로 재접속을 무한히 되풀이한다. 없어졌다고 말한다.
+    """
+    from tools.cli.markon_cli import make_service
+
+    with pytest.raises(SystemExit) as exc:
+        make_service("sim", 921600)
+    assert "없어졌다" in str(exc.value)
 
 
 def test_cmd_list_prints_grouped_items(capsys):
@@ -85,6 +103,7 @@ def _store_with(tmp_path, records):
 
 def test_query_parser_requires_range(tmp_path):
     args = build_parser().parse_args([
+        "--port", "COM23",
         "query", "--data-dir", str(tmp_path), "--start", "0", "--end", "100",
     ])
     assert args.command == "query"
@@ -138,7 +157,7 @@ def test_baud_is_its_own_subcommand_not_a_set():
     보내야 하며, 실패하면 옛 속도로 돌아와야 한다. 전용 하위 명령으로
     갈라 두면 `set` 이 실수로 링크를 끊는 일이 없다.
     """
-    args = build_parser().parse_args(["baud", "1500000"])
+    args = build_parser().parse_args(["--port", "COM23", "baud", "1500000"])
     assert args.command == "baud" and args.value == 1500000
 
 

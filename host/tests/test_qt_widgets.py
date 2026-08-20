@@ -26,8 +26,11 @@ from host.gui.qt.settings_page import RowWidget, SettingsPage  # noqa: E402
 from host.gui.settings_form import SettingsForm  # noqa: E402
 from host.gui.qt.style import stylesheet  # noqa: E402
 from host.gui.widgets.status_chip import Level, Verification  # noqa: E402
-from tools.simulator.config_store import default_store  # noqa: E402
-from tools.simulator.device_sim import DeviceSim  # noqa: E402
+from host.tests.fake_board import (  # noqa: E402
+    FakeBoard,
+    FakeStore,
+    fake_store,
+)
 
 
 @pytest.fixture(scope="module")
@@ -178,7 +181,7 @@ def test_setting_a_value_from_outside_moves_the_widget_too(app):
     어느 쪽이 보드의 상태인지 알 수 없다.
     """
     page = SettingsPage()
-    page.set_form(_form_from(default_store()))
+    page.set_form(_form_from(fake_store()))
 
     page.set_value("pwr.24v", "true")
 
@@ -214,16 +217,16 @@ def test_hairline_takes_the_colour_it_is_given(app):
 
 
 def _form_from(store) -> SettingsForm:
-    sim = DeviceSim(store)
-    sim.feed(build_command("HB"))
-    lines = [ln for ln in sim.feed(build_command("CFG", "LIST"))
+    board = FakeBoard(store)
+    board.feed(build_command("HB"))
+    lines = [ln for ln in board.feed(build_command("CFG", "LIST"))
              if ln.startswith("{")]
     return SettingsForm(parse_catalog(lines))
 
 
 @pytest.fixture
 def form():
-    return _form_from(default_store())
+    return _form_from(fake_store())
 
 
 @pytest.fixture
@@ -235,9 +238,7 @@ def readonly_form(interlocked_items):
        어떻게 그리는지는 규격 §7.3 이 정한 계약이므로, 쓰는 항목이 없어도
        계속 확인한다.
     """
-    from tools.simulator.config_store import ConfigStore
-
-    return _form_from(ConfigStore(interlocked_items()))
+    return _form_from(FakeStore(interlocked_items()))
 
 
 # ------------------------------------------------------------------ 칩

@@ -1,8 +1,9 @@
 """메인 윈도우가 보드 없이 실제로 뜨는지 검사한다.
 
-🔴 `python -m host.gui.app --port sim` 이 되어야 한다는 것이 계획서의 완료
-   기준이다. 시뮬레이터와 실물이 같은 답을 낸다는 것은 C 와 Python 을
-   바이트 단위로 대조해 확인해 두었으므로, 여기서 도는 것은 실물에서도 돈다.
+🔴 창이 뜨는 것과 뷰 계약이 지켜지는 것은 **호스트 코드의 성질**이라 보드가
+   없어도 확인할 수 있어야 한다. 전선 반대편은 시험용 스텁
+   (`host/tests/fake_board.py`)이 맡는다 — 예전에는 `--port sim` 이 그
+   자리였지만 시뮬레이터는 없앴다(2026-08-20).
 """
 
 import os
@@ -15,7 +16,7 @@ pytest.importorskip("PyQt6", reason="PyQt6 가 없으면 건너뛴다")
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
-from host.gui.app import MainWindow, make_service  # noqa: E402
+from host.gui.app import MainWindow  # noqa: E402
 from host.gui.qt.dashboard import AIN_COUNT, Dashboard  # noqa: E402
 from host.gui.qt.rail import RailRow  # noqa: E402
 from host.gui.qt.style import stylesheet  # noqa: E402
@@ -32,8 +33,10 @@ def app():
 
 @pytest.fixture
 def window(app):
-    service = make_service("sim", 115200)
-    w = MainWindow(service, "sim")
+    from host.tests.fake_board import fake_service
+
+    service = fake_service(clock=lambda: 0)
+    w = MainWindow(service, "스텁")
     yield w
     w._worker.stop()
 

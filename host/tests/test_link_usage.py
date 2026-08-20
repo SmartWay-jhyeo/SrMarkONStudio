@@ -26,14 +26,13 @@ from host.gui.link_usage import (
     record_line,
 )
 from host.gui.settings_form import SettingsForm
-from tools.simulator.config_store import default_store
-from tools.simulator.device_sim import DeviceSim
+from host.tests.fake_board import FakeBoard
 
 
 def _catalog_lines() -> list[str]:
-    sim = DeviceSim(default_store())
-    sim.feed(build_command("HB"))
-    return [ln for ln in sim.feed(build_command("CFG", "LIST"))
+    board = FakeBoard()
+    board.feed(build_command("HB"))
+    return [ln for ln in board.feed(build_command("CFG", "LIST"))
             if ln.startswith("{")]
 
 

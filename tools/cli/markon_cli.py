@@ -1,12 +1,12 @@
 """MarkON Studio 명령줄 도구.
 
-GUI 없이 보드를 설정하고 텔레메트리를 확인한다. --port sim 이면 내장
-시뮬레이터를 쓰므로 보드 없이도 전 기능을 시험할 수 있다.
+GUI 없이 보드를 설정하고 텔레메트리를 확인한다. **보드가 있어야 한다** —
+내장 시뮬레이터는 없앴다(2026-08-20).
 
-  python -m tools.cli.markon_cli list
-  python -m tools.cli.markon_cli --port COM7 get tx.period_ms
-  python -m tools.cli.markon_cli --port COM7 set tx.period_ms 250
-  python -m tools.cli.markon_cli --port COM7 monitor --seconds 10
+  python -m tools.cli.markon_cli --port COM23 list
+  python -m tools.cli.markon_cli --port COM23 get tx.period_ms
+  python -m tools.cli.markon_cli --port COM23 set tx.period_ms 250
+  python -m tools.cli.markon_cli --port COM23 monitor --seconds 10
 """
 
 import argparse
@@ -15,21 +15,24 @@ import time
 
 from host.core.errors import ProtocolError
 from host.core.limits import DEFAULT_BAUD, LINK_BAUD_CHOICES
-from host.service.board_service import BoardService, LoopbackTransport, SerialTransport
+from host.service.board_service import (
+    RETIRED_SIM_PORT,
+    SIM_REMOVED_MSG,
+    BoardService,
+    SerialTransport,
+)
 from host.storage.query import DEFAULT_MAX_AGE_MS, find_nearest, query_range
-from tools.simulator.config_store import default_store
-from tools.simulator.device_sim import DeviceSim
-
-SIM_PORT = "sim"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="markon", description="STM32 v2.0 보드 설정·모니터 도구"
     )
+    # 🔴 기본값을 두지 않는다. 예전 기본값이 `sim` 이었으므로, 아무 생각 없이
+    #    실행했을 때 조용히 가짜 보드에 붙는 대신 "포트를 지정해라" 로 멈춘다.
     parser.add_argument(
-        "--port", default=SIM_PORT,
-        help="시리얼 포트 (예: COM7, /dev/ttyUSB0). 기본 'sim' = 내장 시뮬레이터",
+        "--port", required=True,
+        help="시리얼 포트 (예: COM23, /dev/ttyUSB0)",
     )
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
 
@@ -83,12 +86,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def make_service(port: str, baud: int) -> BoardService:
-    if port == SIM_PORT:
-        transport = LoopbackTransport(DeviceSim(default_store()))
-        start = time.monotonic()
-        return BoardService(
-            transport, clock=lambda: int((time.monotonic() - start) * 1000)
-        )
+    if port == RETIRED_SIM_PORT:
+        raise SystemExit(SIM_REMOVED_MSG)
     start = time.monotonic()
     return BoardService(
         SerialTransport(port, baud),
