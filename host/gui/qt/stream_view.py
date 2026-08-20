@@ -419,7 +419,21 @@ class StreamView(QWidget):
         self._apply_filters(state)
 
     def _refresh_tree_labels(self, state: StreamState) -> None:
-        """건수 표시를 갱신한다 — 글자가 바뀔 때만 위젯을 만진다."""
+        """건수 표시를 갱신한다 — 글자가 바뀔 때만 위젯을 만진다.
+
+        🔴 반드시 `_tree_updating` 을 걸고 한다. `setText` 도 itemChanged 를
+           내는데, 그 신호를 사람이 체크박스를 누른 것으로 읽으면 **건수가
+           바뀔 때마다**(활발한 타입은 초당 수십 번) 콘솔 전체 다시 그리기
+           + 렌더가 돌아 프로그램이 멈춘다 — 실기기에서 겪었다(2026-08-20,
+           "원본 스트림을 보면 프로그램이 멈춘다").
+        """
+        self._tree_updating = True
+        try:
+            self._refresh_tree_labels_inner(state)
+        finally:
+            self._tree_updating = False
+
+    def _refresh_tree_labels_inner(self, state: StreamState) -> None:
         for t, item in self._type_items.items():
             n = state.type_counts.get(t, 0)
             text = f"{t}  {n}" if n else t

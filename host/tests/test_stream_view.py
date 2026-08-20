@@ -510,3 +510,24 @@ def test_everything_starts_unchecked_by_user_decision(app):
     assert view._console.toPlainText() == ""
     _set_on(view._type_items["gnss"], True)    # 켜면
     assert line in view._console.toPlainText()  # 소급해서 보인다
+
+
+def test_count_label_updates_do_not_trigger_a_full_redraw(app):
+    """🔴 건수 표시 갱신(setText)도 itemChanged 를 낸다. 그것을 사람의
+    체크로 읽으면 활발한 타입마다 초당 수십 번 콘솔 전체를 다시 그려
+    프로그램이 멈춘다 — 실기기에서 겪었다(2026-08-20)."""
+    state = StreamState()
+    state.ingest([_ain_line(1)], now_s=0.0)
+    view = StreamView()
+    view.render(state, now_s=0.0)
+    view._type_all_btn.click()
+
+    calls = []
+    original = view._redraw_all
+    view._redraw_all = lambda: calls.append(1) or original()
+
+    # 건수가 바뀌는 렌더를 여러 번 — 필터는 아무도 안 만졌다
+    for i in range(2, 6):
+        state.ingest([_ain_line(i)], now_s=float(i))
+        view.render(state, now_s=float(i))
+    assert calls == [], "건수 갱신이 전체 다시 그리기를 유발했다"
