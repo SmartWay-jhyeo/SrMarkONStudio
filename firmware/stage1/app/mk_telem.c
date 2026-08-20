@@ -301,14 +301,14 @@ static int build_gnss_record(MkTelem *t, const MkGnssFix *f, int64_t now_ms,
      *    마지막으로 알던 위치를 다시 싣지 않는다(규격 §7.8.4) — 그러면
      *    화면에서 차량이 마지막으로 하늘을 본 자리에 서 있게 된다.
      *
-     * 🔴 자릿수 7 은 고정이다. `tx.float_digits`(기본 4)를 따르면 위치
+     * 🔴 자릿수 8 은 고정이다. `tx.float_digits`(기본 4)를 따르면 위치
      *    분해능이 약 11 m 가 되고, 화면에는 소수점이 그럴듯하게 붙어 있어
      *    아무도 눈치채지 못한다(규격 §7.8.2). 그리고 mk_json_f32 가 아니라
      *    mk_json_fixed 를 쓴다 — float 은 유효숫자가 약 7자리라
-     *    `127.3405907`(10자리)을 담지 못한다. */
+     *    `127.34059070`(11자리)을 담지 못한다. */
     if (f->have_pos) {
-        mk_json_fixed(&j, "lat", f->lat_1e7, 7);
-        mk_json_fixed(&j, "lon", f->lon_1e7, 7);
+        mk_json_fixed(&j, "lat", f->lat_1e8, 8);
+        mk_json_fixed(&j, "lon", f->lon_1e8, 8);
     } else {
         mk_json_null(&j, "lat");
         mk_json_null(&j, "lon");

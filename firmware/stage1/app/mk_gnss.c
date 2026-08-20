@@ -187,10 +187,49 @@ static int parse_date_field(Field f, uint16_t *year, uint8_t *month, uint8_t *da
     return (*month >= 1 && *month <= 12 && *day >= 1 && *day <= 31) ? 1 : 0;
 }
 
+/* 분(`mm.dddddddd`) 필드를 10^8 배 정수로 읽는다 — parse_scaled 와 달리
+ * int32 로 클램프하지 않는다(도 변환 후 값이 int32 상한을 넘긴다, 헤더
+ * 주석). 정수부는 호출 쪽이 이미 정확히 2자리로 잘라 넘기므로(아래
+ * mk_gnss_ddmm_to_1e8) 오버플로 걱정이 없다.
+ *
+ * 🔴 반올림하지 않고 8자리까지만 담고 그 이상은 버린다 — **버릴 일이
+ *    없다.** 실기기(UM981, 2026-08-20) 문장이 정확히 `mm.dddddddd`(분
+ *    소수 8자리)라 9자리째 입력이 아예 안 온다. parse_scaled 의 반올림은
+ *    "덜 정밀한 십진 자릿수 하나를 잘라낼 때" 필요한 것이지, 여기서는
+ *    있는 자릿수를 그대로 옮기는 것뿐이다. */
+static int parse_minute_1e8(Field f, int64_t *out)
+{
+    size_t i = 0;
+    int64_t v = 0;
+    int seen = 0;
+    for (; i < f.len && is_digit(f.p[i]); i++) {
+        v = v * 10 + (int64_t)(f.p[i] - '0');
+        seen = 1;
+    }
+    if (!seen) {
+        return 0;
+    }
+
+    int64_t place = 100000000LL;   /* 10^8 */
+    v *= place;
+
+    if (i < f.len && f.p[i] == '.') {
+        i++;
+        for (int d = 0; i < f.len && is_digit(f.p[i]) && d < 8; i++, d++) {
+            place /= 10;
+            v += (int64_t)(f.p[i] - '0') * place;
+        }
+        /* 9번째 이후 소수 자리는 버린다 — 실기기에는 오지 않는다(위 주석). */
+    }
+
+    *out = v;
+    return 1;
+}
+
 /* ---- 도-분 -> 십진도 (규격 §7.8.2) ---------------------------------------- */
 
-int mk_gnss_ddmm_to_1e7(const char *text, size_t len, char hemi, int is_lat,
-                        int32_t *out)
+int mk_gnss_ddmm_to_1e8(const char *text, size_t len, char hemi, int is_lat,
+                        int64_t *out)
 {
     int neg;
     /* 🔴 축마다 허용 문자가 다르다. 위도 자리에 'E' 가 오면 그것은 필드
@@ -231,21 +270,24 @@ int mk_gnss_ddmm_to_1e7(const char *text, size_t len, char hemi, int is_lat,
     Field mf;
     mf.p = text + deg_len;
     mf.len = len - deg_len;
-    int32_t min_1e6;
-    if (!parse_scaled(mf, 6, &min_1e6)) {
+    int64_t min_1e8;
+    if (!parse_minute_1e8(mf, &min_1e8)) {
         return 0;
     }
-    if (min_1e6 < 0 || min_1e6 >= 60000000) {
+    if (min_1e8 < 0 || min_1e8 >= 6000000000LL) {
         return 0;                  /* 분은 0~60 이다 */
     }
 
-    /* 10^7 / (60 x 10^6) = 1/6 이라 나눗셈 하나로 끝난다. +3 은 사사오입. */
-    int64_t v = (int64_t)deg * 10000000LL + (int64_t)(min_1e6 + 3) / 6;
-    int64_t limit = is_lat ? 900000000LL : 1800000000LL;
+    /* 10^8 / (60 x 10^8) = 1/60 이라 나눗셈 하나로 끝난다. +30 은 사사오입
+     * (60 의 절반). 분을 이미 10^8 스케일로 읽었으므로(parse_minute_1e8) 곱셈
+     * 없이 바로 나눌 수 있다 — 예전 1e-7 버전의 "10^7/(60×10^6)=1/6" 과 같은
+     * 구조다. */
+    int64_t v = deg * 100000000LL + (min_1e8 + 30) / 60;
+    int64_t limit = is_lat ? 9000000000LL : 18000000000LL;
     if (v > limit) {
         return 0;
     }
-    *out = (int32_t)(neg ? -v : v);
+    *out = neg ? -v : v;
     return 1;
 }
 
@@ -356,14 +398,14 @@ static void parse_rmc(MkGnss *g, const char *body, size_t body_len)
      *    남아 오는 수신기가 있고, 그것을 그대로 내보내면 화면에서 차량이
      *    마지막으로 하늘을 본 자리에 서 있게 된다(규격 §7.8.4). */
     if (valid) {
-        int32_t lat, lon;
-        if (mk_gnss_ddmm_to_1e7(f_lat.p, f_lat.len,
+        int64_t lat, lon;
+        if (mk_gnss_ddmm_to_1e8(f_lat.p, f_lat.len,
                                 f_ns.len ? f_ns.p[0] : '?', 1, &lat) &&
-            mk_gnss_ddmm_to_1e7(f_lon.p, f_lon.len,
+            mk_gnss_ddmm_to_1e8(f_lon.p, f_lon.len,
                                 f_ew.len ? f_ew.p[0] : '?', 0, &lon)) {
             fix.have_pos = 1;
-            fix.lat_1e7 = lat;
-            fix.lon_1e7 = lon;
+            fix.lat_1e8 = lat;
+            fix.lon_1e8 = lon;
         }
     }
 

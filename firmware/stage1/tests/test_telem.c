@@ -1306,10 +1306,11 @@ static void test_gnss_record_carries_the_real_fix(void)
     CHECK(line != NULL, "gnss 레코드가 나간다");
     if (line == NULL) { return; }
 
-    /* 🔴 소수 7자리 고정. tx.float_digits(기본 4)를 따르면 위치 분해능이
-     *    약 11 m 가 되고, 화면에는 아무 이상이 없어 보인다(규격 §7.8.2). */
-    CHECK_HAS(line, "\"lat\":37.3190694", "위도가 십진도 7자리로 실린다");
-    CHECK_HAS(line, "\"lon\":127.3405907", "경도가 십진도 7자리로 실린다");
+    /* 🔴 소수 8자리 고정(2026-08-20 확장, §0). tx.float_digits(기본 4)를
+     *    따르면 위치 분해능이 약 11 m 가 되고, 화면에는 아무 이상이 없어
+     *    보인다(규격 §7.8.2). */
+    CHECK_HAS(line, "\"lat\":37.31906943", "위도가 십진도 8자리로 실린다");
+    CHECK_HAS(line, "\"lon\":127.34059070", "경도가 십진도 8자리로 실린다");
     CHECK_HAS(line, "\"fix_t\":1787193075000", "fix_t 는 문장이 말하는 UTC");
     CHECK_HAS(line, "\"alt\":100.852", "고도(기본 켜짐)");
     CHECK_HAS(line, "\"sats\":20", "위성 수(기본 켜짐)");
@@ -1343,7 +1344,7 @@ static void test_gnss_optional_fields_follow_their_own_mask(void)
     CHECK_HAS(line, "\"course\":208.10", "방위");
     CHECK(strstr(line, "\"alt\"") == NULL, "끈 필드는 안 실린다");
     /* 🔴 lat·lon·fix_t 는 마스크 밖이라 마스크를 다 꺼도 남는다. */
-    CHECK_HAS(line, "\"lat\":37.3190694", "위도는 마스크로 못 끈다");
+    CHECK_HAS(line, "\"lat\":37.31906943", "위도는 마스크로 못 끈다");
     CHECK_HAS(line, "\"fix_t\":", "fix_t 도 마스크로 못 끈다");
 }
 
@@ -1418,7 +1419,7 @@ static void test_gnss_record_without_fix_says_null_not_a_stale_position(void)
     feed_gnss_line(&G, TELEM_REAL_GGA);
     feed_gnss_line(&G, TELEM_REAL_RMC);
     mk_telem_tick(&T, 100, sink, NULL);
-    CHECK(find_type("\"lat\":37.3190694") != NULL, "먼저 fix 를 한 번 잡는다");
+    CHECK(find_type("\"lat\":37.31906943") != NULL, "먼저 fix 를 한 번 잡는다");
 
     N = 0;                       /* 모은 줄만 비운다 — 파서 상태는 그대로 */
     feed_gnss_line(&G, "$GNRMC,023116.00,V,,,,,,,200826,,,N*6A\r\n");
