@@ -64,11 +64,11 @@ static const char *const I2C_KIND_LABELS[] = {
  * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
  * + link 1(호스트 링크 속도)
  * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기) */
-#define ITEM_COUNT   (1 + 6 + 4 + 2 + MK_AIN_COUNT * 5 \
+#define ITEM_COUNT   (1 + 6 + 4 + 2 + MK_AIN_COUNT * 6 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
-                      + MK_I2C_COUNT * 5 \
-                      + 3 \
+                      + MK_I2C_COUNT * 6 \
+                      + 3 + 3 \
                       + 1 \
                       + 5)
 

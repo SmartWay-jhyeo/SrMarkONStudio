@@ -264,6 +264,39 @@ class MainWindow(QMainWindow):
             n = int(m.group(2))
             names[3 + n if m.group(1) == "ain" else n] = value
         self._stream_state.connector_names = names
+        #: 대시보드 렌더링(_named)도 같은 사전을 쓴다.
+        self._conn_names = names
+
+    def _named(self, state: ScreenState) -> ScreenState:
+        """카드 이름표에 사용자가 붙인 이름을 앞세운 사본을 돌려준다.
+
+        🔴 상태를 만드는 쪽(build_screen)이 아니라 **그리기 직전**에 바꾼다.
+           내부에서는 "J3" 이 채널·센서를 잇는 키라서, 만드는 쪽을 바꾸면
+           레코드 매칭까지 이름을 따라가야 한다. 화면 문구만 바꾸는 일이다.
+           스트림 칩과 같은 꼴("유압 (J3)") — J 번호를 남기는 이유도 같다:
+           배선을 만질 때는 결국 보드 실크를 찾는다.
+        """
+        names = getattr(self, "_conn_names", None)
+        if not names:
+            return state
+        def lab(cstr: str) -> str:
+            if not cstr.startswith("J"):
+                return cstr
+            try:
+                n = int(cstr[1:])
+            except ValueError:
+                return cstr
+            name = names.get(n)
+            return f"{name} (J{n})" if name else cstr
+        return replace(
+            state,
+            channels=tuple(replace(c, connector=lab(c.connector))
+                           for c in state.channels),
+            sensors=tuple(replace(x, connector=lab(x.connector))
+                          for x in state.sensors),
+            dins=tuple(replace(d, connector=lab(d.connector))
+                       for d in state.dins),
+        )
 
     def _load_din_state(self) -> None:
         """`$STAT` 을 한 번 읽어 din(J18~J20) 의 지금 상태를 세운다.
@@ -366,7 +399,7 @@ class MainWindow(QMainWindow):
             i2c_ports=self._i2c_ports(),
         )
         for view in self._views:
-            view.render(self._state)
+            view.render(self._named(self._state))
 
         # 🔴 영점 패널은 뷰가 아니라 설정 화면의 일부라 `render` 로는 안
         #    닿는다. 여기서 넘긴다 — 화면 상태를 만드는 곳이 여기이고,

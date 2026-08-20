@@ -144,10 +144,16 @@ static MkCfgResult coerce(const MkCfgItem *item, const char *raw, MkValue *out)
         }
         /* 🔴 프로토콜 구분자와 제어문자를 막는다. 값 하나가 줄 구조를
          *    깨뜨리면 그 조각이 완결된 명령이 될 수 있다 — 호스트 쪽
-         *    framing.build_line 이 막는 것과 같은 부류다. */
+         *    framing.build_line 이 막는 것과 같은 부류다.
+         *
+         * 🔴 0x80 이상은 **허용한다** [2026-08-20]. 예전에는 >= 0x7F 를
+         *    전부 거부했는데 그러면 UTF-8 이 통째로 막힌다 — 커넥터 이름
+         *    "유압" 이 RANGE 로 떨어졌다. 줄 구조를 깨는 것은 제어문자와
+         *    구분자($ , *)뿐이고, UTF-8 연속 바이트(0x80~)는 그 어느 것도
+         *    될 수 없다. 카탈로그의 한글 라벨이 이미 같은 전선을 지난다. */
         for (const char *p = raw; *p; p++) {
             unsigned char c = (unsigned char)*p;
-            if (c < 0x20u || c >= 0x7Fu) {
+            if (c < 0x20u || c == 0x7Fu) {
                 return MK_CFG_RANGE;
             }
             if (c == '$' || c == ',' || c == '*') {
