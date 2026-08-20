@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QFrame,
     QSizePolicy,
     QFileDialog,
     QHBoxLayout,
@@ -70,6 +71,7 @@ from host.gui.stream import (
     format_header,
     format_interval,
     format_row,
+    plain_summary,
     staleness_level,
 )
 from host.gui.theme import Color, Font, Space
@@ -100,6 +102,19 @@ class StreamView(QWidget):
         self._conn_items: dict[int, QTreeWidgetItem] = {}
 
         # ---- 요약 ------------------------------------------------------
+        # 🔴 맨 위는 사람 말 한 줄이다 (사용자 요청 2026-08-20 — "통계를
+        #    알기 쉽게"). 전문가용 숫자(타입별 초당·간격 분석)는 `자세히`
+        #    아래로 접었다 — 그 숫자가 앞에 서면 "잘 오고 있나"를 아무도
+        #    못 읽는다.
+        self._plain_head = QLabel("")
+        self._plain_head.setStyleSheet(
+            f"font-size: {Font.SIZE_LG}pt; font-weight: 700;")
+        self._plain_detail = QLabel("")
+        self._plain_detail.setObjectName("dim")
+        self._detail_btn = QPushButton("자세히 ▸")
+        self._detail_btn.setCheckable(True)
+        self._detail_btn.clicked.connect(self._on_detail_toggled)
+
         self._type_label = QLabel("")
         self._type_label.setStyleSheet(
             f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
@@ -195,19 +210,29 @@ class StreamView(QWidget):
         self._conn_all_btn = QPushButton("전체 해제")
         self._conn_all_btn.clicked.connect(lambda: self._set_all(False))
 
+        # 🔴 필터는 왼쪽의 짙은 판이다 (사용자 요청 2026-08-20). 전원
+        #    레일(qt/rail.py, QFrame#shell)과 같은 시각 언어 — "조작하는
+        #    것은 짙은 판, 읽는 것은 밝은 캔버스" 라는 구분이 화면 전체에서
+        #    같아진다. 세로로 긴 트리라 왼쪽 기둥이 자리도 맞다.
         filters_col = QVBoxLayout()
-        filters_col.setSpacing(2)
+        filters_col.setContentsMargins(Space.MD, Space.MD, Space.MD, Space.MD)
+        filters_col.setSpacing(Space.SM)
         head_row = QHBoxLayout()
         head_row.setSpacing(Space.SM)
-        head_row.addWidget(card_title("필터"))
         head_row.addWidget(self._type_all_btn)
         head_row.addWidget(self._conn_all_btn)
         head_row.addStretch(1)
         filters_col.addLayout(head_row)
-        filters_col.addWidget(self._tree)
+        filters_col.addWidget(self._tree, 1)
 
-        filters_host = QWidget()
+        filters_host = QFrame()
+        filters_host.setObjectName("shell")
         filters_host.setLayout(filters_col)
+        filters_host.setFixedWidth(230)
+        self._tree.setStyleSheet(
+            f"QTreeWidget {{ background: transparent; border: none;"
+            f" color: {Color.SHELL_INK}; }}"
+        )
 
         self._pause_btn = QPushButton("일시정지")
         self._pause_btn.setCheckable(True)
@@ -218,7 +243,7 @@ class StreamView(QWidget):
 
         control_row = QHBoxLayout()
         control_row.setSpacing(Space.SM)
-        control_row.addWidget(filters_host, 1)
+        control_row.addStretch(1)
         control_row.addWidget(self._pause_btn)
         control_row.addWidget(self._save_btn)
 
@@ -256,22 +281,44 @@ class StreamView(QWidget):
             f" border: 1px solid {Color.LINE};"
         )
 
-        col = QVBoxLayout(self)
+        # 오른쪽 캔버스 — 읽는 것들 (통계·콘솔).
+        col = QVBoxLayout()
         col.setContentsMargins(Space.MD, Space.MD, Space.MD, Space.MD)
         col.setSpacing(Space.SM)
         col.addWidget(card_title("스트림 — NDJSON 원문"))
-        col.addWidget(self._type_label)
-        col.addLayout(summary_row)
+        col.addWidget(self._plain_head)
+        plain_row = QHBoxLayout()
+        plain_row.addWidget(self._plain_detail)
+        plain_row.addStretch(1)
+        plain_row.addWidget(self._detail_btn)
+        col.addLayout(plain_row)
+        detail_col = QVBoxLayout()
+        detail_col.setSpacing(Space.SM)
+        detail_col.setContentsMargins(0, 0, 0, 0)
+        detail_col.addWidget(self._type_label)
+        detail_col.addLayout(summary_row)
+        detail_col.addWidget(analysis_scroll)
+        self._detail_host = QWidget()
+        self._detail_host.setLayout(detail_col)
+        self._detail_host.setVisible(False)
+        col.addWidget(self._detail_host)
         col.addWidget(hairline())
-        col.addWidget(analysis_scroll)
-        col.addWidget(hairline())
-        # 🔴 남는 세로를 필터(트리)와 콘솔이 **반씩** 나눈다 (사용자 요청
-        #    2026-08-20 — "콘솔이 너무 커, 절반으로"). 처음에는 콘솔에
-        #    최대 높이를 걸었는데, 갈 곳 잃은 여백을 Qt 가 구획 사이에
-        #    뿌려 화면이 벌어졌다 — 상한이 아니라 배분이 답이다.
-        col.addLayout(control_row, 1)
+        col.addLayout(control_row)
         col.addWidget(self._header_label)
         col.addWidget(self._console, 1)
+        canvas = QWidget()
+        canvas.setLayout(col)
+
+        # 왼쪽 짙은 판(필터) + 오른쪽 캔버스.
+        page = QHBoxLayout(self)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
+        page.addWidget(filters_host)
+        page.addWidget(canvas, 1)
+
+    def _on_detail_toggled(self, on: bool) -> None:
+        self._detail_host.setVisible(on)
+        self._detail_btn.setText("자세히 ▾" if on else "자세히 ▸")
 
     # ------------------------------------------------------------- 그리기
     def render(self, state: StreamState, now_s: float) -> None:
@@ -286,6 +333,14 @@ class StreamView(QWidget):
                 for t in summary.types
             ) or "수신된 줄 없음"
         )
+        head, detail, lvl = plain_summary(summary)
+        self._plain_head.setText(head)
+        self._plain_head.setStyleSheet(
+            f"font-size: {Font.SIZE_LG}pt; font-weight: 700;"
+            + (f" color: {Color.FAULT};" if lvl is Level.FAULT
+               else (f" color: {Color.PROBING};" if lvl is Level.WARN else ""))
+        )
+        self._plain_detail.setText(detail)
         self._seq_label.setText(f"seq 누락 {summary.seq_missing}")
         self._bytes_label.setText(
             f"{summary.bytes_per_s:.0f} B/s · 총 {summary.total_lines}줄 "

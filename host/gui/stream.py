@@ -463,6 +463,33 @@ class StreamSummary:
     rate_sparkline: str = ""
 
 
+def plain_summary(summary: "StreamSummary") -> tuple[str, str, Level]:
+    """누구나 읽는 한 줄 요약 (사용자 요청 2026-08-20 — "통계를 알기 쉽게").
+
+    첫 줄: 지금 상태를 사람 말로. 둘째 줄: 놓친 것과 데이터량.
+    세부(타입별 초당·간격 분석)는 "자세히" 아래로 접었다 — 전문가용
+    숫자가 앞에 서면 정작 "잘 오고 있나"를 아무도 못 읽는다.
+    """
+    lvl = staleness_level(summary.since_last_s)
+    rate = sum(t.rate_per_s for t in summary.types)
+    if summary.total_lines == 0:
+        head = "아직 아무것도 안 왔다"
+    elif lvl is Level.FAULT:
+        head = f"멈췄다 — 마지막 수신 {summary.since_last_s:.0f}초 전"
+    elif lvl is Level.WARN:
+        head = f"느려졌다 — 마지막 수신 {summary.since_last_s:.1f}초 전"
+    else:
+        head = f"잘 오고 있다 — 초당 {rate:.0f}줄"
+    if summary.seq_missing:
+        pct = summary.seq_missing / max(summary.total_lines
+                                        + summary.seq_missing, 1) * 100
+        detail = (f"놓친 줄 {summary.seq_missing}개 ({pct:.2f} %) · "
+                  f"받은 줄 {summary.total_lines:,}")
+    else:
+        detail = f"놓친 줄 없음 · 받은 줄 {summary.total_lines:,}"
+    return head, detail, lvl
+
+
 def _fmt_stats(s: IntervalStats) -> str:
     if s.sample_count == 0:
         return _BLANK
