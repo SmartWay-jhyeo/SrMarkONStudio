@@ -155,4 +155,7 @@ def test_step_result_feeds_the_stream_view(window):
     line = ('{"schema_ver":3,"seq":1,"t":0,"type":"ain","connector_id":3,'
             '"raw":0,"ma":0,"value":0,"status":0}')
     window._on_step(StepResult(raw_lines=[line]))
+    # 기본은 전체 해제(2026-08-20) — 배선 자체를 보는 시험이라 켠다.
+    # 줄이 들어와 트리 항목이 생긴 뒤에 켜야 하고, 켜면 소급해 보인다.
+    window._stream_view._type_all_btn.click()
     assert line in window._stream_view._console.toPlainText()
