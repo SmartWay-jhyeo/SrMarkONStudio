@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from host.core.limits import DEFAULT_BAUD
+from host.core.limits import DEFAULT_BAUD, LINK_BAUD_CHOICES
 from host.gui.command_queue import CommandQueue
 from host.gui.diagnostics import build_diagnostics
 from host.gui.link_baud import failure_hint, outcome_text
@@ -111,7 +111,10 @@ class ConnectBar(QWidget):
         self._ports = QComboBox()
         self._ports.setMinimumWidth(110)
         self._baud = QComboBox()
-        for b in (115200, 460800, 921600, 1000000, 1500000, 2000000):
+        # 🔴 목록을 손으로 적지 않는다 — 한 곳(host/core/limits, 펌웨어의
+        #    MK_LINKBAUD_CHOICE_LIST 와 대조됨)에서 온다. test_spec_sync 가
+        #    하드코딩을 잡았다.
+        for b in LINK_BAUD_CHOICES:
             self._baud.addItem(str(b), b)
         self._baud.setCurrentText(str(baud))
         self._refresh_btn = QPushButton("새로고침")
