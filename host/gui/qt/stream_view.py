@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 from PyQt6.QtWidgets import (
+    QSizePolicy,
     QCheckBox,
     QFileDialog,
     QHBoxLayout,
@@ -52,6 +53,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from host.gui.qt.settings_page import FlowLayout
 from host.gui.qt.parts import card_title, hairline
 from host.gui.stream import (
     DEFAULT_HIDDEN_TYPES,
@@ -147,15 +149,17 @@ class StreamView(QWidget):
         analysis_row.addWidget(self._gaps_label, 1)
 
         # ---- 필터 · 조작 -------------------------------------------------
-        self._filter_row = QHBoxLayout()
-        self._filter_row.setSpacing(Space.SM)
+        # 🔴 줄바꿈 배치(FlowLayout). 한 줄 QHBoxLayout 은 칩 수만큼 최소폭을
+        #    요구하고, 그 최소폭이 QStackedWidget 을 타고 **다른 페이지까지**
+        #    넓힌다 — 대시보드가 창 밖으로 밀려난 원인이 이 두 줄이었다
+        #    (사용자 스크린샷 2026-08-20). 설정 탭과 같은 해법이다.
+        self._filter_row = FlowLayout()
         filter_host = QWidget()
         filter_host.setLayout(self._filter_row)
 
         #: 커넥터별 필터 체크박스를 담는 행. 타입 필터와 같은 배선이지만
         #: 축이 다르다(J4 만 격리해서 볼 수 있어야 한다).
-        self._connector_filter_row = QHBoxLayout()
-        self._connector_filter_row.setSpacing(Space.SM)
+        self._connector_filter_row = FlowLayout()
         connector_filter_host = QWidget()
         connector_filter_host.setLayout(self._connector_filter_row)
 
@@ -209,6 +213,12 @@ class StreamView(QWidget):
             f"font-family: {Font.MONO}; font-size: {Font.SIZE_SM}pt;"
             f" color: {Color.INK_DIM};"
         )
+        # 🔴 고정폭 헤더가 창의 최소폭이 되면 안 된다(923px). 이 최소폭이
+        #    QStackedWidget 을 타고 대시보드까지 넓혀 카드가 창 밖으로
+        #    나갔다(2026-08-20). 좁으면 헤더 뒤가 잘리는 쪽이 맞다 —
+        #    콘솔 본문도 같은 폭에서 어차피 잘린다.
+        self._header_label.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                         QSizePolicy.Policy.Preferred)
 
         self._console = QPlainTextEdit()
         self._console.setReadOnly(True)
