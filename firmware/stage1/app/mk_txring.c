@@ -68,6 +68,14 @@ int mk_txring_push(MkTxRing *r, const void *data, size_t len, size_t reserve)
      *    아직 안 쓴 자리를 보낸다. bsp 쪽은 DMA 를 걸기 직전에 __DSB()
      *    로 이 저장이 메모리에 닿은 것을 보장한다. */
     r->head = (uint16_t)((h + len) % r->cap);
+
+    /* 🔴 최고치는 생산자만 갱신한다. 소비자(ISR)는 used 를 줄이기만 하므로
+     *    여기서 읽은 값이 낡아도 실제보다 작게 나올 뿐이다 — 잠금이 필요
+     *    없고, 틀리는 방향이 안전하다(과장하지 않는다). */
+    uint16_t used_now = (uint16_t)mk_txring_used(r);
+    if (used_now > r->peak) {
+        r->peak = used_now;
+    }
     return 1;
 }
 
@@ -101,5 +109,6 @@ void mk_txring_consume(MkTxRing *r, size_t n)
     r->tail = (uint16_t)((r->tail + n) % r->cap);
 }
 
+uint16_t mk_txring_peak(const MkTxRing *r)          { return r->peak; }
 uint32_t mk_txring_drops(const MkTxRing *r)         { return r->drops; }
 uint32_t mk_txring_dropped_bytes(const MkTxRing *r) { return r->dropped_bytes; }

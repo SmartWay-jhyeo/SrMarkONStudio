@@ -73,6 +73,7 @@ typedef struct {
     uint16_t          cap;           /* buf 의 바이트 수 */
     volatile uint16_t head;          /* 다음에 쓸 자리 — 생산자만 쓴다 */
     volatile uint16_t tail;          /* 다음에 보낼 자리 — 소비자만 쓴다 */
+    uint16_t          peak;          /* 여태 최고 used — 여유가 얼마나 빠듯했나 */
     uint32_t          drops;         /* 자리가 없어 통째로 버린 줄 수 */
     uint32_t          dropped_bytes; /* 그 줄들의 바이트 합 */
 } MkTxRing;
@@ -108,7 +109,17 @@ size_t mk_txring_chunk(const MkTxRing *r, const uint8_t **out);
  *    망가진다. 링버퍼가 죽는 가장 흔한 방식이라 방어를 둔다. */
 void mk_txring_consume(MkTxRing *r, size_t n);
 
-/* 진단 — 링이 차서 버린 줄 수와 바이트 수. `$STAT` 이 싣는다. */
+/* 여태 가장 많이 들어 있던 바이트 수.
+ *
+ * 🔴 링 크기가 적절한지 실기기에서 알 방법이 이것 하나다. 버린 줄이
+ *    0 이어도 peak 가 cap 에 붙어 있으면 다음 번엔 버린다 — 그 사실은
+ *    지나간 뒤에는 어디에도 안 남는다. */
+uint16_t mk_txring_peak(const MkTxRing *r);
+
+/* 진단 — 링이 차서 버린 줄 수와 바이트 수.
+ *
+ * 🔴 호스트는 이 수를 직접 못 보지만 알아챌 수 있다 — 버려진 줄의 `seq`
+ *    가 비기 때문이다(규격 §7.1). */
 uint32_t mk_txring_drops(const MkTxRing *r);
 uint32_t mk_txring_dropped_bytes(const MkTxRing *r);
 

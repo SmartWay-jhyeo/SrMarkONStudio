@@ -240,6 +240,23 @@ static void test_zero_length_and_null_are_ignored(void)
     CHECK(mk_txring_used(&R) == 0u, "링은 그대로다");
 }
 
+static void test_peak_records_the_high_water_mark(void)
+{
+    /* 🔴 링 크기가 적절한지 실기기에서 알 방법이 이것 하나다. 버린 줄이
+     *    0 이어도 peak 가 cap 에 붙어 있으면 다음 번엔 버린다 — 그 사실은
+     *    지나간 뒤에는 어디에도 안 남는다. mk_queue 가 같은 이유로 peak 를
+     *    센다(app/mk_queue.h). */
+    setup();
+    CHECK(mk_txring_peak(&R) == 0u, "처음엔 0");
+    mk_txring_push(&R, "0123456789", 10u, 0u);
+    CHECK(mk_txring_peak(&R) == 10u, "가장 많이 들어 있던 양을 기억한다");
+    drain();
+    CHECK(mk_txring_used(&R) == 0u && mk_txring_peak(&R) == 10u,
+          "다 비워도 최고치는 지워지지 않는다 — 그것이 진단 기록이다");
+    mk_txring_push(&R, "abc", 3u, 0u);
+    CHECK(mk_txring_peak(&R) == 10u, "더 적게 담긴 것으로는 안 내려간다");
+}
+
 static void test_no_storage_still_counts_drops(void)
 {
     /* mk_queue 와 같은 이유 — 저장소를 안 붙였는데 조용히 성공하면
@@ -263,6 +280,7 @@ int main(void)
     test_bytes_survive_many_wraps();
     test_partial_consume_leaves_the_rest();
     test_consume_more_than_used_is_clamped();
+    test_peak_records_the_high_water_mark();
     test_zero_length_and_null_are_ignored();
     test_no_storage_still_counts_drops();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);

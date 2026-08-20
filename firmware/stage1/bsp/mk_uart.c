@@ -358,6 +358,11 @@ size_t mk_uart_tx_pending(void)
     return mk_txring_used(&s_tx);
 }
 
+uint16_t mk_uart_tx_peak(void)
+{
+    return mk_txring_peak(&s_tx);
+}
+
 size_t mk_uart_read_line(char *out, size_t cap)
 {
     static char  line[MK_RX_LINE_MAX];
