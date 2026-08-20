@@ -815,43 +815,58 @@ static void test_oldest_sample_goes_first_within_a_channel_even_interleaved(void
 
 static void test_start_channel_rotates_and_skips_disabled_channels(void)
 {
-    /* 🔴 세 채널(ch0·ch1·ch2)만 켜고 ch3 은 끈다 — MK_TELEM_MAX_LINES(16)
-     *    가 3 으로 안 나눠떨어지므로(16 = 5*3 + 1) 매 틱 "여분 한 줄"이
-     *    생긴다. 그 여분이 항상 같은 채널로 가면(회전 없음) 시작점이 고정된
-     *    것이고, 틱마다 받는 채널이 바뀌면 회전이 되는 것이다. 꺼진 ch3 은
-     *    두 틱 다 한 줄도 없어야 한다(회전에서 건너뛴다). */
+    /* 🔴 세 채널(ch0·ch1·ch2)만 켜고 ch3 은 끈다 — MK_TELEM_MAX_LINES 가
+     *    3 으로 안 나눠떨어지므로 매 틱 "덜 받는 채널"이 하나 이상 생긴다.
+     *    그 채널이 항상 같으면(회전 없음) 시작점이 고정된 것이고, 틱마다
+     *    바뀌면 회전이 되는 것이다. 꺼진 ch3 은 두 틱 다 한 줄도 없어야
+     *    한다(회전에서 건너뛴다).
+     *
+     *    🔴 [2026-08-20] 예전에는 상한이 16(= 5*3 + 1)이라 "정확히 6줄을
+     *       받은 채널" 을 찾는 방식이었다. 상한이 링크 용량에서 다시
+     *       계산돼 11 로 바뀌면서(11 = 3*3 + 2) 그 숫자가 깨졌다. 값에
+     *       기대지 않도록 **가장 적게 받은 채널**을 보는 방식으로 바꾼다 —
+     *       나머지가 0 이 아니기만 하면 어떤 상한에서도 성립한다. */
     setup();
     mk_ads_configure(&ADS, 3, 0, 100, 0);   /* ch3(J6) 끈다 */
 
+    /* 지역변수로 받는다 — 상수를 그대로 조건에 쓰면 MSVC 가 C4127 로
+     * 경고하고 /WX 에서 빌드가 선다. */
+    int budget = MK_TELEM_MAX_LINES;
+    CHECK(budget % 3 != 0,
+          "상한이 3 으로 안 나눠떨어져야 이 시험이 회전을 구분할 수 있다");
+
     int64_t t = 0;
-    int extra_tick1 = -1, extra_tick2 = -1;
+    const int per_ch = MK_TELEM_MAX_LINES;   /* 예산보다 넉넉히 밀어 넣는다 */
+    int least_tick1 = -1, least_tick2 = -1;
 
     t += 100;
     for (int ch = 0; ch < 3; ch++) {
-        for (int k = 0; k < 6; k++) { push_to_queue(ch, t, ch * 1000 + k); }
+        for (int k = 0; k < per_ch; k++) { push_to_queue(ch, t, ch * 1000 + k); }
     }
     N = 0;
     mk_telem_tick(&T, t, sink, NULL);
-    for (int ch = 0; ch < 3; ch++) {
-        if (count_connector(ch + 3) == 6) { extra_tick1 = ch; }
+    for (int ch = 0, low = 1 << 30; ch < 3; ch++) {
+        int c = count_connector(ch + 3);
+        if (c < low) { low = c; least_tick1 = ch; }
     }
     CHECK(!has_connector(6), "꺼진 ch3(J6) 은 1회차에도 안 나간다");
 
     t += 100;
     for (int ch = 0; ch < 3; ch++) {
-        for (int k = 0; k < 6; k++) { push_to_queue(ch, t, ch * 1000 + 10 + k); }
+        for (int k = 0; k < per_ch; k++) { push_to_queue(ch, t, ch * 1000 + 10 + k); }
     }
     N = 0;
     mk_telem_tick(&T, t, sink, NULL);
-    for (int ch = 0; ch < 3; ch++) {
-        if (count_connector(ch + 3) == 6) { extra_tick2 = ch; }
+    for (int ch = 0, low = 1 << 30; ch < 3; ch++) {
+        int c = count_connector(ch + 3);
+        if (c < low) { low = c; least_tick2 = ch; }
     }
     CHECK(!has_connector(6), "꺼진 ch3(J6) 은 2회차에도 안 나간다");
 
-    CHECK(extra_tick1 >= 0 && extra_tick2 >= 0,
-          "매 틱 여분 한 줄을 받는 채널이 있다(16 이 3 으로 안 나눠떨어지므로)");
-    CHECK(extra_tick1 != extra_tick2,
-          "여분을 받는 채널이 틱마다 바뀐다 — 시작점이 회전한다");
+    CHECK(least_tick1 >= 0 && least_tick2 >= 0,
+          "매 틱 가장 적게 받는 채널이 있다(상한이 3 으로 안 나눠떨어진다)");
+    CHECK(least_tick1 != least_tick2,
+          "덜 받는 채널이 틱마다 바뀐다 — 시작점이 회전한다");
 }
 
 /* ---- I2C --------------------------------------------------------------- */

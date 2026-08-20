@@ -31,8 +31,10 @@ _Static_assert(MK_SPI_DIV_FROM_MBR(
  *    슈퍼루프에 맡기면 채널당 10 ms 가 무너진다:
  *
  *      - mk_i2c_tick() 의 HAL 블로킹이 한 바퀴에 최악 60 ms (mk_i2c_io.c)
- *      - mk_telem_tick() 의 HAL_UART_Transmit 도 블로킹 — 163 B 한 줄이
- *        921600 baud 에서 1.77 ms, 한 바퀴에 여러 줄
+ *      - [2026-08-20 이전] mk_telem_tick() 의 HAL_UART_Transmit 도 블로킹
+ *        이었다 — 163 B 한 줄이 921600 baud 에서 1.77 ms, 한 바퀴에 여러
+ *        줄. 지금은 링버퍼+DMA 라 사라졌다(bsp/mk_uart.c). 남은 60 ms
+ *        하나만으로도 아래 결론은 그대로다.
  *
  *      7채널 × 10 ms 면 채널 하나에 1.43 ms 다. 슈퍼루프가 시작 신호를
  *      쥐고 있으면 그 예산은 지킬 수 없고, 못 뜬 표본은 finish() 의

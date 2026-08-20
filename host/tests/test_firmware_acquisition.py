@@ -17,9 +17,11 @@
 
        - `mk_i2c_tick()` 이 HAL 블로킹 I2C 를 쓴다. 버스가 눌리면 한 바퀴에
          최악 60 ms (firmware/stage1/bsp/mk_i2c_io.c 머리말).
-       - `mk_telem_tick()` 이 `HAL_UART_Transmit`(블로킹)으로 줄을 낸다.
-         921600 baud 에서 163 B 한 줄이 1.77 ms 이고, 한 바퀴에 최대
-         MK_TELEM_MAX_LINES 줄이 나간다.
+       - [2026-08-20 이전] `mk_telem_tick()` 이 `HAL_UART_Transmit`(블로킹)
+         으로 줄을 냈다. 921600 baud 에서 163 B 한 줄이 1.77 ms 이고,
+         한 바퀴에 최대 MK_TELEM_MAX_LINES 줄이 나갔다. 지금은 링버퍼+DMA
+         라 사라졌다(`test_firmware_uart_dma.py`) — 남은 I2C 60 ms 하나
+         만으로도 아래 결론은 그대로다.
 
    7채널 × 10 ms 면 채널 하나에 쓸 수 있는 시간이 1.43 ms 다. 슈퍼루프가
    시작 신호를 쥐고 있는 한 그 예산은 지킬 수 없고, 못 지킨 표본은
@@ -161,11 +163,22 @@ def test_the_state_machine_chains_to_the_next_channel_itself():
 #:    60 ms   I2C — HAL 블로킹. `I2C_TIMEOUT_BUSY`(25 ms, HAL 고정) +
 #:            우리 타임아웃 5 ms = 30 ms 가 xfer 한 번이고, BH1750 의 start
 #:            가 한 스텝에서 xfer 를 두 번 부른다 (bsp/mk_i2c_io.c 머리말).
-#:   134 ms   텔레메트리 — `HAL_UART_Transmit` 은 블로킹이다. 한 바퀴에
-#:            ain·i2c·din·gnss_raw 가 각각 최대 MK_TELEM_MAX_LINES(16) 줄,
-#:            한 줄 최대 MK_LINE_MAX(192)+1 B → 64 × 193 = 12,352 B.
-#:            921600 baud 는 8N1 이라 92,160 B/s → 134 ms.
-WORST_STALL_MS = 60 + 134
+#:    27 ms   링크 완충 — 송신 링(4,096 B)이 가득 찬 상태에서 다 빠지는
+#:            시간(1.5 Mbps ÷ 10 bit/B = 150,000 B/s). 그동안 새 줄은 링에
+#:            못 들어가므로 표본이 큐에 쌓인다.
+#:
+#: 🔴 [재계산, 2026-08-20] 여기 있던 두 번째 항은 "134 ms 텔레메트리 —
+#:    `HAL_UART_Transmit` 은 블로킹이다" 였고 그것이 합의 대부분이었다.
+#:    송신이 링버퍼+DMA 로 바뀌면서(`app/mk_txring.h`, `bsp/mk_uart.c`) 그
+#:    항이 통째로 사라졌다 — `mk_telem_tick` 은 이제 줄을 만들어 링에
+#:    memcpy 하고 끝난다.
+#:
+#:    그래서 이 시험이 요구하는 하한이 40 칸에서 18 칸으로 내려간다.
+#:    실제 값 64 는 그대로 두는데, 이유가 바뀌었기 때문이다 — 큐의 역할이
+#:    "슈퍼루프 정지 흡수" 에서 "링크가 잠시 포화됐을 때의 완충" 으로
+#:    옮겨 갔다(main.c 의 SAMPLES_PER_CHANNEL 주석). 이 시험은 그 하한만
+#:    지킨다.
+WORST_STALL_MS = 60 + 27
 
 #: `ain*.period_ms` 의 하한 (app/mk_cfgtable.c). 이보다 빨리 수집할 수 없다.
 MIN_PERIOD_MS = 10

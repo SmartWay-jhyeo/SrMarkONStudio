@@ -253,9 +253,9 @@ static void start_if_due(MkAds *a, int64_t now_ms)
  *
  *      - 7채널 × 10 ms 면 채널 하나에 쓸 수 있는 시간이 1.43 ms 다.
  *      - 그런데 슈퍼루프 한 바퀴는 mk_i2c 의 HAL 블로킹만으로도 최악
- *        60 ms 이고(bsp/mk_i2c_io.c 머리말), 텔레메트리의
- *        HAL_UART_Transmit 도 블로킹이라 한 줄에 약 1.8 ms 다
- *        (921600 baud, 163 B).
+ *        60 ms 다(bsp/mk_i2c_io.c 머리말). 2026-08-20 까지는 텔레메트리의
+ *        HAL_UART_Transmit 도 블로킹이라 한 줄에 약 1.8 ms 가 더 붙었다
+ *        (921600 baud, 163 B) — 그쪽은 링버퍼+DMA 로 걷어냈다.
  *      - 즉 다음 채널의 시작이 수십 ms 씩 밀렸고, finish() 가 따라잡기를
  *        포기하므로 그 표본들은 **큐의 drops 에도 안 잡힌 채 사라졌다.**
  *        사용자가 가장 싫어하는 실패다 — "센서 값을 늦게 보내도 되지만

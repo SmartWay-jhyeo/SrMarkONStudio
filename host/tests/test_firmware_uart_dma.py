@@ -220,6 +220,71 @@ def test_the_baud_wait_cannot_hang_forever():
     )
 
 
+# ------------------------------------------------------- 한 틱에 몇 줄
+#: 실측 운용점의 링크 속도 (2026-08-20 측정이 이 속도로 이뤄졌다).
+DESIGN_BAUD = 1_500_000
+
+#: 8N1 — 한 바이트를 보내는 데 시작·정지 비트를 합쳐 10 비트가 든다.
+BITS_PER_BYTE = 10
+
+#: `tx.period_ms` 의 하한 (app/mk_cfgtable.c). 가장 빡빡한 경우다.
+MIN_TX_PERIOD_MS = 10
+
+#: 실측 한 줄 길이. 2026-08-20 에 30초 동안 14,863줄 / 67 KB/s 였다.
+MEASURED_LINE_BYTES = 135
+
+
+def _telem_max_lines() -> int:
+    src = _code(FW / "app" / "mk_telem.h")
+    m = re.search(r"#define\s+MK_TELEM_MAX_LINES\s+(\d+)", src)
+    assert m is not None, "MK_TELEM_MAX_LINES 를 못 찾았다"
+    return int(m.group(1))
+
+
+def _ads_channels() -> int:
+    src = _code(FW / "app" / "mk_ads1256.h")
+    m = re.search(r"#define\s+MK_ADS_CHANNELS\s+(\d+)", src)
+    assert m is not None, "MK_ADS_CHANNELS 를 못 찾았다"
+    return int(m.group(1))
+
+
+def test_one_tick_can_carry_at_least_one_line_per_channel():
+    """7채널 × 10 ms 면 한 틱에 최소 7줄이 필요하다.
+
+    이보다 낮으면 어떤 채널은 이번 틱에 자기 몫을 못 받고, 라운드로빈이
+    아무리 공평해도 전체가 수집 속도를 못 따라간다.
+    """
+    assert _telem_max_lines() >= _ads_channels(), (
+        f"한 틱 상한 {_telem_max_lines()} 줄은 채널 수 {_ads_channels()} 보다 "
+        f"적다 — 매 틱 어떤 채널은 빠진다"
+    )
+
+
+def test_one_tick_does_not_produce_more_than_the_link_can_carry():
+    """🔴 낼 수 있는 것보다 많이 만들면 링이 차고 줄이 버려진다.
+
+    송신이 블로킹이던 동안에는 이 상한을 올리면 블로킹 시간이 비례해
+    늘어나는 것이 억제 요인이었다. DMA 로 바뀌면서 그 전제가 사라졌고,
+    대신 **링크 용량**이 진짜 상한이 됐다:
+
+        1.5 Mbps ÷ 10 bit/B      = 150,000 B/s
+        × tx.period_ms 하한 10 ms =   1,500 B / 틱
+        ÷ 실측 한 줄 135 B        =      11 줄 / 틱
+
+    11 줄은 채널 7개에 한 줄씩 주고도 4줄이 남는다 — 밀린 것을 따라잡는
+    몫이 그 4줄이다. 여기서 더 올리면 만든 줄이 전선에 실리지 못하고
+    링에 쌓이다가 버려진다. 버리는 것은 이미 타임스탬프까지 찍힌 표본을
+    잃는 것이라, 그 자리를 안 만드는 편이 낫다.
+    """
+    budget_bytes = DESIGN_BAUD // BITS_PER_BYTE * MIN_TX_PERIOD_MS // 1000
+    ceiling = budget_bytes // MEASURED_LINE_BYTES
+    assert _telem_max_lines() <= ceiling, (
+        f"한 틱 상한 {_telem_max_lines()} 줄은 링크 용량 {ceiling} 줄을 "
+        f"넘는다 ({DESIGN_BAUD} bps, {MIN_TX_PERIOD_MS} ms, 한 줄 "
+        f"{MEASURED_LINE_BYTES} B) — 넘긴 만큼은 링에 쌓이다가 버려진다"
+    )
+
+
 def test_the_dma_request_is_re_armed_after_the_uart_is_reconfigured():
     """🔴 `HAL_UART_Init()` 이 CR3 를 다시 쓴다 — DMAT 가 지워진다.
 
