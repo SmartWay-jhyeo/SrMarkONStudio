@@ -117,11 +117,7 @@ STM32 v2.0 보드가 **USB로 GUI에 붙어 설정되고, 빼면 저장된 대�
 ### 되는 것을 직접 해 보려면
 
 ```bash
-# 보드 없이 (시뮬레이터)
-python -m host.gui.app --port sim
-python -m tools.cli.markon_cli list
-
-# 실물 보드
+# 실물 보드 (--port 필수. 시뮬레이터는 2026-08-20 에 삭제됐다 — CLAUDE.md §0)
 python -m host.gui.app --port COM23
 
 # 보드용 이미지 빌드 — 툴체인은 PATH 에 없고 CubeIDE 안에 있다

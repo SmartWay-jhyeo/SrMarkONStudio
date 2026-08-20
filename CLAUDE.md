@@ -20,10 +20,8 @@ MarkON_Studio/
 │  ├─ core/      framing · records · config_schema · scaling · errors
 │  ├─ service/   board_service (연결·명령응답·유실집계)
 │  ├─ gui/       screen · settings_form · field_budget · theme · qt/*
-│  └─ tests/     473개 시험 — 보드도 디스플레이도 불필요
-├─ tools/
-│  ├─ simulator/ config_store · telemetry · device_sim · capacity · serial_server
-│  └─ cli/       markon_cli
+│  └─ tests/     879개 시험 + fake_board 스텁 — 보드도 디스플레이도 불필요
+├─ tools/cli/     markon_cli
 └─ docs/         ← 🔴 git 추적 제외. 로컬에만 있다
    ├─ STM32_V2_CONTROL_DAQ_DEVELOPMENT_PLAN.md   개발 계획
    ├─ superpowers/specs/   설계 스펙
@@ -32,15 +30,16 @@ MarkON_Studio/
    └─ datasheet/           대상 하드웨어 근거 문서
 ```
 
-**보드 없이 전체가 돈다:**
+**시험은 보드 없이 돈다, 실행은 보드가 필요하다:**
 ```bash
-python -m pytest -q                                  # 473 passed
-python -m tools.cli.markon_cli list                  # 설정 카탈로그 45항목
-python -m tools.cli.markon_cli monitor --seconds 3   # 텔레메트리 + 유실 통계
-python -m tools.cli.markon_cli --port COM7 list      # 실물 보드 (펌웨어 완성 후)
+python -m pytest -q                                  # 879 passed (보드 불필요)
+python -m tools.cli.markon_cli --port COM23 list     # 실물 보드 — --port 필수
 ```
 
-`--port`만 바꾸면 시뮬레이터와 실물이 교체된다. 호스트 코드는 그대로다.
+🔴 **시뮬레이터는 없다** (2026-08-20 사용자 결정으로 통째로 삭제). 보드가 상시
+연결되면서 유지 비용이 값을 넘었다. `--port sim` 은 거절된다. 호스트 시험은
+`host/tests/fake_board.py`(최소 스텁, ~560줄) + `catalog_snapshot.jsonl` 로 돈다 —
+🔴 **스텁에 기능을 다시 키우지 마라.** 그게 시뮬레이터가 됐던 경위다.
 
 ### `host/gui/` 의 원칙 — Qt 를 import 하지 않는 층이 있다
 
@@ -56,15 +55,17 @@ GNSS/PPS·I2C 드라이버. 자세한 것은 `HANDOFF.md` §3·§7.
 ### 🔴 설정 항목은 **보드에만** 넣는다
 
 화면은 `$CFG,LIST` 카탈로그만 보고 그려진다. 항목을 늘릴 때 고치는 곳은
-**시뮬레이터(`tools/simulator/config_store.py`)와 펌웨어
-(`firmware/stage1/app/mk_cfgtable.c`) 둘뿐**이고, 호스트 코드는 건드리지 않는다.
+**펌웨어(`firmware/stage1/app/mk_cfgtable.c`) 하나뿐**이고, 호스트 코드는
+건드리지 않는다.
 
 실제로 그랬다 — 디지털 출력·LED·I2C 41항목을 넣었더니 GUI 는 그룹 이름표만
 추가하고 탭 셋을 저절로 그렸다.
 
-**두 곳을 함께 고쳐야 한다.** 한쪽만 고치면 GUI 가 시뮬레이터에서 멀쩡하다가
-보드에서만 틀어진다. `firmware/stage1/tests/crosscheck_cfgtable.py` 가 그것을
-막는다 — 실제로 하한 하나가 어긋난 것을 잡았다.
+(시뮬레이터가 있던 시절에는 두 곳을 함께 고쳐야 했다. 이제 카탈로그의 출처는
+보드 하나다 — 확인도 실물 카탈로그로 한다: `markon_cli --port COM23 list`.)
+
+🔴 남아 있는 이중 정의 하나: **I2C 종류→물리량 표**가 `host/gui/screen.py` 와
+펌웨어 `mk_i2c.c` 에 각각 있고 자동 대조가 없다. 종류를 늘릴 때 둘 다 고칠 것.
 
 ### 🔴 `docs/`는 무시 대상이지 불필요한 파일이 아니다
 
@@ -154,7 +155,7 @@ Drivers/          CubeMX HAL
 
 - **`time_sync`(Q2)** — `int64_t epoch_ms` + 4단계 폴백(gnss / gnss_nmea / host_clock / device_clock). 계획서 §7.2의 6단계 등급으로 확장할 기반이지만, **PPS를 `HAL_GetTick()`으로 잡아 분해능이 1ms다.** 계획서 §7.3이 요구하는 타이머 Input Capture + 오버플로 확장 카운터로 **반드시 교체**해야 한다. 그대로 이식하면 안 된다.
 - **`adc_manager`(Q2)는 ADS1256이 아니다.** STM32 내장 ADC1 3채널 DMA(Flow/Pressure×2)다. MarkON Studio의 7채널 ADS1256에는 쓸 수 없다 — §1.1의 `ads1256.c`를 볼 것.
-- **`sol_valve_mgr`·`markonsync_mgr`(Q2)** — EXTI 엣지 캡처 + 링큐 + 디바운스 패턴. 계획서의 GPIO 이벤트 타임스탬프에 그대로 쓸 만하다. 단 **옵토 극성이 서로 반대**다(Sol은 HIGH=ON, MarkOnSync는 PC817이라 LOW=ON). v2.0 보드의 J18~J20은 **출력**으로 확정됐으므로(데이터시트 §5.7) 방향을 그대로 가정하지 말 것.
+- **`sol_valve_mgr`·`markonsync_mgr`(Q2)** — EXTI 엣지 캡처 + 링큐 + 디바운스 패턴. 계획서의 GPIO 이벤트 타임스탬프에 그대로 쓸 만하다. 단 **옵토 극성이 서로 반대**다(Sol은 HIGH=ON, MarkOnSync는 PC817이라 LOW=ON). 🔴 v2.0 보드의 J18~J20은 **입력**이다(2026-08-18 사용자 확정, 2026-08-19 J20 실증 — 데이터시트 §5.7 의 "출력" 단정이 틀렸다). MarkOnSync 처럼 로우 액티브로 읽는다.
 - **`sensor_queue.h`** — 채널별 독립 링큐. 계획서 §9의 원형이다.
 - **`JetsonCode/`(양쪽)** — Python 호스트 측 선행 구현(`uart_receiver` `spool_manager` `file_writer` `batch_builder` `mqtt_publisher` `ntrip_forwarder`). 계획서 §12의 Board Service 설계 시 참고.
 
