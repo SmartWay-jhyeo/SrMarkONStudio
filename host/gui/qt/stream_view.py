@@ -41,25 +41,27 @@
 
 from __future__ import annotations
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QSizePolicy,
-    QCheckBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from host.gui.qt.settings_page import FlowLayout
 from host.gui.qt.parts import card_title, hairline
 from host.gui.stream import (
     DEFAULT_HIDDEN_TYPES,
     DISPLAY_MAXLEN,
     StreamRow,
     StreamState,
+    TYPE_FAMILIES,
     connector_label,
     filter_note,
     format_gap,
@@ -67,8 +69,6 @@ from host.gui.stream import (
     format_interval,
     format_row,
     staleness_level,
-    toggle_all,
-    toggle_all_label,
 )
 from host.gui.theme import Color, Font, Space
 from host.gui.widgets.status_chip import Level, Verification, chip_style
@@ -87,7 +87,7 @@ class StreamView(QWidget):
         #: type 이 실리는지는 프로토콜이 정하지 규격 문자열을 여기서
         #: 다시 아는 척하지 않는다(CLAUDE.md 설계 원칙 1과 같은 결).
         #: 처음 본 타입을 순서대로 만든다.
-        self._filter_checks: dict[str, QCheckBox] = {}
+        self._type_items: dict[str, QTreeWidgetItem] = {}
         #: 커넥터별 필터 체크박스. `ain` 7채널이 한 덩어리라 J4 만
         #: 이상해도 타입 필터만으로는 못 가려낸다 — 축 하나를 더 둔다.
         #:
@@ -95,7 +95,7 @@ class StreamView(QWidget):
         #:    (`StreamState.connector_counts` 가 0 으로 미리 깔아 준다).
         #:    값이 안 오는 커넥터가 목록에 없으면 화면이 "그런 커넥터는
         #:    없다" 고 말하는 셈이다.
-        self._connector_checks: dict[int, QCheckBox] = {}
+        self._conn_items: dict[int, QTreeWidgetItem] = {}
 
         # ---- 요약 ------------------------------------------------------
         self._type_label = QLabel("")
@@ -149,44 +149,32 @@ class StreamView(QWidget):
         analysis_row.addWidget(self._gaps_label, 1)
 
         # ---- 필터 · 조작 -------------------------------------------------
-        # 🔴 줄바꿈 배치(FlowLayout). 한 줄 QHBoxLayout 은 칩 수만큼 최소폭을
-        #    요구하고, 그 최소폭이 QStackedWidget 을 타고 **다른 페이지까지**
-        #    넓힌다 — 대시보드가 창 밖으로 밀려난 원인이 이 두 줄이었다
-        #    (사용자 스크린샷 2026-08-20). 설정 탭과 같은 해법이다.
-        self._filter_row = FlowLayout()
-        filter_host = QWidget()
-        filter_host.setLayout(self._filter_row)
+        # 🔴 트리 (사용자 요청 2026-08-20 — "일자로 쭉 늘어트리지 말고 트리
+        #    구조로"). 커넥터는 정확히 한 타입에 속하므로(TYPE_FAMILIES)
+        #    "타입 아래에 커넥터" 가 자연스럽고, 납작한 칩 두 줄이 요구하던
+        #    가로 폭 문제도 세로로 풀린다 — 트리는 제 스크롤을 가진다.
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setFixedHeight(150)
+        self._tree.itemChanged.connect(self._on_tree_changed)
+        #: itemChanged 를 프로그램이 낸 것인지 사람이 낸 것인지 가른다.
+        self._tree_updating = False
 
-        #: 커넥터별 필터 체크박스를 담는 행. 타입 필터와 같은 배선이지만
-        #: 축이 다르다(J4 만 격리해서 볼 수 있어야 한다).
-        self._connector_filter_row = FlowLayout()
-        connector_filter_host = QWidget()
-        connector_filter_host.setLayout(self._connector_filter_row)
-
-        # 🔴 축마다 자기 `전체` 버튼을 갖는다. 하나로 합치면 "타입만 전부
-        #    켜고 커넥터는 그대로" 를 할 수 없고, 그것이 실제로 하고 싶은
-        #    일이다(J4 만 남긴 채 타입은 전부 보는 식). 무엇을 하는
-        #    버튼인지는 `toggle_all_label` 이 정한다 — 판정은 Qt 밖이다.
         self._type_all_btn = QPushButton("전체 선택")
-        self._type_all_btn.clicked.connect(self._on_toggle_all_types)
-        self._conn_all_btn = QPushButton("전체 선택")
-        self._conn_all_btn.clicked.connect(self._on_toggle_all_connectors)
+        self._type_all_btn.clicked.connect(lambda: self._set_all(True))
+        self._conn_all_btn = QPushButton("전체 해제")
+        self._conn_all_btn.clicked.connect(lambda: self._set_all(False))
 
         filters_col = QVBoxLayout()
         filters_col.setSpacing(2)
-        type_row = QHBoxLayout()
-        type_row.setSpacing(Space.SM)
-        type_row.addWidget(card_title("타입"))
-        type_row.addWidget(self._type_all_btn)
-        type_row.addWidget(filter_host, 1)
-        filters_col.addLayout(type_row)
-
-        conn_row = QHBoxLayout()
-        conn_row.setSpacing(Space.SM)
-        conn_row.addWidget(card_title("커넥터"))
-        conn_row.addWidget(self._conn_all_btn)
-        conn_row.addWidget(connector_filter_host, 1)
-        filters_col.addLayout(conn_row)
+        head_row = QHBoxLayout()
+        head_row.setSpacing(Space.SM)
+        head_row.addWidget(card_title("필터"))
+        head_row.addWidget(self._type_all_btn)
+        head_row.addWidget(self._conn_all_btn)
+        head_row.addStretch(1)
+        filters_col.addLayout(head_row)
+        filters_col.addWidget(self._tree)
 
         filters_host = QWidget()
         filters_host.setLayout(filters_col)
@@ -255,8 +243,7 @@ class StreamView(QWidget):
     def render(self, state: StreamState, now_s: float) -> None:
         self._state = state
         self._last_now_s = now_s
-        self._ensure_filter_checks(state)
-        self._ensure_connector_checks(state)
+        self._ensure_tree_items(state)
 
         summary = state.summary(now_s)
         self._type_label.setText(
@@ -300,8 +287,7 @@ class StreamView(QWidget):
             or "seq 누락 없음"
         )
         self._spark_label.setText(summary.rate_sparkline)
-        self._refresh_connector_labels(state)
-        self._refresh_toggle_all_buttons()
+        self._refresh_tree_labels(state)
 
         rows = state.visible_rows()
         # 🔴 빈 콘솔은 고장으로 읽힌다. 왜 비었는지를 같은 자리에 적는다 —
@@ -344,135 +330,110 @@ class StreamView(QWidget):
         self._append_new_rows(self._state.visible_rows())
 
     # -------------------------------------------------------------- 필터
-    def _ensure_filter_checks(self, state: StreamState) -> None:
-        """새로 본 타입마다 체크박스를 만든다.
+    def _ensure_tree_items(self, state: StreamState) -> None:
+        """새로 본 타입마다 트리 항목을 만든다. 가족 타입(ain·i2c·din)은
+        자식으로 커넥터를 미리 다 깐다 — 값이 안 온 커넥터도 목록에 있어야
+        한다(0 건 자체가 정보다).
 
         🔴 카탈로그 타입(`DEFAULT_HIDDEN_TYPES`)은 기본이 꺼짐이다 — 연결
-           직후 `$CFG,LIST` 카탈로그 91줄이 텔레메트리를 파묻는다
-           (`host/gui/stream.py` 머리말). 그 밖은 기본이 켜짐(=숨기지 않음).
-
-           이 시점(같은 `render()` 안, `_append_new_rows` 보다 먼저)에
-           필터를 정하므로 새 타입의 첫 줄은 이미 올바른 필터를 통과해
-           그려진다 — 카탈로그 타입이 처음 나타난 바로 그 틱에서도 소급
-           다시 그리기(`_redraw_all`)가 필요 없다.
+           직후 `$CFG,LIST` 가 쏟아내는 91줄이 텔레메트리를 파묻는다.
         """
-        new_types = [t for t in sorted(state.type_counts)
-                     if t not in self._filter_checks]
+        new_types = [t for t in sorted(set(state.type_counts)
+                                       | set(TYPE_FAMILIES))
+                     if t not in self._type_items]
         if not new_types:
             return
-        for t in new_types:
-            cb = QCheckBox(t)
-            cb.setChecked(t not in DEFAULT_HIDDEN_TYPES)
-            cb.toggled.connect(self._on_filter_toggled)
-            self._filter_row.addWidget(cb)
-            self._filter_checks[t] = cb
-        self._apply_filter_from_checks(state)
+        self._tree_updating = True
+        try:
+            for t in new_types:
+                item = QTreeWidgetItem(self._tree, [t])
+                on = t not in DEFAULT_HIDDEN_TYPES
+                kids = TYPE_FAMILIES.get(t, ())
+                if kids:
+                    # 🔴 AutoTristate — 부모를 누르면 자식이 다 따라가고,
+                    #    자식 일부만 켜면 부모가 반쯤 찬 표시가 된다.
+                    item.setFlags(item.flags()
+                                  | Qt.ItemFlag.ItemIsUserCheckable
+                                  | Qt.ItemFlag.ItemIsAutoTristate)
+                    for c in kids:
+                        kid = QTreeWidgetItem(item, [
+                            connector_label(
+                                c, state.connector_counts.get(c, 0),
+                                state.connector_names.get(c, ""))])
+                        kid.setFlags(kid.flags()
+                                     | Qt.ItemFlag.ItemIsUserCheckable)
+                        kid.setCheckState(
+                            0, Qt.CheckState.Checked if on
+                            else Qt.CheckState.Unchecked)
+                        self._conn_items[c] = kid
+                    item.setExpanded(False)
+                else:
+                    item.setFlags(item.flags()
+                                  | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    0, Qt.CheckState.Checked if on
+                    else Qt.CheckState.Unchecked)
+                self._type_items[t] = item
+        finally:
+            self._tree_updating = False
+        self._apply_filters(state)
 
-    def _checked_types(self) -> set[str]:
-        return {t for t, cb in self._filter_checks.items() if cb.isChecked()}
-
-    def _apply_filter_from_checks(self, state: StreamState) -> None:
-        checked = self._checked_types()
-        # 전부 체크 = 아무것도 거르지 않는다와 같다. `None` 으로 되돌려야
-        # 나중에 나타날 타입도(아직 체크박스가 없는 것도) 계속 보인다.
-        state.set_filter(
-            None if len(checked) == len(self._filter_checks) else checked
-        )
-
-    def _on_filter_toggled(self, _checked: bool) -> None:
-        if self._state is None:
-            return
-        self._apply_filter_from_checks(self._state)
-        self._redraw_all()
-        self.render(self._state, self._last_now_s)
-
-    # -------------------------------------------------------- 전체 선택/해제
-    @staticmethod
-    def _set_checks(checks: dict, chosen: set) -> None:
-        """🔴 신호를 막고 한꺼번에 세운다. 그냥 돌리면 체크박스 하나마다
-        `toggled` 가 나가 필터 적용과 통째로 다시 그리기가 열몇 번 반복된다
-        — 커넥터가 열여섯 개라 그만큼이다."""
-        for key, cb in checks.items():
-            cb.blockSignals(True)
-            cb.setChecked(key in chosen)
-            cb.blockSignals(False)
-
-    def _refresh_toggle_all_buttons(self) -> None:
-        self._type_all_btn.setText(
-            toggle_all_label(self._checked_types(), set(self._filter_checks)))
-        self._conn_all_btn.setText(
-            toggle_all_label(self._checked_connectors(),
-                             set(self._connector_checks)))
-
-    def _on_toggle_all_types(self) -> None:
-        self._set_checks(self._filter_checks,
-                         toggle_all(self._checked_types(),
-                                    set(self._filter_checks)))
-        self._refresh_toggle_all_buttons()
-        if self._state is None:
-            return
-        self._apply_filter_from_checks(self._state)
-        self._redraw_all()
-        self.render(self._state, self._last_now_s)
-
-    def _on_toggle_all_connectors(self) -> None:
-        self._set_checks(self._connector_checks,
-                         toggle_all(self._checked_connectors(),
-                                    set(self._connector_checks)))
-        self._refresh_toggle_all_buttons()
-        if self._state is None:
-            return
-        self._apply_connector_filter_from_checks(self._state)
-        self._redraw_all()
-        self.render(self._state, self._last_now_s)
-
-    # ------------------------------------------------------------ 커넥터 필터
-    def _ensure_connector_checks(self, state: StreamState) -> None:
-        """새로 본 커넥터마다 체크박스를 만든다.
-
-        🔴 타입 필터와 달리 기본은 **전부 켜짐**(안 거름)이다 — 커넥터는
-           카탈로그 소음처럼 기본으로 숨겨야 할 이유가 없다. 사용자가
-           특정 커넥터를 지목하고 싶을 때만 나머지를 끄는 용도다.
-        """
-        new_conns = [c for c in sorted(state.connector_counts)
-                     if c not in self._connector_checks]
-        if not new_conns:
-            return
-        for c in new_conns:
-            cb = QCheckBox(connector_label(c, state.connector_counts.get(c, 0),
-                                           state.connector_names.get(c, "")))
-            cb.setChecked(True)
-            cb.toggled.connect(self._on_connector_toggled)
-            self._connector_filter_row.addWidget(cb)
-            self._connector_checks[c] = cb
-        self._apply_connector_filter_from_checks(state)
-
-    def _refresh_connector_labels(self, state: StreamState) -> None:
-        """0 건 표시를 갱신한다 — 값이 오기 시작하면 표시가 사라진다.
-
-        🔴 매 프레임 돌지만 커넥터 수(열여섯)만큼이고, 글자가 바뀔 때만
-           위젯을 만진다. 콘솔이 매 프레임 통째로 다시 그려지지 않도록
-           지켜 온 것과 같은 규칙이다(머리말).
-        """
-        for c, cb in self._connector_checks.items():
+    def _refresh_tree_labels(self, state: StreamState) -> None:
+        """건수 표시를 갱신한다 — 글자가 바뀔 때만 위젯을 만진다."""
+        for t, item in self._type_items.items():
+            n = state.type_counts.get(t, 0)
+            text = f"{t}  {n}" if n else t
+            if item.text(0) != text:
+                item.setText(0, text)
+        for c, kid in self._conn_items.items():
             text = connector_label(c, state.connector_counts.get(c, 0),
                                    state.connector_names.get(c, ""))
-            if cb.text() != text:
-                cb.setText(text)
+            if kid.text(0) != text:
+                kid.setText(0, text)
+
+    def _checked_types(self) -> set[str]:
+        # 🔴 반쯤 찬(PartiallyChecked) 부모도 "켜짐"이다 — 자식 일부가
+        #    보이는 중이니 그 타입의 줄은 통과해야 한다.
+        return {t for t, it in self._type_items.items()
+                if it.checkState(0) != Qt.CheckState.Unchecked}
 
     def _checked_connectors(self) -> set[int]:
-        return {c for c, cb in self._connector_checks.items() if cb.isChecked()}
+        return {c for c, it in self._conn_items.items()
+                if it.checkState(0) == Qt.CheckState.Checked}
 
-    def _apply_connector_filter_from_checks(self, state: StreamState) -> None:
-        checked = self._checked_connectors()
+    def _apply_filters(self, state: StreamState) -> None:
+        checked_t = self._checked_types()
+        # 전부 체크 = 아무것도 거르지 않는다. None 으로 되돌려야 나중에
+        # 나타날 타입(아직 항목이 없는 것)도 계속 보인다.
+        state.set_filter(
+            None if len(checked_t) == len(self._type_items) else checked_t)
+        checked_c = self._checked_connectors()
         state.set_connector_filter(
-            None if len(checked) == len(self._connector_checks) else checked
-        )
+            None if len(checked_c) == len(self._conn_items) else checked_c)
 
-    def _on_connector_toggled(self, _checked: bool) -> None:
+    def _on_tree_changed(self, _item, _column) -> None:
+        # AutoTristate 의 연쇄 갱신(부모→자식)도 이 신호로 오므로,
+        # 프로그램이 만드는 중이면 무시한다.
+        if self._tree_updating or self._state is None:
+            return
+        self._apply_filters(self._state)
+        self._redraw_all()
+        self.render(self._state, self._last_now_s)
+
+    def _set_all(self, on: bool) -> None:
+        """전체 선택/해제 — 타입과 커넥터를 한꺼번에."""
+        self._tree_updating = True
+        try:
+            st = Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
+            for it in self._type_items.values():
+                it.setCheckState(0, st)
+            for it in self._conn_items.values():
+                it.setCheckState(0, st)
+        finally:
+            self._tree_updating = False
         if self._state is None:
             return
-        self._apply_connector_filter_from_checks(self._state)
+        self._apply_filters(self._state)
         self._redraw_all()
         self.render(self._state, self._last_now_s)
 

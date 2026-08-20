@@ -41,6 +41,19 @@ KNOWN_CONNECTORS: tuple[int, ...] = tuple(sorted(
     | set(I2C_PORTS) | set(DIN_PORTS)
 ))
 
+#: 타입 → 그 타입의 레코드가 달고 오는 커넥터들. 트리 필터의 뼈대다.
+#:
+#: 🔴 커넥터는 정확히 한 타입에 속한다(J3~J9 는 ain 만, J10~J15 는 i2c 만,
+#:    J18~J20 은 din 만). 그래서 "타입 아래에 커넥터" 트리가 자연스럽고,
+#:    납작한 두 줄(타입 16개 + 커넥터 16개)이 요구하던 가로 폭 문제도
+#:    세로로 풀린다(사용자 요청 2026-08-20). 여기 없는 타입(gnss·stat 등)은
+#:    커넥터가 없는 잎이다.
+TYPE_FAMILIES: dict[str, tuple[int, ...]] = {
+    "ain": tuple(CONNECTOR_OFFSET + i for i in range(AIN_COUNT)),
+    "i2c": tuple(sorted(I2C_PORTS)),
+    "din": tuple(sorted(DIN_PORTS)),
+}
+
 #: 화면에 보여줄 최근 줄 수이자 창(window) 기반 계산의 표본 상한.
 #:
 #: 🔴 근거: `host/core/records.py` 가 이미 쓰는 이론적 상한

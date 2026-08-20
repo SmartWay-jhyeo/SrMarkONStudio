@@ -15,6 +15,19 @@
 
 import os
 
+# ---- 트리 필터 도우미 (2026-08-20, 칩 → 트리 전환) --------------------------
+from PyQt6.QtCore import Qt as _Qt
+
+
+def _is_on(item) -> bool:
+    return item.checkState(0) != _Qt.CheckState.Unchecked
+
+
+def _set_on(item, on: bool) -> None:
+    item.setCheckState(0, _Qt.CheckState.Checked if on
+                       else _Qt.CheckState.Unchecked)
+
+
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -201,8 +214,8 @@ def test_catalog_types_are_hidden_by_default(app):
     text = view._console.toPlainText()
     assert _ain_line(2) in text
     assert "rail_24v" not in text
-    assert view._filter_checks["cfg_item"].isChecked() is False
-    assert view._filter_checks["ain"].isChecked() is True
+    assert _is_on(view._type_items["cfg_item"]) is False
+    assert _is_on(view._type_items["ain"]) is True
 
 
 def test_checking_a_hidden_catalog_type_reveals_it_retroactively(app):
@@ -215,7 +228,7 @@ def test_checking_a_hidden_catalog_type_reveals_it_retroactively(app):
     view.render(state, now_s=0.0)
     assert "rail_24v" not in view._console.toPlainText()
 
-    view._filter_checks["cfg_item"].setChecked(True)
+    _set_on(view._type_items["cfg_item"], True)
     text = view._console.toPlainText()
     assert "rail_24v" in text
     assert _ain_line(2) in text          # 기존에 보이던 것도 그대로
@@ -230,7 +243,7 @@ def test_unchecking_a_shown_type_hides_it_retroactively(app):
     text = view._console.toPlainText()
     assert _ain_line(1) in text and _i2c_line(2) in text
 
-    view._filter_checks["i2c"].setChecked(False)
+    _set_on(view._type_items["i2c"], False)
     text = view._console.toPlainText()
     assert _ain_line(1) in text
     assert _i2c_line(2) not in text
@@ -243,10 +256,10 @@ def test_rechecking_every_box_shows_everything_again(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
-    view._filter_checks["i2c"].setChecked(False)
+    _set_on(view._type_items["i2c"], False)
     assert _i2c_line(2) not in view._console.toPlainText()
 
-    view._filter_checks["i2c"].setChecked(True)
+    _set_on(view._type_items["i2c"], True)
     text = view._console.toPlainText()
     assert _ain_line(1) in text and _i2c_line(2) in text
 
@@ -361,7 +374,7 @@ def test_every_board_connector_gets_a_checkbox(app):
     view = StreamView()
     view.render(state, now_s=0.0)
 
-    assert set(view._connector_checks) == set(KNOWN_CONNECTORS)
+    assert set(view._conn_items) == set(KNOWN_CONNECTORS)
 
 
 def test_a_connector_that_never_sent_anything_says_so(app):
@@ -373,67 +386,55 @@ def test_a_connector_that_never_sent_anything_says_so(app):
     view.render(state, now_s=0.0)
 
     quiet = next(c for c in KNOWN_CONNECTORS if c != 3)
-    assert view._connector_checks[3].text() == "J3"
-    assert view._connector_checks[quiet].text() != f"J{quiet}"
-    assert "0" in view._connector_checks[quiet].text()
+    assert view._conn_items[3].text(0) == "J3"
+    assert view._conn_items[quiet].text(0) != f"J{quiet}"
+    assert "0" in view._conn_items[quiet].text(0)
 
 
 def test_the_label_drops_the_zero_mark_once_a_value_arrives(app):
     state = StreamState()
     view = StreamView()
     view.render(state, now_s=0.0)
-    assert "0" in view._connector_checks[3].text()
+    assert "0" in view._conn_items[3].text(0)
 
     state.ingest([_ain_line(1)], now_s=0.1)
     view.render(state, now_s=0.1)
-    assert view._connector_checks[3].text() == "J3"
+    assert view._conn_items[3].text(0) == "J3"
 
 
 # ------------------------------------------------------------- 전체 선택/해제
 
-def test_the_type_select_all_button_clears_then_restores_every_type(app):
+def test_select_all_and_clear_all_cover_types_and_connectors(app):
+    """트리 전환(2026-08-20) 뒤 버튼은 둘이고 각각 고정된 뜻이다 —
+    `전체 선택` 은 모든 타입·커넥터를 켜고, `전체 해제` 는 다 끈다."""
     state = StreamState()
     state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
     view = StreamView()
     view.render(state, now_s=0.0)
-    assert all(cb.isChecked() for cb in view._filter_checks.values()
-               if cb.text() not in ("cfg_item", "cfg_field", "cfg_end"))
+    assert all(_is_on(cb) for cb in view._type_items.values()
+               if cb.text(0) not in ("cfg_item", "cfg_field", "cfg_end"))
 
-    view._type_all_btn.click()
-    assert not any(cb.isChecked() for cb in view._filter_checks.values())
+    view._conn_all_btn.click()          # 전체 해제
+    assert not any(_is_on(cb) for cb in view._type_items.values())
+    assert not any(_is_on(cb) for cb in view._conn_items.values())
     assert view._console.toPlainText() == ""
 
-    view._type_all_btn.click()
-    assert all(cb.isChecked() for cb in view._filter_checks.values())
+    view._type_all_btn.click()          # 전체 선택
+    assert all(_is_on(cb) for cb in view._type_items.values())
+    assert all(_is_on(cb) for cb in view._conn_items.values())
     text = view._console.toPlainText()
     assert _ain_line(1) in text and _i2c_line(2) in text
 
 
-def test_the_connector_select_all_button_clears_then_restores(app):
-    state = StreamState()
-    state.ingest([_ain_line(1), _i2c_line(2)], now_s=0.0)
-    view = StreamView()
-    view.render(state, now_s=0.0)
-
-    view._conn_all_btn.click()
-    assert not any(cb.isChecked() for cb in view._connector_checks.values())
-    assert view._console.toPlainText() == ""
-
-    view._conn_all_btn.click()
-    assert all(cb.isChecked() for cb in view._connector_checks.values())
-    text = view._console.toPlainText()
-    assert _ain_line(1) in text and _i2c_line(2) in text
-
-
-def test_the_button_says_what_the_next_click_will_do(app):
+def test_a_parent_type_cascades_to_its_connectors(app):
+    """트리의 요점 — 부모(ain)를 끄면 그 커넥터가 다 꺼진다."""
     state = StreamState()
     state.ingest([_ain_line(1)], now_s=0.0)
     view = StreamView()
     view.render(state, now_s=0.0)
-
-    assert view._conn_all_btn.text() == "전체 해제"
-    view._conn_all_btn.click()
-    assert view._conn_all_btn.text() == "전체 선택"
+    _set_on(view._type_items["ain"], False)
+    assert not any(_is_on(view._conn_items[c]) for c in range(3, 10))
+    assert view._console.toPlainText() == ""
 
 
 def test_an_empty_console_says_why_it_is_empty(app):
@@ -444,12 +445,11 @@ def test_an_empty_console_says_why_it_is_empty(app):
     view = StreamView()
     view.render(state, now_s=0.0)
 
-    view._conn_all_btn.click()
+    view._conn_all_btn.click()          # 전체 해제
     assert view._console.toPlainText() == ""
-    assert "커넥터" in view._console.placeholderText()
     assert "전체 선택" in view._console.placeholderText()
 
-    view._conn_all_btn.click()
+    view._type_all_btn.click()          # 전체 선택
     assert view._console.placeholderText() == ""
 
 
@@ -462,7 +462,7 @@ def test_unchecking_a_connector_hides_it_retroactively(app):
     text = view._console.toPlainText()
     assert _ain_line(1) in text and _i2c_line(2) in text
 
-    view._connector_checks[10].setChecked(False)
+    _set_on(view._conn_items[10], False)
     text = view._console.toPlainText()
     assert _ain_line(1) in text
     assert _i2c_line(2) not in text
@@ -475,10 +475,10 @@ def test_rechecking_every_connector_shows_everything_again(app):
 
     view = StreamView()
     view.render(state, now_s=0.0)
-    view._connector_checks[10].setChecked(False)
+    _set_on(view._conn_items[10], False)
     assert _i2c_line(2) not in view._console.toPlainText()
 
-    view._connector_checks[10].setChecked(True)
+    _set_on(view._conn_items[10], True)
     text = view._console.toPlainText()
     assert _ain_line(1) in text and _i2c_line(2) in text
 
@@ -498,5 +498,5 @@ def test_a_record_type_nobody_has_seen_yet_is_shown_by_default(app):
     view = StreamView()
     view.render(state, now_s=0.0)
 
-    assert view._filter_checks["gnss"].isChecked() is True
+    assert _is_on(view._type_items["gnss"]) is True
     assert line in view._console.toPlainText()
