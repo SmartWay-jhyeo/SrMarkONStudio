@@ -408,7 +408,8 @@ class Dashboard(QWidget):
         grid = QGridLayout()
         grid.setHorizontalSpacing(Space.MD)
         grid.setVerticalSpacing(Space.MD)
-        cols = 3
+        self._grid = grid
+        self._cols = 0            # _reflow 가 첫 resizeEvent 에서 정한다
         for ch in range(AIN_COUNT):
             card = ChannelCard(f"J{ch + CONNECTOR_OFFSET}")
             # 🔴 커서를 화면 전체로 퍼뜨린다. 한 계기 위에서 움직인 마우스가
@@ -416,22 +417,10 @@ class Dashboard(QWidget):
             #    관계는 이 방법으로만 보인다.
             card.gauge.cursorMoved.connect(self._on_cursor)
             self._cards.append(card)
-            grid.addWidget(card, ch // cols, ch % cols)
-        # 🔴 마지막 줄의 남는 칸. 예전에는 빈 위젯으로 자리만 잡아 두었고,
-        #    화면 오른쪽 아래에 흰 구멍이 남았다. 수집이 지금 어떻게 되고
-        #    있는지를 거기 넣는다 — 카드 일곱 장을 한 줄로 요약한 것이라
-        #    자리도 맞다.
+        # 🔴 마지막 줄의 남는 칸 — 수집 요약. 카드 일곱 장을 한 줄로 요약한
+        #    것이라 자리도 맞다.
         self._summary = _Summary()
-        empty = cols - AIN_COUNT % cols
-        grid.addWidget(self._summary, AIN_COUNT // cols,
-                       AIN_COUNT % cols, 1, empty)
-        for c in range(cols):
-            grid.setColumnStretch(c, 1)
-        # 🔴 줄에도 늘어날 몫을 준다. 예전에는 격자가 위에 붙고 아래로 화면
-        #    끝까지 빈 흰 바탕이 남았다. 이제 카드가 높이를 나눠 갖고,
-        #    늘어난 자리는 트레이스가 먹는다.
-        for r in range((AIN_COUNT + cols - 1) // cols):
-            grid.setRowStretch(r, 1)
+        self._reflow(3)
 
         # 🔴 전원 레일은 이제 좌측 레일(qt/rail.py)에 있다. 여기서는 그리지
         #    않는다 — 5V 가 없으면 채널이 하나도 안 도는 관계라, 채널 아래에
@@ -479,7 +468,7 @@ class Dashboard(QWidget):
         self._sensor_grid.setHorizontalSpacing(Space.MD)
         self._sensor_grid.setVerticalSpacing(Space.MD)
         self._sensor_cards: dict[tuple[str, str], SensorCard] = {}
-        for c in range(cols):
+        for c in range(self._cols):
             self._sensor_grid.setColumnStretch(c, 1)
         self._sensor_title.setVisible(False)
 
@@ -546,11 +535,60 @@ class Dashboard(QWidget):
             if pill is not None:
                 pill.render(d)
 
+    def _reflow(self, cols: int) -> None:
+        """카드를 `cols` 열로 다시 깐다 — 창 폭이 칸 수를 정한다.
+
+        🔴 열 수를 3 으로 박아 두면 두 끝에서 다 틀린다(사용자 지적
+           2026-08-20). 넓은 모니터에서는 카드 하나가 700px 넘게 부풀고
+           ("카드가 너무 크다"), 좁은 창에서는 카드 최소폭 × 3 이 안
+           들어가 가로 스크롤로 잘린다. 카드 크기를 고치는 것이 아니라
+           **칸 수가 폭을 따라가야** 양쪽이 같이 풀린다.
+        """
+        if cols == self._cols:
+            return
+        self._cols = cols
+        g = self._grid
+        while g.count():
+            g.takeAt(0)
+        for ch, card in enumerate(self._cards):
+            g.addWidget(card, ch // cols, ch % cols)
+        n = len(self._cards)
+        empty = cols - n % cols if n % cols else cols
+        g.addWidget(self._summary, n // cols,
+                    n % cols if n % cols else 0, 1, empty)
+        # 🔴 예전 열의 stretch 를 0 으로 되돌린다 — 안 지우면 3열로
+        #    돌아왔을 때 유령 4·5열이 폭을 나눠 가진다.
+        for c in range(max(cols, 8)):
+            g.setColumnStretch(c, 1 if c < cols else 0)
+        rows = (n + cols - 1) // cols + (1 if n % cols == 0 else 0)
+        for r in range(max(rows, 8)):
+            g.setRowStretch(r, 1 if r < rows else 0)
+        # I2C 격자도 같은 열 수를 따른다 — 두 구획의 칸이 어긋나면
+        # 세로선이 안 맞아 산만하다. 생성자의 첫 호출 시점에는 아직
+        # 안 만들어져 있다 — 그때는 아날로그만 깔고 끝낸다.
+        if not hasattr(self, "_sensor_grid"):
+            return
+        cards = list(self._sensor_cards.values())
+        sg = self._sensor_grid
+        while sg.count():
+            sg.takeAt(0)
+        for i, card in enumerate(cards):
+            sg.addWidget(card, i // cols, i % cols)
+        for c in range(max(cols, 8)):
+            sg.setColumnStretch(c, 1 if c < cols else 0)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt 서명)
+        super().resizeEvent(event)
+        # 칸 하나에 필요한 폭 어림 — 게이지 최소폭 + 카드 안쪽 여백 + 간격.
+        # 이 값을 줄이면 같은 폭에서 칸이 늘어난다(카드가 작아진다).
+        per = 330
+        self._reflow(max(1, min(self.width() // per, 5)))
+
     def _render_sensors(self, state: ScreenState) -> None:
         """🔴 카드를 매번 새로 만들지 않는다. 텔레메트리는 초당 열 번 오는데
            그때마다 위젯을 새로 만들면 마우스가 카드 위에 있을 때 계속
            밑에서 사라진다 — 값을 읽을 수가 없다."""
-        cols = 3
+        cols = self._cols or 3
         self._sensor_title.setVisible(bool(state.sensors))
         for i, sensor in enumerate(state.sensors):
             key = (sensor.connector, sensor.quantity)
