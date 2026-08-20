@@ -185,7 +185,7 @@ class StreamView(QWidget):
         #    가로 폭 문제도 세로로 풀린다 — 트리는 제 스크롤을 가진다.
         self._tree = QTreeWidget()
         self._tree.setHeaderHidden(True)
-        self._tree.setFixedHeight(210)
+        self._tree.setMinimumHeight(160)   # 고정하지 않는다 — 남는 세로의 제 몫을 받는다
         self._tree.itemChanged.connect(self._on_tree_changed)
         #: itemChanged 를 프로그램이 낸 것인지 사람이 낸 것인지 가른다.
         self._tree_updating = False
@@ -265,13 +265,12 @@ class StreamView(QWidget):
         col.addWidget(hairline())
         col.addWidget(analysis_scroll)
         col.addWidget(hairline())
-        col.addLayout(control_row)
+        # 🔴 남는 세로를 필터(트리)와 콘솔이 **반씩** 나눈다 (사용자 요청
+        #    2026-08-20 — "콘솔이 너무 커, 절반으로"). 처음에는 콘솔에
+        #    최대 높이를 걸었는데, 갈 곳 잃은 여백을 Qt 가 구획 사이에
+        #    뿌려 화면이 벌어졌다 — 상한이 아니라 배분이 답이다.
+        col.addLayout(control_row, 1)
         col.addWidget(self._header_label)
-        # 🔴 콘솔이 남는 세로 공간을 통째로 먹지 않는다 (사용자 요청
-        #    2026-08-20 — "너무 커, 절반으로"). 상한을 걸어 절반쯤에서
-        #    멈추고, 넘치는 줄은 콘솔 제 스크롤로 본다. 남는 공간은
-        #    위의 통계·필터가 숨 쉴 자리가 된다.
-        self._console.setMaximumHeight(360)
         col.addWidget(self._console, 1)
 
     # ------------------------------------------------------------- 그리기
