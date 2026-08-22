@@ -388,6 +388,30 @@ class MainWindow(QMainWindow):
         #: 대시보드 렌더링(_named)도 같은 사전을 쓴다.
         self._conn_names = names
 
+    def _rename_connector(self, key: str, value: str) -> None:
+        """`*.name` 이 보드에 **받아들여진** 순간 스트림 트리·대시보드의
+        이름을 바로 바꾼다 (사용자 요청 2026-08-22).
+
+        🔴 카탈로그 재로드를 기다리지 않는다 — 카탈로그는 다음 재접속
+           때나 다시 오므로, 그때까지 설정 탭과 스트림 트리가 서로 다른
+           이름을 말하게 된다. 사전을 새로 만들어 **교체**한다(제자리
+           수정 금지) — 스트림 쪽이 사전 동일성으로 갱신을 알아챌 수
+           있어야 하고, 뷰가 그리는 도중의 반쪽 상태도 없어야 한다.
+        """
+        m = re.fullmatch(r"(ain|i2c|din)(\d+)\.name", key)
+        if not m:
+            return
+        n = int(m.group(2))
+        connector = 3 + n if m.group(1) == "ain" else n
+        names = dict(self._conn_names)
+        value = value.strip()
+        if value:
+            names[connector] = value
+        else:
+            names.pop(connector, None)      # 비우면 J 번호로 돌아간다
+        self._stream_state.connector_names = names
+        self._conn_names = names
+
     def eventFilter(self, obj, event):  # noqa: N802 (Qt 서명)
         from PyQt6.QtCore import QEvent
         if (obj is self._pages_scroll.viewport()
@@ -579,6 +603,14 @@ class MainWindow(QMainWindow):
             key = tag.split(":", 1)[-1]
             if res.ok:
                 self._settings.on_accepted(key)
+                # 🔴 이름은 수락 즉시 스트림 트리·대시보드에 반영한다
+                #    (사용자 요청 2026-08-22 — "설정에서 바꾸면 스트림
+                #    트리에도 바로"). 다음 카탈로그 로드를 기다리면
+                #    그때까지 두 화면이 다른 이름을 말한다.
+                if key.endswith(".name"):
+                    value = self._settings.value_of(key)
+                    if value is not None:
+                        self._rename_connector(key, value)
             else:
                 self._settings.on_rejected(key, res.reason or "거부됨")
 

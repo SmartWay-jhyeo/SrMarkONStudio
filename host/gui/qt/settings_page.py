@@ -687,6 +687,16 @@ class SettingsPage(QWidget):
 
     # ------------------------------------------------------------- 응답
 
+    def value_of(self, key: str) -> str | None:
+        """항목의 현재 화면 값. 없으면 None — app 이 `*.name` 수락 순간
+        스트림 트리 이름을 갱신할 때 쓴다(사용자 요청 2026-08-22)."""
+        if self._form is None:
+            return None
+        try:
+            return str(self._form.row(key).value)
+        except KeyError:
+            return None
+
     def on_accepted(self, key: str) -> None:
         if self._form is None:
             return

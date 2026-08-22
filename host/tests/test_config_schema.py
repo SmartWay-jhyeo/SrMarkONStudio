@@ -175,13 +175,25 @@ def test_validate_rejects_command_injection_and_delimiters():
         assert exc.value.reason == Reason.RANGE, repr(payload)
 
 
-def test_validate_rejects_non_ascii_string():
-    """단위는 'degC'·'kPa' 처럼 쓴다."""
+def test_validate_accepts_utf8_string():
+    """🔴 [개정 2026-08-22] 비 ASCII 는 허용한다 — 펌웨어(mk_config.c,
+    2026-08-20)와 같은 규칙. 실기기가 커넥터 이름 "유압" 을 받아
+    저장하는데 호스트만 막고 있어 GUI 에서 한글 이름 입력이 거부됐다.
+    줄 구조를 깨는 것은 제어문자·구분자뿐이고 UTF-8 연속 바이트는
+    그 어느 것도 될 수 없다."""
     schema = parse_catalog(CATALOG)
-    for bad in ("℃", "바", "Ω"):
-        with pytest.raises(ConfigError) as exc:
-            schema.validate("ain0.unit", bad)
-        assert exc.value.reason == Reason.RANGE, bad
+    for ok in ("유압", "바", "℃"):
+        assert schema.validate("ain0.unit", ok) == ok
+
+
+def test_validate_str_max_is_bytes_not_chars():
+    """🔴 상한은 UTF-8 바이트다 — 펌웨어 strlen 과 같은 눈금. 문자로 세면
+    한글 3자(9바이트)가 max=7 을 통과해 보드에서 거부된다."""
+    schema = parse_catalog(CATALOG)
+    assert schema.validate("ain0.unit", "유압")== "유압"   # 6바이트 <= 7
+    with pytest.raises(ConfigError) as exc:
+        schema.validate("ain0.unit", "유압펌")             # 9바이트 > 7
+    assert exc.value.reason == Reason.RANGE
 
 
 def test_validate_accepts_ascii_string():

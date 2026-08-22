@@ -35,11 +35,20 @@ _PROTOCOL_DELIMITERS = frozenset("$,*")
 #:   '*'        — 체크섬 구분자로 오인
 #:   '$'        — 명령 시작으로 오인
 #:
-#: 단위는 'degC'·'kPa'·'LPM'·'%' 처럼 쓴다. 비 ASCII 를 막는 부수 효과로
-#: 문자 수 = 바이트 수가 되어 str<=7 이 펌웨어 고정폭 버퍼와 정확히 맞는다.
+#: 🔴 [개정 2026-08-22] 비 ASCII(U+0080~)는 **허용한다** — 펌웨어
+#: mk_config.c 가 2026-08-20 에 같은 이유로 풀었다: 커넥터 이름 "유압" 이
+#: RANGE 로 떨어졌는데, 줄 구조를 깨는 것은 제어문자와 구분자뿐이고 UTF-8
+#: 연속 바이트는 그 어느 것도 될 수 없다. 실기기가 이미 한글 이름을 받아
+#: 저장하는데 호스트만 막고 있었다(GUI 에서 "유압" 입력 거부).
+#: 대신 길이는 **UTF-8 바이트 수**로 센다 — 펌웨어의 상한이 바이트다.
 _ALLOWED_STR_CHARS = frozenset(
     chr(c) for c in range(0x20, 0x7F)
 ) - _PROTOCOL_DELIMITERS
+
+
+def _bad_str_chars(raw: str) -> list[str]:
+    """줄 구조를 깨는 문자만 골라낸다 — 펌웨어 mk_config.c 와 같은 규칙."""
+    return [c for c in raw if ord(c) < 0x80 and c not in _ALLOWED_STR_CHARS]
 
 
 @dataclass(frozen=True)
@@ -126,12 +135,18 @@ def _coerce(item: ConfigItem, raw: str) -> object:
         raise ConfigError(Reason.RANGE, f"불리언이 아님: {raw!r}")
 
     if item.vtype == "str":
-        bad = [c for c in raw if c not in _ALLOWED_STR_CHARS]
+        bad = _bad_str_chars(raw)
         if bad:
             raise ConfigError(Reason.RANGE, f"허용되지 않는 문자: {bad!r}")
-        if item.maximum is not None and len(raw) > int(item.maximum):
+        # 🔴 바이트로 센다 — 펌웨어 상한(strlen)이 바이트다. 문자로 세면
+        #    한글 3자("유압펌")가 9바이트인데 상한 7을 통과시켜, 호스트는
+        #    받고 보드가 거부하는 어긋남이 된다.
+        nbytes = len(raw.encode("utf-8"))
+        if item.maximum is not None and nbytes > int(item.maximum):
             raise ConfigError(
-                Reason.RANGE, f"최대 {int(item.maximum)}자, 받음 {len(raw)}자"
+                Reason.RANGE,
+                f"최대 {int(item.maximum)}바이트, 받음 {nbytes}바이트"
+                f" (한글은 한 자에 3바이트)"
             )
         return raw
 
