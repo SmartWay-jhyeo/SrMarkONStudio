@@ -74,6 +74,16 @@ void mk_railctl_init(MkRailCtl *rc, MkRailSet set, void *ctx);
 void mk_railctl_tick(MkRailCtl *rc, int want_5v, int want_14v9, int want_24v,
                      uint16_t seq_delay_ms, int64_t now_ms);
 
+/* 부팅 최우선 경로가 **이미 올려 둔** 레일을 등록한다 (2026-08-22).
+ *
+ * 🔴 있는 이유: 메인 전원이 복귀하면 절체 회로가 배터리를 즉시 끊는데,
+ *    14.9V(젯슨)가 순차 기동을 기다리는 1초+ 공백에 젯슨이 죽는다
+ *    (HANDOFF §7.4b). 그래서 main() 이 설정을 읽자마자 PD9 를 직접
+ *    올리고, 여기로 그 사실을 알린다 — 알리지 않으면 `$STAT` 이 켜진
+ *    레일을 꺼졌다고 말하고(설계 원칙 4 위반), tick 이 같은 핀을 한 번
+ *    더 두드린다. 핀은 건드리지 않는다 — 이미 올라가 있다. */
+void mk_railctl_prime(MkRailCtl *rc, MkRail rail);
+
 /* 지금 명령된 상태. `$STAT` 의 `rails` 가 이것을 실어야 한다 —
  * 설정표를 읽으면 "사용자가 원하는 것" 이지 "보드가 낸 것" 이 아니다. */
 int mk_railctl_is_on(const MkRailCtl *rc, MkRail rail);

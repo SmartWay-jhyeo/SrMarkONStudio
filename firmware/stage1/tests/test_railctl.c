@@ -255,9 +255,30 @@ static void test_null_set_does_not_crash(void)
     CHECK(mk_railctl_is_on(&rc, MK_RAIL_5V), "콜백이 없어도 상태는 센다");
 }
 
+/* 🔴 [신규, 2026-08-22] 부팅 최우선 14.9V(HANDOFF §7.4b — 메인 복귀 공백을
+ *    줄이려고 main() 이 설정을 읽자마자 PD9 를 직접 올린다). prime 으로
+ *    알린 레일은 tick 이 **다시 두드리지 않아야** 하고($STAT 도 켜졌다고
+ *    말해야 하고), 24V 는 그 레일의 순차 단계를 기다리지 않고 이어져야
+ *    한다. */
+static void test_primed_rail_is_not_driven_again(void)
+{
+    setup();
+    mk_railctl_prime(&RC, MK_RAIL_14V9);
+    CHECK(mk_railctl_is_on(&RC, MK_RAIL_14V9), "prime 한 레일은 켜진 상태다");
+
+    mk_railctl_tick(&RC, 1, 1, 1, 500, 0);          /* 5V */
+    mk_railctl_tick(&RC, 1, 1, 1, 500, 500);        /* 다음 단계 = 24V 여야 */
+    dump();
+    for (int i = 0; i < LG.n; i++) {
+        CHECK(!(LG.rail[i] == MK_RAIL_14V9), "14.9V 핀을 다시 두드리지 않는다");
+    }
+    CHECK(mk_railctl_is_on(&RC, MK_RAIL_24V), "24V 가 14.9V 단계를 건너뛰고 이어진다");
+}
+
 int main(void)
 {
     printf("mk_railctl\n");
+    test_primed_rail_is_not_driven_again();
     test_five_volts_comes_up_first_and_alone();
     test_sequence_order_and_spacing();
     test_five_volts_turns_off_when_asked();

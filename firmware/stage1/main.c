@@ -446,6 +446,24 @@ int main(void)
     }
     mk_cfg_mark_saved(&s_cfg);   /* 방금 읽은 것과 같으니 저장할 것이 없다 */
 
+    /* 🔴 젯슨 레일(PD9)은 **부팅 최우선**으로 올린다 (사용자 결정
+     *    2026-08-22). 메인 전원이 복귀하는 순간 절체 회로가 배터리를 즉시
+     *    끊는데(HANDOFF §7.4b — 비교기는 차량 입력만 본다), 14.9V 가 순차
+     *    기동을 기다리는 1초+ 공백에 젯슨이 브라운아웃됐다. 공백을 0 으로는
+     *    못 만들지만(MCU 부팅 자체의 시간) LCD 초기화·레일 순차 대기를
+     *    건너뛰어 수백 ms 로 줄인다.
+     *
+     *    저장 설정이 켜라고 할 때만 — 저장이 없거나 깨졌으면 기본값(꺼짐)
+     *    그대로다(위 주석의 이유). */
+    int early_14v9 = 0;
+    {
+        MkCfgItem *v14 = mk_cfg_find(&s_cfg, "pwr.14v9");
+        if (v14 != NULL && v14->cur.u != 0u) {
+            mk_rails_set(NULL, MK_RAIL_14V9, 1);
+            early_14v9 = 1;
+        }
+    }
+
     /* 🔴 UART 를 여는 것이 설정을 읽은 **뒤**다 (규격 §4.2).
      *
      *    속도가 이제 설정 항목이라 Flash 를 읽기 전에는 무엇으로 열어야
@@ -516,6 +534,11 @@ int main(void)
      *    (VREFP). 디지털(DVDD pin16)만 V3V3 상시다. WS2812(J21~J24)도
      *    같은 레일이다. */
     mk_railctl_init(&s_rails, mk_rails_set, NULL);
+    if (early_14v9) {
+        /* 위에서 이미 올린 PD9 를 상태기계에 알린다 — 안 알리면 $STAT 이
+         * 켜진 레일을 꺼졌다고 말한다(mk_railctl_prime 주석). */
+        mk_railctl_prime(&s_rails, MK_RAIL_14V9);
+    }
     /* 🔴 J18~J20 은 입력이다(사용자 확정 2026-08-18) — mk_solctl_init() 이
      *    큐를 먼저 비운 뒤에 mk_sol_init() 을 부른다. mk_sol_init() 은 핀을
      *    열자마자 실제 레벨을 동기적으로 읽어 mk_solctl_prime() 으로 초기

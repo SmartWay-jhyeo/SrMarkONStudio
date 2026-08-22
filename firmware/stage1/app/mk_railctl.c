@@ -20,6 +20,13 @@ void mk_railctl_init(MkRailCtl *rc, MkRailSet set, void *ctx)
     rc->ctx = ctx;
 }
 
+void mk_railctl_prime(MkRailCtl *rc, MkRail rail)
+{
+    if (rail < MK_RAIL_COUNT) {
+        rc->on[rail] = 1u;          /* 핀은 부른 쪽이 이미 올렸다 */
+    }
+}
+
 void mk_railctl_tick(MkRailCtl *rc, int want_5v, int want_14v9, int want_24v,
                      uint16_t seq_delay_ms, int64_t now_ms)
 {
