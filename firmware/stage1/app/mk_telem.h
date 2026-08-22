@@ -114,11 +114,26 @@ typedef struct {
      *    어느 채널도 항상 마지막 순서로 밀리지 않는다. 자세한 근거는
      *    mk_telem.c 의 ain 배출부 주석. */
     int               ain_rr;
+
+    /* 🔴 [신규, 2026-08-22] 호스트가 듣고 있는가 — $HB 신선도(규격 §7.1.3).
+     *
+     *    0 이면 텔레메트리를 **한 줄도 내지 않는다.** 아무도 안 읽는
+     *    COM23 에 초당 ~1.5 KB 를 계속 부으면 F103(BMP) 브리지 버퍼가
+     *    차서 디버거가 통째로 굳는다 — 실기기에서 반복 실증(2026-08-22,
+     *    전원 20초 차단으로만 복구). 침묵 중에도 큐는 비운다(버림) —
+     *    seq 는 안 올린다: 올리면 다시 붙은 호스트가 그 구간을 유실로
+     *    센다. 부팅 기본은 0(첫 HB 전까지 침묵) — CONFIG/RUN 을 케이블이
+     *    아니라 HB 로 판정하는 것과 같은 철학이다(CLAUDE.md §4). */
+    int               host_alive;
 } MkTelem;
 
 void mk_telem_init(MkTelem *t, MkConfig *cfg, MkAds *ads,
                    const MkFieldBit *fields, size_t n_fields,
                    const char *device_id);
+
+/* 호스트 생사를 알린다 — main 이 매 바퀴 hostlink 의 HB 신선도
+ * (mk_hostlink_mode == CONFIG)를 넣는다. `host_alive` 주석이 계약이다. */
+void mk_telem_set_host_alive(MkTelem *t, int alive);
 
 /* I2C 층을 물린다. 🔴 `seq` 는 ain 과 같은 MkTelem 카운터를 함께 쓴다 —
  *    따로 세면 두 곳이 갈린다 (규격 §7.5). 필드 마스크는 반대로

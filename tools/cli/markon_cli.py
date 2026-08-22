@@ -189,7 +189,14 @@ def cmd_baud(svc: BoardService, value: int) -> int:
 
 def cmd_monitor(svc: BoardService, seconds: float) -> int:
     deadline = time.monotonic() + seconds
+    last_hb = 0.0
     while time.monotonic() < deadline:
+        # 🔴 텔레메트리는 HB 가 신선할 때만 나온다 (규격 §7.1.3, 2026-08-22).
+        #    안 보내면 3초 뒤 스트림이 조용해지는데, 그게 게이트의 정상
+        #    동작이라 오류로도 안 보인다.
+        if time.monotonic() - last_hb >= 1.0:
+            svc.heartbeat()
+            last_hb = time.monotonic()
         svc.pump()
         # 🔴 `svc.records[seen:]` 커서는 안 쓴다. `records` 가
         #    `deque(maxlen=...)` 가 되면서(host/service/board_service.py)

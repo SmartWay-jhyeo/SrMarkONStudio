@@ -490,9 +490,42 @@ void mk_telem_attach_gnss(MkTelem *t, MkGnss *gnss)
     t->gnss = gnss;
 }
 
+void mk_telem_set_host_alive(MkTelem *t, int alive)
+{
+    t->host_alive = (alive != 0);
+}
+
 int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
 {
     if (t->cfg == NULL || t->ads == NULL || emit == NULL) {
+        return 0;
+    }
+
+    /* 🔴 듣는 사람이 없으면 침묵한다 (mk_telem.h `host_alive` 주석이 계약).
+     *
+     *    큐는 **비운다** — 안 비우면 큐가 차서 drops 만 오르고, 호스트가
+     *    다시 붙는 순간 몇 분 묵은 표본이 홍수로 나간다. 이벤트(din·gnss)
+     *    도 버린다 — 아무도 안 듣던 동안의 일이고, 젯슨은 mk_cloud 가
+     *    따로 받는다. seq 는 손대지 않는다 — 침묵 중에 올리면 다시 붙은
+     *    호스트의 유실 집계가 그 구간을 전부 누락으로 센다.
+     *
+     *    i2c 는 비울 것이 없다(last 값만 읽는다). gnss 원시 큐는 자체
+     *    용량이 차면 스스로 오래된 것을 버린다(아래 gnss_raw 주석). */
+    if (!t->host_alive) {
+        if (t->sol != NULL) {
+            MkSolOut o;
+            while (mk_solctl_take(t->sol, &o)) {}
+        }
+        if (t->gnss != NULL) {
+            MkGnssFix fix;
+            while (mk_gnss_take_fix(t->gnss, &fix)) {}
+        }
+        for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
+            MkQueue *q = mk_ads_queue(t->ads, ch);
+            MkSample s;
+            while (q != NULL && mk_queue_pop(q, &s)) {}
+        }
+        t->last_ms = now_ms;   /* 다시 붙는 순간 주기가 0 부터 시작하게 */
         return 0;
     }
 

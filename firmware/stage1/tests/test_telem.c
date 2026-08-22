@@ -72,6 +72,9 @@ static void setup(void)
     size_t n_fields = 0;
     const MkFieldBit *fields = mk_cfgtable_fields(&n_fields);
     mk_telem_init(&T, &CFG, &ADS, fields, n_fields, "1");
+    /* 대부분의 시험은 "호스트가 듣는 중" 을 전제한다 — 게이트 자체는
+     * test_silent_host_* 가 본다. */
+    mk_telem_set_host_alive(&T, 1);
 }
 
 /* ---- I2C 가짜 버스·헬퍼 --------------------------------------------------- */
@@ -1565,6 +1568,70 @@ static void emit_din(void)
     }
 }
 
+/* ---- 호스트 침묵 게이트 (규격 §7.1.3, 2026-08-22) ------------------------
+ *
+ * 🔴 아무도 안 읽는 COM23 에 계속 부으면 F103(BMP) 브리지가 굳는다 —
+ *    실기기 반복 실증. 그래서 HB 가 신선할 때만 낸다. 여기서 보는 계약:
+ *    ① 침묵 중 한 줄도 안 나간다  ② 큐는 비워진다(버림 — 다시 붙는 순간
+ *    묵은 홍수가 없다)  ③ seq 는 안 오른다(올리면 재접속 호스트가 침묵
+ *    구간을 통째로 유실로 센다)  ④ 부팅 기본은 침묵이다. */
+
+static void test_silent_host_emits_nothing_and_drains(void)
+{
+    setup();
+    mk_telem_set_host_alive(&T, 0);
+    static MkSolCtl SOL;
+    mk_solctl_init(&SOL, NULL, NULL);
+    mk_telem_attach_sol(&T, &SOL);
+
+    set_last(0, 50, 4000000);
+    mk_queue_push(mk_ads_queue(&ADS, 0), 50, 4000000);
+    SOL.out[0] = (MkSolOut){ .connector_id = 18u, .state = 1u, .t_ms = 60 };
+    SOL.n_out = 1;
+
+    CHECK(mk_telem_tick(&T, 100, sink, NULL) == 0, "침묵 — 반환 0");
+    CHECK(N == 0, "한 줄도 안 나간다");
+    CHECK(mk_queue_count(mk_ads_queue(&ADS, 0)) == 0u,
+          "ain 큐는 비워진다 — 안 비우면 drops 만 오른다");
+    MkSolOut o;
+    CHECK(!mk_solctl_take(&SOL, &o), "din 이벤트도 버려진다");
+    CHECK(T.seq == 0u, "seq 는 오르지 않는다");
+}
+
+static void test_boot_default_is_silent(void)
+{
+    setup();
+    mk_telem_set_host_alive(&T, 0);      /* = mk_telem_init 직후 상태 */
+    MkTelem fresh;
+    size_t n_fields = 0;
+    const MkFieldBit *fields = mk_cfgtable_fields(&n_fields);
+    mk_telem_init(&fresh, &CFG, &ADS, fields, n_fields, "1");
+    set_last(0, 50, 4000000);
+    CHECK(mk_telem_tick(&fresh, 100, sink, NULL) == 0 && N == 0,
+          "부팅 직후(첫 HB 전)는 침묵이다 — 부팅 홍수가 F103 을 굳게 했다");
+}
+
+static void test_host_returning_resumes_with_continuous_seq(void)
+{
+    setup();                              /* alive=1 */
+    set_last(0, 50, 4000000);
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK(N >= 1, "듣는 동안은 나간다");
+    uint32_t seq1 = parse_seq(LINES[N - 1]);
+
+    mk_telem_set_host_alive(&T, 0);
+    mk_telem_tick(&T, 200, sink, NULL);
+    mk_telem_tick(&T, 300, sink, NULL);
+
+    mk_telem_set_host_alive(&T, 1);
+    N = 0;
+    set_last(0, 350, 4000001);
+    mk_telem_tick(&T, 400, sink, NULL);
+    CHECK(N >= 1, "다시 붙으면 바로 이어진다");
+    CHECK(parse_seq(LINES[0]) == seq1 + 1u,
+          "침묵이 seq 를 안 먹었다 — 유실 집계가 그 구간을 누락으로 안 센다");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--emit") == 0) {
@@ -1616,6 +1683,9 @@ int main(int argc, char **argv)
     test_failure_repeats_at_the_tx_period_not_the_retry_period();
     test_i2c_t_follows_the_same_timeax_conversion_as_ain();
     test_i2c_time_source_field_cannot_be_masked_off();
+    test_silent_host_emits_nothing_and_drains();
+    test_boot_default_is_silent();
+    test_host_returning_resumes_with_continuous_seq();
     test_din_records_share_the_sequence_with_ain();
     test_din_record_shape();
     test_din_is_not_gated_by_tx_period();

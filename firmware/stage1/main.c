@@ -783,6 +783,13 @@ int main(void)
                             mk_gnss_io_write, NULL);
         }
 
+        /* 🔴 듣는 사람이 없으면 COM23 텔레메트리를 침묵시킨다 (규격 §7.1.3,
+         *    사용자 결정 2026-08-22). 판정은 CONFIG 모드와 같은 HB 신선도다
+         *    — 케이블은 감지할 수 없고(CLAUDE.md §4) HB 가 곧 "저쪽에서
+         *    사람이 보고 있다"이다. 아무도 안 읽는 홍수가 F103(BMP)을
+         *    굳게 한 것이 이 게이트의 이유다(HANDOFF §5). */
+        mk_telem_set_host_alive(
+            &s_telem, mk_hostlink_mode(&link, now) == MK_MODE_CONFIG);
         mk_telem_tick(&s_telem, now, emit_telem, NULL);
         /* 🔴 젯슨(J29) 링크 — 규격 v3 가 아니라 Cloud 계약(v1.7.0)을 말한다
          *    (app/mk_cloud.h). 2026-08-21 부터 미러가 아니다. */
