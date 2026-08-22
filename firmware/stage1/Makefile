@@ -42,6 +42,8 @@ C_SRC = \
   app/mk_ads1256.c \
   app/mk_railctl.c \
   app/mk_telem.c \
+  app/mk_cloud.c \
+  app/mk_imu.c \
   app/mk_ws2812.c \
   app/mk_solctl.c \
   app/mk_i2c.c \
@@ -69,6 +71,7 @@ C_SRC = \
   bsp/mk_ads_io.c \
   bsp/mk_flash.c \
   bsp/mk_uart.c \
+  bsp/mk_jet.c \
   bsp/mk_i2c_io.c \
   bsp/stm32h7xx_it.c \
   $(DEV)/Source/Templates/system_stm32h7xx.c \

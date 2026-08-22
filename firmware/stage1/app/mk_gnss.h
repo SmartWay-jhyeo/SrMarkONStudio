@@ -105,6 +105,18 @@ typedef struct {
     int      have_hdop;
     uint16_t hdop_1e2;         /* 수평 정밀도 저하율 × 100 */
 
+    /* 짝지어진 GGA 문장의 NMEA 체크섬 두 글자 (클라우드 계약 §3 의 `cs`,
+     * 2026-08-21). 검증에 쓴 그 값을 대문자 그대로 보존한다. */
+    int  have_cs;
+    char cs[3];
+
+    /* GGA 13·14열 — RTK 보정 나이(0.1 s 단위)·기준국 ID (젯슨 링크
+     * 선택 필드 diff_age·station_id, 2026-08-22). */
+    int      have_diff_age;
+    uint16_t diff_age_1e1;
+    int      have_station;
+    uint16_t station_id;
+
     /* RMC 에서 온다. */
     int     have_speed;
     int32_t speed_mm_s;        /* 대지 속도, mm/s (노트에서 변환됨) */
@@ -179,6 +191,19 @@ typedef struct MkGnss {
     int32_t  gga_alt_mm;
     int      gga_have_hdop;
     uint16_t gga_hdop_1e2;
+    char     gga_cs[3];        /* 그 GGA 의 체크섬 두 글자 (위 fix.cs 의 출처) */
+    int      gga_have_age;     /* GGA 13열 — RTK 보정 나이 (0.1 s) */
+    uint16_t gga_age_1e1;
+    int      gga_have_station; /* GGA 14열 — 기준국 ID */
+    uint16_t gga_station;
+
+    /* 🔴 클라우드 직렬화(mk_cloud)용 — fix 큐의 **둘째 소비자를 만들지
+     *    않기 위한** 사본이다. 큐는 본선(mk_telem, 규격 §7.8)이 소비하고,
+     *    mk_cloud 는 이 사본과 카운터만 읽는다. 둘이 한 큐를 나눠 먹으면
+     *    어느 쪽 레코드든 절반씩 사라진다. */
+    MkGnssFix last_fix;
+    int       have_last_fix;
+    uint32_t  fix_count;       /* push 마다 증가 — "새 fix" 판정용 */
 
     /* 측위 레코드 링. raw_q 와 같은 관례(head = 다음에 쓸 자리). */
     MkGnssFix fix_q[MK_GNSS_FIX_QUEUE_CAP];
@@ -216,6 +241,13 @@ int mk_gnss_any_sentence_seen(const MkGnss *g);
  *    비우고 이쪽은 텔레메트리(mk_telem)가 비운다 — 하나를 둘이 나눠 가지면
  *    먼저 꺼낸 쪽만 값을 보고 다른 쪽은 영영 못 본다. */
 int mk_gnss_take_fix(MkGnss *g, MkGnssFix *out);
+
+/* 마지막 fix 의 사본 (클라우드 직렬화용, 2026-08-21). 큐를 소비하지
+ * 않는다 — 큐의 소비자는 본선(mk_telem) 하나뿐이다(MkGnss.last_fix 주석).
+ * 있으면 1. `mk_gnss_fix_count()` 가 push 누적 수 — 값이 변했으면 새
+ * fix 가 있었다는 뜻이다. */
+int mk_gnss_last_fix(const MkGnss *g, MkGnssFix *out);
+uint32_t mk_gnss_fix_count(const MkGnss *g);
 
 /* 도-분(`ddmm.mmmmmmmm`) 문자열을 1e-8 도 정수로. 부동소수를 쓰지 않는다.
  *

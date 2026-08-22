@@ -534,9 +534,13 @@ static void test_mlx90614_read_accepts_a_pec_valid_frame(void)
     CHECK(rc == 0, "PEC 가 맞으면 읽기가 성공한다");
     CHECK(n == 1 && strcmp(v[0].quantity, "temp_object") == 0, "quantity 는 temp_object");
     CHECK(n == 1 && v[0].value > 28.74f && v[0].value < 28.76f, "28.75°C 로 환산된다");
-    CHECK(MLX.n == 1 && MLX.ntx[0] == 1u && MLX.nrx[0] == 3u,
-          "명령 1바이트 쓰고 repeated start 로 3바이트 읽는다");
-    CHECK(MLX.n == 1 && MLX.first_tx[0] == 0x07u, "명령은 RAM 0x07(Tobj1)");
+    /* 🔴 [2026-08-22] 주변 온도(Ta, RAM 0x06)도 이어 읽는다 — 젯슨 링크
+     *    선택 필드 temp_ambient. 이 가짜 버스는 Tobj 프레임만 주므로 Ta
+     *    쪽 PEC 는 어긋나고, 그때 본값(Tobj)이 그대로 살아남는 것까지
+     *    위의 n==1 검사들이 함께 확인한다. */
+    CHECK(MLX.n == 2 && MLX.ntx[0] == 1u && MLX.nrx[0] == 3u,
+          "명령 1바이트 쓰고 repeated start 로 3바이트 읽는다 (Ta 포함 2회)");
+    CHECK(MLX.first_tx[0] == 0x07u, "첫 명령은 RAM 0x07(Tobj1)");
 }
 
 /* 🔴 PEC 를 반드시 본다 — 한 바이트만 틀려도 거부해야 한다. */

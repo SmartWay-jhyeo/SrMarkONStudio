@@ -12,6 +12,7 @@
 
 #include "mk_ads_io.h"
 #include "mk_gnss_io.h"
+#include "mk_jet.h"
 #include "mk_lcd_io.h"
 #include "mk_sol.h"
 #include "mk_uart.h"
@@ -114,6 +115,13 @@ void DMA1_Stream3_IRQHandler(void)   /* SPI2 TX — LCD */
 void DMA2_Stream0_IRQHandler(void)   /* USART3 TX — 호스트 링크 */
 {
     mk_uart_dma_isr();
+}
+
+/* 🔴 젯슨 링크 송신(USART2 TX — J29). 본선과 같은 이유로 이 벡터가 없으면
+ *    첫 조각만 나가고 미러가 통째로 선다. */
+void DMA2_Stream1_IRQHandler(void)   /* USART2 TX — 젯슨 미러 */
+{
+    mk_jet_dma_isr();
 }
 
 /* 🔴 SPI4 와 같은 이유로 SPI2 자신의 인터럽트도 필요하다 — H7 은 전송

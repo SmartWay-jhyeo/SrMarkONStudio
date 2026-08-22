@@ -252,9 +252,11 @@ static void test_field_masks_are_split_per_record_kind(void)
 {
     setup();
     struct { const char *key; uint8_t kind; } cases[] = {
-        { "tx.fields_ain", MK_FIELD_AIN },
-        { "tx.fields_i2c", MK_FIELD_I2C },
-        { "tx.fields_din", MK_FIELD_DIN },
+        { "tx.fields_ain",  MK_FIELD_AIN  },
+        { "tx.fields_i2c",  MK_FIELD_I2C  },
+        { "tx.fields_din",  MK_FIELD_DIN  },
+        { "tx.fields_gnss", MK_FIELD_GNSS },
+        { "tx.fields_imu",  MK_FIELD_IMU  },   /* [2026-08-22] 젯슨 imu 레코드 */
     };
     for (size_t c = 0; c < sizeof cases / sizeof *cases; c++) {
         MkCfgItem *it = mk_cfg_find(&CFG, cases[c].key);

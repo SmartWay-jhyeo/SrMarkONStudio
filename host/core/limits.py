@@ -18,6 +18,18 @@
 # firmware/stage1/app/mk_framing.h 의 MK_LINE_MAX
 MAX_PAYLOAD_BYTES = 192
 
+# 텔레메트리 레코드(JSON 본문, 줄바꿈 제외)가 전선에 나갈 수 있는 상한.
+#
+# 🔴 mk_telem.c 의 모든 송신부가 `char body[MK_LINE_MAX + 8]` 에 줄을 짓고
+#    `len + 2 > sizeof body` 면 **통째로 버린다**(반쪽 JSON 을 내보내지
+#    않는 정책) — 즉 JSON 은 MK_LINE_MAX + 6 바이트까지만 나간다.
+#
+#    이 수를 넘는 필드 조합을 고르면 그 레코드는 조용히 전부 사라진다.
+#    실기기에서 겪었다(2026-08-21) — ain 필드를 전부 켜자 젯슨과 GUI
+#    양쪽에서 아날로그가 멈췄고, 원인은 GDB 로 송신 링을 덤프해서야
+#    보였다. 그래서 화면(field_budget)이 켜기 전에 이 상한으로 막는다.
+TELEM_RECORD_JSON_MAX = MAX_PAYLOAD_BYTES + 6
+
 # MK_VERB_MAX
 MAX_VERB_BYTES = 12
 

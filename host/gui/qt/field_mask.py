@@ -19,7 +19,8 @@ from PyQt6.QtWidgets import (
 
 from host.gui.field_budget import budget_message
 from host.gui.qt.parts import card_title, hairline
-from host.gui.settings_form import LOCKED_FIELD_LABELS, LOCKED_FIELDS, Row
+from host.gui.settings_form import (FIELD_SUBSECTIONS, LOCKED_FIELD_LABELS,
+                                    LOCKED_FIELDS, Row)
 from host.gui.theme import Color, Font, Space
 
 
@@ -78,23 +79,31 @@ class FieldMaskCard(QFrame):
         own_bits = {bit: info for bit, info in fields.items()
                    if record_kind in getattr(info, "records", ())}
 
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(Space.XL)
-        grid.setVerticalSpacing(Space.XS)
-        # 비트 순서대로 — 보드가 정한 순서다. 두 열로 접어 세로를 아낀다.
-        bits = sorted(own_bits)
-        locked = LOCKED_FIELDS.get(record_kind, ())
-        n_rows = len(bits) + len(locked)
-        half = (n_rows + 1) // 2
-        n = 0
-        for bit in bits:
-            info = own_bits[bit]
+        # 소구획 (2026-08-22 사용자 요청 — "I2C 는 센서별로 나눠야") —
+        # 특정 센서 전용 비트는 그 센서 이름 아래 따로 그린다. 마스크는
+        # 하나다(설정 폼의 FIELD_SUBSECTIONS 주석).
+        subsections = FIELD_SUBSECTIONS.get(record_kind, ())
+        sectioned_names = {name for _, names in subsections for name in names}
+        common_bits = [b for b in sorted(own_bits)
+                       if own_bits[b].name not in sectioned_names]
+
+        def make_box(bit, info):
             box = QCheckBox(getattr(info, "label", "") or info.name)
             box.setToolTip(f"{info.name}  ·  bit {bit}")
             box.setEnabled(row.editable)
             box.toggled.connect(self._emit)
             self._boxes[bit] = box
-            grid.addWidget(box, n % half, n // half)
+            return box
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(Space.XL)
+        grid.setVerticalSpacing(Space.XS)
+        locked = LOCKED_FIELDS.get(record_kind, ())
+        n_rows = len(common_bits) + len(locked)
+        half = (n_rows + 1) // 2
+        n = 0
+        for bit in common_bits:               # 비트 순서 — 보드가 정한 순서
+            grid.addWidget(make_box(bit, own_bits[bit]), n % half, n // half)
             n += 1
         # 🔴 잠긴 필드 — 항상 켜진 채 비활성화한 상자로 그린다. 목록에서
         #    빼지 않는다(위 클래스 주석의 이유).
@@ -106,6 +115,24 @@ class FieldMaskCard(QFrame):
             grid.addWidget(box, n % half, n // half)
             n += 1
         grid.setColumnStretch(2, 1)
+
+        self._section_rows = []               # (제목 라벨, [비트]) — 시험용
+        for title, names in subsections:
+            sec_bits = [b for b in sorted(own_bits)
+                        if own_bits[b].name in names]
+            if not sec_bits:
+                continue                       # 보드가 그 비트를 안 주면 구획도 없다
+            label = QLabel(title)
+            label.setStyleSheet(
+                f"font-size: {Font.SIZE_SM}pt; color: {Color.INK_DIM};"
+                f" font-weight: 600;")
+            sec = QGridLayout()
+            sec.setHorizontalSpacing(Space.XL)
+            sec.setVerticalSpacing(Space.XS)
+            for i, bit in enumerate(sec_bits):
+                sec.addWidget(make_box(bit, own_bits[bit]), 0, i)
+            sec.setColumnStretch(len(sec_bits), 1)
+            self._section_rows.append((label, sec))
 
         self._preview = QLabel("")
         self._preview.setWordWrap(True)
@@ -122,6 +149,10 @@ class FieldMaskCard(QFrame):
         col.addWidget(card_title(row.label))
         col.addWidget(hairline())
         col.addLayout(grid)
+        for label, sec in self._section_rows:
+            col.addSpacing(Space.XS)
+            col.addWidget(label)
+            col.addLayout(sec)
         col.addSpacing(Space.XS)
         col.addWidget(card_title("나갈 줄"))
         col.addWidget(self._preview)

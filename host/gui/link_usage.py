@@ -68,10 +68,21 @@ KIND_LABELS: dict[str, str] = {
     "i2c": "I2C",
     "din": "디지털",
     "gnss": "GNSS",
+    "imu": "IMU",
 }
 
 #: 초당 줄 수를 알 수 없는 종류 — 보드가 **일이 생길 때** 보낸다(규격 §7.6).
 EVENT_KINDS: tuple[str, ...] = ("din",)
+
+#: 젯슨 링크(J29, USART2)로만 나가는 종류 (규격 §7.2 비트 21 주석).
+#:
+#: 🔴 호스트 링크 요약 표에 넣지 않는다 — 이 선을 한 바이트도 안 쓰는데
+#:    합산하면 "무엇을 꺼야 % 가 주는가" 에 틀린 답을 준다. 카드의 % 는
+#:    젯슨 링크의 고정 속도로 잰다.
+JETSON_KINDS: tuple[str, ...] = ("imu",)
+
+#: 젯슨 링크 속도 — 펌웨어 bsp 가 921600 으로 고정한다(설정이 아니다).
+JETSON_BAUD = 921600
 
 #: 요약을 띄울 설정 그룹들 = 채널·포트를 **켜고 끄는** 자리.
 #:
@@ -203,6 +214,10 @@ def record_budget(form: SettingsForm, kind: str, baud: int) -> Budget:
        계산하면 언젠가 한쪽만 고쳐지고, 그때 두 화면이 다른 수를 말한다.
     """
     shape = record_shape(form, kind)
+    if kind in JETSON_KINDS:
+        # 이 레코드는 호스트 링크를 타지 않는다 — `link.baud` 로 재면
+        # 있지도 않은 트래픽을 이 선에 얹는 셈이다(모듈 위 주석).
+        baud = JETSON_BAUD
     return compute_budget(record_line(form, kind),
                           channels_enabled=shape.channels,
                           period_ms=shape.period_ms, baud=baud)
@@ -241,6 +256,8 @@ def compute_usage(form: SettingsForm,
     total = 0.0
     unmeasured: list[str] = []
     for kind in FIELD_MASK_KEYS:
+        if kind in JETSON_KINDS:
+            continue        # 이 선을 안 쓴다 — 모듈 위 `JETSON_KINDS` 주석
         shape = record_shape(form, kind)
         budget = record_budget(form, kind, baud)
         event = kind in EVENT_KINDS

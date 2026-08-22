@@ -42,9 +42,13 @@ def test_capacity_scales_with_baud():
 # ----------------------------------------------------------------- 표본 줄
 
 def test_sample_always_carries_the_fields_that_cannot_be_turned_off():
-    """규격 §7.1 — `schema_ver` · `seq` · `t` · `type` 은 마스크로 못 끈다."""
+    """규격 §7.1 — `schema_ver` · `seq` · `t` · `type` 은 마스크로 못 끈다.
+
+    🔴 [개정 2026-08-21] `connector_id` 도 ain 의 잠긴 필드가 됐다(규격
+       §7.2) — 채널이 빠진 다채널 레코드는 아무 말도 안 한다.
+    """
     rec = sample_record([])
-    assert set(rec) == {"schema_ver", "seq", "t", "type"}
+    assert set(rec) == {"schema_ver", "seq", "t", "type", "connector_id"}
 
 
 def test_sample_carries_exactly_what_was_selected():
@@ -89,10 +93,15 @@ def test_sample_record_locks_din_connector_id_and_state():
 
 
 def test_sample_record_defaults_to_ain_and_has_no_extra_locked_fields():
-    """옛 호출부(record_type 생략)는 예전과 똑같이 ain 만 만든다."""
+    """옛 호출부(record_type 생략)는 예전과 똑같이 ain 만 만든다.
+
+    🔴 connector_id 는 이제 ain 의 잠긴 필드라(§7.2 개정 2026-08-21)
+       기본 표본에도 실린다 — i2c 전용 잠금(quantity)만 빠져 있으면 된다.
+    """
     rec = sample_record([])
     assert rec["type"] == "ain"
-    assert "quantity" not in rec and "connector_id" not in rec
+    assert "quantity" not in rec
+    assert "connector_id" in rec
 
 
 def test_sample_is_not_optimistic_about_width():
@@ -286,3 +295,67 @@ def test_all_fields_on_is_measurable():
 # 🔴 `test_imports_no_qt` 는 여기서 걷어냈다. 파일마다 손으로 복사한
 #    문자열 검사였고, 그러다 보니 정작 `screen.py`·`theme.py` 에는
 #    없었다. 지금은 `test_layer_boundaries.py` 가 층 전체를 AST 로 훑는다.
+
+
+# ------------------------------------------------------- 한 줄 상한 (보드가 버림)
+
+def test_all_ain_fields_overflow_the_record_limit_and_the_message_says_dropped():
+    """전부 켜면 한 줄이 보드 상한을 넘고, 화면이 "통째로 버려진다"고
+    말해야 한다.
+
+    🔴 실기기에서 겪었다 (2026-08-21). ain 필드를 전부 켜자 ain 레코드가
+       **조용히 전부 사라졌다** — 펌웨어의 모든 송신부(mk_telem.c)가 상한을
+       넘는 줄을 반쪽 JSON 방지를 위해 통째로 버리는데, 화면은 대역폭만
+       경고하고 줄 상한은 말하지 않았다. 젯슨과 GUI 양쪽에서 아날로그가
+       멈춘 것으로 나타났고 원인을 GDB 로 링을 덤프해서야 찾았다.
+    """
+    from host.tests.fake_board import build_ain_record, fake_store
+
+    store = fake_store()
+    store.set("tx.fields_ain", str(int(store.items["tx.fields_ain"].maximum)))
+    rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
+                           raw=8388608, capture_counter=123456789)
+    b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=921600)
+    assert b.record_dropped
+    level, msg = budget_message(b)
+    assert level == "fault"
+    assert "버려진다" in msg
+
+
+def test_a_modest_selection_is_not_reported_dropped():
+    """평범한 조합은 상한 안이고, 버림 경고가 나오면 안 된다 — 늑대야
+    소리가 잦으면 진짜 늑대를 놓친다."""
+    rec = _rec(connector_id=3, ma=19.9999, value=1234.5678, unit="L/min",
+               status=0, time_source="device_clock")
+    b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=921600)
+    assert not b.record_dropped
+    level, msg = budget_message(b)
+    assert level == "ok"
+    assert "버려진다" not in msg
+
+
+def test_record_limit_matches_the_firmware_drop_rule():
+    """상한 값이 펌웨어의 버림 조건에서 파생된 그대로인지.
+
+    mk_telem.c 의 모든 송신부가 `char body[MK_LINE_MAX + 8]` 에 짓고
+    `len + 2u > sizeof body` 면 버린다 — 즉 JSON 은 MK_LINE_MAX + 6 까지만
+    전선에 나간다. 펌웨어 쪽 패턴이 바뀌면 이 시험이 파생을 다시 보라고
+    말한다.
+    """
+    import re
+    from pathlib import Path
+
+    from host.core.limits import MAX_PAYLOAD_BYTES, TELEM_RECORD_JSON_MAX
+
+    assert TELEM_RECORD_JSON_MAX == MAX_PAYLOAD_BYTES + 6
+
+    src = (Path(__file__).resolve().parents[2]
+           / "firmware" / "stage1" / "app" / "mk_telem.c"
+           ).read_text(encoding="utf-8")
+    bodies = re.findall(r"char body\[MK_LINE_MAX \+ (\d+)\]", src)
+    assert bodies and all(n == "8" for n in bodies), (
+        "mk_telem.c 의 body 크기가 바뀌었다 — TELEM_RECORD_JSON_MAX 파생을 "
+        "다시 확인할 것")
+    assert "len + 2u > sizeof body" in src, (
+        "mk_telem.c 의 버림 조건이 바뀌었다 — TELEM_RECORD_JSON_MAX 파생을 "
+        "다시 확인할 것")

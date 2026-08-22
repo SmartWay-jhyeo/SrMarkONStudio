@@ -11,11 +11,22 @@ from host.service.board_service import SerialTransport, BoardService
 
 # (키, 값, 무엇인가)
 PLAN = [
+    # 🔴 tx.period_ms 는 기본값(100ms)을 그대로 쓴다 (사용자 결정 2026-08-22).
+    #    대신 100ms×6채널을 아무도 안 읽으면 F103 브리지가 몇 분 만에 굳는다
+    #    (같은 날 실증) — 보드를 켜 두는 동안은 GUI 든 뭐든 COM23 을 읽는
+    #    쪽을 붙여 둘 것.
     ("pwr.24v",       "true",   "4~20mA 루프 전원 — 없으면 J3 이 0mA 로 보인다"),
     ("ain0.zero",     "4.0",    "J3 유압 (ain0 = J3, 0부터 세는 채널 번호)"),
     ("ain0.scale",    "15.625", "0~250 bar / 16 mA"),
     ("ain0.unit",     "bar",    ""),
     ("ain0.enabled",  "true",   ""),
+    # [2026-08-22] 실기기에 유압 3개(J3~J5)·유량 3개(J6~J8)가 물렸다.
+    # 영점·눈금·타입 배정은 사용자가 별도 지시 예정 — 켜기만 한다.
+    ("ain1.enabled",  "true",   "J4 유압"),
+    ("ain2.enabled",  "true",   "J5 유압"),
+    ("ain3.enabled",  "true",   "J6 유량"),
+    ("ain4.enabled",  "true",   "J7 유량"),
+    ("ain5.enabled",  "true",   "J8 유량"),
     ("i2c12.kind",    "3",      "J12 MLX90614 적외 온도"),
     ("i2c12.addr",    "90",     "0x5A"),
     ("i2c12.enabled", "true",   ""),
@@ -24,6 +35,7 @@ PLAN = [
     ("i2c13.enabled", "true",   ""),
     ("gnss.enabled",  "true",   "UM981"),
     ("gnss.echo",     "false",  "원문 에코 끔 — gnss 정식 레코드가 있고, 안 읽는 구간의 브리지 버퍼 압력을 줄인다"),
+    ("gnss.imu",      "true",   "UM981 RAWIMUX 10Hz → 젯슨 imu 레코드"),
     ("lcd.enabled",   "true",   "J25 ILI9488 화면"),
     ("ain0.name",     "유압",     "커넥터 이름 — 대시보드·스트림에 보인다"),
     ("i2c12.name",    "적외온도", ""),

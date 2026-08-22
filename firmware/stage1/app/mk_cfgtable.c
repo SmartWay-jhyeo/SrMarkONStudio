@@ -60,20 +60,32 @@ static const char *const I2C_KIND_LABELS[] = {
     "없음", "조도", "온습도", "적외 온도", "방수 온도"
 };
 
+/* 클라우드 타입 선택 (설계 2026-08-21 §4.2). 🔴 전선의 계약 문자열
+ * (pressure_paint 등)은 여기가 아니라 mk_cloud.c 의 표가 정한다 — 화면
+ * 이름표와 전선 이름을 한 곳에 섞으면 §7.3 의 이름표 규칙이 깨진다. */
+static const uint32_t AIN_CLOUD_CHOICES[] = { 0u, 1u, 2u, 3u };
+static const char *const AIN_CLOUD_LABELS[] = {
+    "없음", "도료 분사압", "유리알 분사압", "유량"
+};
+
+/* (밸브 입력 선택은 2026-08-22 에 걷어냈다 — 좌·우 밸브가 어느 입력에서
+ * 올지 모르는 현장 구성이라, 밸브 상태는 **디지털 입력들의 OR** 로
+ * 합성한다(사용자 확정). mk_cloud.c 의 cloud_valve_state 참고.) */
+
 /* dev 1 + tx 6(마스크 4 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
  * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
  * + link 1(호스트 링크 속도)
  * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기) */
-#define ITEM_COUNT   (1 + 6 + 4 + 2 + MK_AIN_COUNT * 6 \
+#define ITEM_COUNT   (1 + 8 + 4 + 2 + MK_AIN_COUNT * 7 \
                       + 1 \
                       + 3 + MK_LED_COUNT * 3 \
                       + MK_I2C_COUNT * 6 \
-                      + 3 + 3 \
+                      + 4 + 3 \
                       + 1 \
                       + 5)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
-#define GEN_COUNT    (MK_AIN_COUNT * 6 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 6 + 3)
+#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 6 + 3)
 
 static MkCfgItem s_items[ITEM_COUNT];
 
@@ -156,14 +168,31 @@ static const MkFieldBit FIELDS[] = {
     { 6, "unit",            0, "단위",                 MK_FIELD_AIN },
     { 7, "status",          1, "채널 상태",  MK_FIELD_AIN | MK_FIELD_I2C },
     { 8, "capture_counter", 0, "획득 카운터",          MK_FIELD_AIN },
-    { 9, "connector_id",    1, "커넥터 번호",
-      MK_FIELD_AIN | MK_FIELD_I2C },
+    /* 🔴 비트 9 는 connector_id 였으나 2026-08-21 잠금으로 회수됐다 —
+     *    이제 마스크와 무관하게 항상 실린다(규격 §7.2·§7.5, mk_telem.c).
+     *    저장된 옛 마스크에 서 있는 비트 9 는 무해하게 무시된다.
+     *    **다른 필드에 재사용하지 않는다** — 옛 마스크가 그 필드를
+     *    멋대로 켠다. */
     { 10, "alt",            1, "고도 (m)",             MK_FIELD_GNSS },
     { 11, "sats",           1, "위성 수",              MK_FIELD_GNSS },
     { 12, "fix",            1, "측위 품질",            MK_FIELD_GNSS },
     { 13, "hdop",           0, "HDOP",                 MK_FIELD_GNSS },
     { 14, "speed",          0, "대지 속도 (m/s)",      MK_FIELD_GNSS },
     { 15, "course",         0, "대지 방위 (도)",       MK_FIELD_GNSS },
+    /* 🔴 [2026-08-22] 젯슨 링크 필드 확장 (사용자 지시 — "기존 NDJSON 필드
+     *    선택 화면에서 원하는 필드를 조절"). 체크박스는 이 표에서 저절로
+     *    생긴다. valve 는 좌·우 밸브 입력의 OR 태깅, 주변 온도는 적외
+     *    (MLX90614) 전용, 이슬점은 온습도(AM2320) 전용 — 해당 없는 포트의
+     *    레코드에는 켜도 안 실린다. 자세한 반영처는 mk_cloud.c. */
+    { 16, "valve",          0, "밸브",                 MK_FIELD_AIN | MK_FIELD_I2C },
+    { 17, "diff_age",       0, "보정 나이 (s)",        MK_FIELD_GNSS },
+    { 18, "station_id",     0, "기준국",               MK_FIELD_GNSS },
+    { 19, "temp_ambient",   0, "주변 온도 (적외)",     MK_FIELD_I2C },
+    { 20, "dewpoint",       0, "이슬점 (온습도)",      MK_FIELD_I2C },
+    /* imu 레코드의 선택 필드 (전송 화면의 IMU 카드 — 사용자 확정
+     * 2026-08-22 "IMU 도 GNSS 와 분리"). 값은 RAWIMUX status bit21~31
+     * × 0.125 + 23 °C. ax~gz 는 마스크 밖(항상 실림)이다. */
+    { 21, "imu_temp",       0, "IMU 온도",             MK_FIELD_IMU },
 };
 
 const MkFieldBit *mk_cfgtable_fields(size_t *count)
@@ -316,6 +345,18 @@ static size_t add_tx(size_t i)
     s_items[i].max = (float)max_u;
     i++;
 
+    /* 🔴 [신설, 2026-08-22] 다섯 번째 마스크 — imu 레코드(젯슨 링크,
+     *    UM981 RAWIMUX). GNSS 와 장치는 같지만 레코드가 다르다(사용자
+     *    확정 — "IMU 전송도 GNSS 와 분리"). ax~gz 는 마스크 밖이다. */
+    field_mask_bounds(MK_FIELD_IMU, &max_u, &def_u);
+    s_items[i] = (MkCfgItem){ .key = "tx.fields_imu", .group = "tx",
+                              .vtype = MK_VT_U32, .min = 0,
+                              .has_min = 1, .has_max = 1,
+                              .label = "NDJSON 필드 마스크 (IMU)" };
+    s_items[i].def.u = def_u;
+    s_items[i].max = (float)max_u;
+    i++;
+
     s_items[i] = (MkCfgItem){ .key = "tx.period_ms", .group = "tx",
                               .vtype = MK_VT_U16, .min = 10, .max = 10000,
                               .has_min = 1, .has_max = 1,
@@ -331,6 +372,17 @@ static size_t add_tx(size_t i)
                               .has_min = 1, .has_max = 1,
                               .label = "실수 자릿수" };
     s_items[i].def.u = 4;
+    i++;
+    /* 🔴 젯슨(J29) NDJSON 의 schema_ver (사용자 요청 2026-08-22 — 공통
+     *    필드 중 값을 바꿀 수 있는 것은 스키마 버전·장치 식별자다.
+     *    장치 식별자는 기존 dev.id 를 그대로 쓴다). 본선(규격 v3)의
+     *    schema_ver 3 은 규격이 정하는 값이라 이 항목과 무관하다. */
+    s_items[i] = (MkCfgItem){ .key = "tx.schema_ver", .group = "tx",
+                              .vtype = MK_VT_U8, .min = 1, .max = 9,
+                              .has_min = 1, .has_max = 1,
+                              .label = "스키마 버전",
+                              .note = "젯슨 링크 레코드의 schema_ver" };
+    s_items[i].def.u = 1;
     i++;
     return i;
 }
@@ -449,6 +501,21 @@ static size_t add_ain(size_t i)
                                   .label = s_labels[k],
                                   .note = "비우면 커넥터 번호로 보인다" };
         i++;
+
+        /* 🔴 타입 — "이 채널의 센서가 NDJSON 에서 뭐라 불리는가"를
+         *    사용자가 정한다(사용자 확정 2026-08-21/22). 센서를 딴 커넥터로
+         *    옮기면 이 선택만 옮기면 된다 — 타입 이름이 채널을 따라가고,
+         *    펌웨어·젯슨·Cloud 어느 코드도 안 바뀐다. 없음 = 젯슨 링크
+         *    미발행 (계약 §16.6 — 미장착은 레코드 자체를 안 낸다).
+         *    전선 문자열 표는 mk_cloud.c 가 정한다. */
+        k = gen("ain", (unsigned)ch, ".cloud", jack, "타입");
+        s_items[i] = (MkCfgItem){ .key = s_keys[k], .group = "ain",
+                                  .vtype = MK_VT_ENUM,
+                                  .choices = AIN_CLOUD_CHOICES, .n_choices = 4,
+                                  .choice_labels = AIN_CLOUD_LABELS,
+                                  .label = s_labels[k],
+                                  .note = "젯슨으로 내보낼 레코드 타입" };
+        i++;
     }
     return i;
 }
@@ -524,6 +591,16 @@ static size_t add_gnss(size_t i)
         .label = "GNSS 원시 문장 에코",
         .note = "받은 줄을 그대로 텔레메트리로 올린다 — 진단용, 대역을 먹는다" };
     i++;
+    /* 🔴 UM981 내장 IMU (설계 2026-08-21 §4.8). 켜면 초기화 명령에
+     *    RAWIMUXA 가 추가되고 수신분이 클라우드 imu 레코드로 나간다.
+     *    자기계는 없다 — 계약 v1.7.0 이 지자기 3필드를 선택으로 완화했다. */
+    s_items[i] = (MkCfgItem){
+        .key = "gnss.imu", .group = "gnss", .vtype = MK_VT_BOOL,
+        .label = "IMU (UM981)",
+        .note = "가속도·자이로를 젯슨으로 내보낸다" };
+    i++;
+    /* (IMU 온도는 설정 항목이 아니라 **필드 비트**다 — FIELDS 표의
+     * "imu_temp". 사용자 확정 2026-08-22: "필드는 NDJSON 설정 탭에". ) */
     return i;
 }
 
@@ -783,6 +860,11 @@ static size_t add_i2c(size_t i)
             .max = 23, .has_max = 1, .label = s_labels[k],
             .note = "비우면 커넥터 번호로 보인다" };
         i++;
+
+        /* (i2c 의 젯슨 발행 여부는 별도 스위치가 없다 — `사용`이 켜져 있고
+         * 종류가 정해져 있으면 나간다. 타입은 종류가 정한다: 조도→light,
+         * 적외→temp_road, 온습도→temp_air+humidity. 2026-08-22 사용자
+         * 확정 — 클라우드 전용 항목을 두지 않는다.) */
     }
     return i;
 }

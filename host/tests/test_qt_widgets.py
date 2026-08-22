@@ -1022,3 +1022,23 @@ def test_dashboard_gnss_panel_stays_when_gnss_is_off(app):
     d.render(ScreenState(reachable=True))
     assert d._gnss._pos.text() == "위치 없음"
     assert "꺼짐" in d._gnss._quality.text()
+
+
+def test_i2c_field_card_groups_sensor_specific_bits(app, form):
+    """🔴 [2026-08-22 사용자 요청] I2C 필드 카드는 센서 전용 비트(적외의
+    주변 온도, 온습도의 이슬점)를 그 센서 이름 소구획으로 나눠 보여준다.
+    마스크는 여전히 하나다 — 표시만 나눈다(FIELD_SUBSECTIONS 주석)."""
+    from host.gui.qt.field_mask import FieldMaskCard
+
+    from host.gui.field_budget import compute_budget
+    budget = compute_budget({"schema_ver": 3}, channels_enabled=1,
+                            period_ms=100, baud=921600)
+    card = FieldMaskCard(form.row("tx.fields_i2c"), form.fields,
+                         lambda: ({"schema_ver": 3}, budget),
+                         record_kind="i2c")
+    titles = [label.text() for label, _ in card._section_rows]
+    assert "적외 온도" in titles
+    assert "온습도" in titles
+    # 구획으로 갔어도 마스크 상자에는 들어 있다 — 값 계산은 하나다.
+    names = {box.toolTip().split()[0] for box in card._boxes.values()}
+    assert "temp_ambient" in names and "dewpoint" in names

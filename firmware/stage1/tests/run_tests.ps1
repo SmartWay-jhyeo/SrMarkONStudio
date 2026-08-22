@@ -29,6 +29,8 @@ $suites = @(
     @{ exe = "test_railctl.exe";  src = "test_railctl.c ..\app\mk_railctl.c" },
     @{ exe = "test_cfgtable.exe"; src = "test_cfgtable.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c" },
     @{ exe = "test_telem.exe";    src = "test_telem.c ..\app\mk_telem.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ads1256.c ..\app\mk_queue.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c ..\app\mk_solctl.c ..\app\mk_timeax.c ..\app\mk_gnss.c" },
+    @{ exe = "test_cloud.exe";    src = "test_cloud.c ..\app\mk_cloud.c ..\app\mk_telem.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ads1256.c ..\app\mk_queue.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c ..\app\mk_solctl.c ..\app\mk_timeax.c ..\app\mk_gnss.c ..\app\mk_imu.c" },
+    @{ exe = "test_imu.exe";      src = "test_imu.c ..\app\mk_imu.c" },
     @{ exe = "test_ws2812.exe";   src = "test_ws2812.c ..\app\mk_ws2812.c" },
     @{ exe = "test_sol.exe";      src = "test_sol.c ..\app\mk_solctl.c ..\app\mk_queue.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
     @{ exe = "test_i2c.exe";      src = "test_i2c.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ws2812.c ..\app\mk_solctl.c ..\app\mk_queue.c" },

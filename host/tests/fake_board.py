@@ -60,6 +60,7 @@ FIELD_MASK_KEYS = {
     "i2c": "tx.fields_i2c",
     "din": "tx.fields_din",
     "gnss": "tx.fields_gnss",
+    "imu": "tx.fields_imu",
 }
 
 
@@ -301,8 +302,9 @@ def build_ain_record(store: FakeStore, *, channel: int, seq: int, t_ms: int,
 
     rec: dict = {"schema_ver": SCHEMA_VER, "seq": seq, "t": t_ms,
                  "type": "ain"}
-    if on("connector_id"):
-        rec["connector_id"] = channel + CONNECTOR_OFFSET
+    # 🔴 connector_id 는 마스크로 못 끈다(규격 §7.2 개정 2026-08-21) —
+    #    펌웨어 build_record 와 같은 자리.
+    rec["connector_id"] = channel + CONNECTOR_OFFSET
     if on("raw"):
         rec["raw"] = int(raw)               # 원본 — 반올림하지 않는다
     ma = raw_to_ma(raw)

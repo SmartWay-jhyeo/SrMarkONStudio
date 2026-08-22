@@ -47,6 +47,9 @@
 #include "mk_hostlink.h"
 #include "app/mk_linkbaud.h"
 #include "mk_uart.h"
+#include "bsp/mk_jet.h"
+#include "app/mk_cloud.h"
+#include "app/mk_imu.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -125,6 +128,15 @@ static void emit_telem(void *ctx, const char *line, size_t len)
     mk_uart_write_bulk(line, len);
 }
 
+/* 젯슨(J29) 링크 — Cloud 계약을 말하는 mk_cloud 의 출구.
+ * (2026-08-21 까지는 여기가 본선 텔레메트리의 바이트 미러였다 — 결선
+ * 검증용이었고, 이제 mk_cloud 가 대체했다.) */
+static void emit_cloud(void *ctx, const char *line, size_t len)
+{
+    (void)ctx;
+    mk_jet_write(line, len);
+}
+
 /* mk_hostlink 가 카탈로그를 **이어서** 내보낼 때 부른다.
  *
  * 🔴 [신설, 2026-08-20] 위 emit 과의 차이가 이번 결함의 고침 자리다.
@@ -149,6 +161,8 @@ static MkGnss    s_gnss;
 static MkGnssCtl s_gnssctl;
 static MkTimeAx  s_timeax;
 static MkLcd     s_lcd;
+static MkCloud   s_cloud;
+static MkImu     s_imu;
 static MkScreen  s_screen;
 static MkLinkBaud s_linkbaud;
 static int      s_led_on;
@@ -451,6 +465,11 @@ int main(void)
         mk_uart_init(mk_linkbaud_active(&s_linkbaud));
     }
 
+    /* 🔴 젯슨 링크(USART2 미러 + PA1 하트비트, 2026-08-21). 결선돼 있지
+     *    않아도 무해하다 — TX 뿐이라 아무도 안 들으면 바이트가 사라질
+     *    뿐이다(설계 원칙 3 과 같은 결). baud 는 MK_JET_BAUD 고정. */
+    mk_jet_init();
+
     MkHostlink link;
     mk_hostlink_init(&link, emit, NULL, DEVICE_ID, FW_VERSION, BOARD_REV);
 
@@ -543,6 +562,15 @@ int main(void)
                   DEVICE_ID);
     mk_telem_attach_i2c(&s_telem, &s_i2c);
     mk_telem_attach_sol(&s_telem, &s_sol);
+
+    /* 🔴 젯슨(J29) 링크의 직렬화기 — mk_telem 의 병렬 소비자다. 같은
+     *    수집원을 읽기만 하고 본선 출력에는 관여하지 않는다(app/mk_cloud.h,
+     *    설계 2026-08-21). */
+    mk_cloud_init(&s_cloud, &s_cfg, &s_ads, DEVICE_ID, FW_VERSION);
+    mk_cloud_attach_i2c(&s_cloud, &s_i2c);
+    mk_cloud_attach_sol(&s_cloud, &s_sol);
+    mk_imu_init(&s_imu);
+    mk_cloud_attach_imu(&s_cloud, &s_imu);
     mk_hostlink_attach_rails(&link, &s_rails);
     mk_hostlink_attach_sol(&link, &s_sol);
 
@@ -561,6 +589,8 @@ int main(void)
     mk_gnss_init(&s_gnss);
     mk_timeax_init(&s_timeax);
     mk_telem_attach_timeax(&s_telem, &s_timeax);
+    mk_cloud_attach_gnss(&s_cloud, &s_gnss);
+    mk_cloud_attach_timeax(&s_cloud, &s_timeax);
     mk_hostlink_attach_timeax(&link, &s_timeax);
     /* 🔴 $GNSS(규격 §4.1) 와 원시 문장 에코(규격 §7.7) — 둘 다 UART6 가
      *    이미 열려 있어야 뜻이 있으므로 mk_gnss_io_init() 뒤에 놓는다. */
@@ -686,6 +716,10 @@ int main(void)
         uint8_t gnss_byte;
         while (mk_gnss_io_read_byte(&gnss_byte)) {
             mk_gnss_feed(&s_gnss, gnss_byte);
+            /* 🔴 같은 바이트를 IMU 조립기에도 준다 — RAWIMUX('#')는 NMEA
+             *    ('$')와 다른 형식이라 조립기가 따로다(app/mk_imu.h). 서로
+             *    남의 문장은 무시하므로 한 흐름을 나눠 먹어도 안전하다. */
+            mk_imu_feed(&s_imu, gnss_byte, now);
         }
 
         uint64_t gnss_now_us = mk_gnss_io_now_us();
@@ -712,12 +746,17 @@ int main(void)
          *    UART 를 갉아먹으면 안 된다). */
         {
             MkCfgItem *en = mk_cfg_find(&s_cfg, "gnss.enabled");
+            MkCfgItem *imu = mk_cfg_find(&s_cfg, "gnss.imu");
+            mk_gnssctl_set_imu(&s_gnssctl, imu != NULL && imu->cur.u);
             mk_gnssctl_tick(&s_gnssctl, en != NULL && en->cur.u,
                             mk_gnss_any_sentence_seen(&s_gnss), now,
                             mk_gnss_io_write, NULL);
         }
 
         mk_telem_tick(&s_telem, now, emit_telem, NULL);
+        /* 🔴 젯슨(J29) 링크 — 규격 v3 가 아니라 Cloud 계약(v1.7.0)을 말한다
+         *    (app/mk_cloud.h). 2026-08-21 부터 미러가 아니다. */
+        mk_cloud_tick(&s_cloud, now, emit_cloud, NULL);
 
         /* 살아 있음 표시. 모드에 따라 주기를 바꿔 눈으로 구분한다.
          *   RUN    2초에 한 번 (느리게)
@@ -733,6 +772,11 @@ int main(void)
             s_led_on = !s_led_on;
             mk_rails_led(s_led_on);
         }
+
+        /* 젯슨 워치독용 하트비트 — PA1 을 1 Hz 로 토글한다. 젯슨이 이
+         * 엣지를 일정 시간 못 보면 NRST 로 보드를 리셋한다(사용자 설계
+         * 2026-08-21, HANDOFF.md §7.4). */
+        mk_jet_hb_tick();
     }
 }
 

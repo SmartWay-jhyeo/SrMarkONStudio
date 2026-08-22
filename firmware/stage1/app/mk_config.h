@@ -26,7 +26,11 @@
  *    제 일을 한 것이다. 여유를 두고 올린다: 112 × 24 + 32 = 2,720 이라
  *    MK_CFG_BLOB_MAX(4096) 안이고, main.c 의 s_blob 도 2,688 바이트로
  *    남는다. */
-#define MK_CFG_MAX_ITEMS   128
+/* 🔴 128 -> 160 [2026-08-21]. 클라우드 링크 설정(ain{n}.cloud·valve_tag,
+ *    i2c1x.cloud·valve_tag, cloud.valve, gnss.imu — 설계 2026-08-21 §5)으로
+ *    항목이 103 -> 131 이 되어 128 을 넘었다. 블롭 예산은 그대로 안이다 —
+ *    160 × 24 B = 3,840 ≤ MK_CFG_BLOB_MAX(4096). */
+#define MK_CFG_MAX_ITEMS   160
 #define MK_CFG_KEY_MAX     MK_ARG_MAX
 #define MK_CFG_STR_MAX     MK_ARG_MAX
 

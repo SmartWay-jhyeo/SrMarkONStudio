@@ -173,9 +173,12 @@ static int build_record(MkTelem *t, int ch, const MkSample *s,
 
     /* 순서는 규격 §7.2 의 표 순서 = 시뮬레이터가 담는 순서다. 두 카탈로그를
      * 나란히 놓고 볼 일이 많으므로 맞춰 둔다. */
-    if (field_on(t, mask, "connector_id", kind)) {
-        mk_json_u32(&j, "connector_id", (uint32_t)(ch + CONNECTOR_OFFSET));
-    }
+    /* 🔴 connector_id 는 마스크로 끌 수 없다 (규격 §7.2 개정 2026-08-21).
+     *    채널이 빠진 다채널 레코드는 아무 말도 안 한다 — 실기기에서
+     *    사용자가 이 필드를 끄자 대시보드는 레코드를 어느 카드에 붙일지
+     *    몰라 버렸고, 스트림 필터는 커넥터 없는 줄을 장비 전체 소속으로
+     *    취급해 격리가 흐려졌다. i2c 의 quantity·value 와 같은 자리다. */
+    mk_json_u32(&j, "connector_id", (uint32_t)(ch + CONNECTOR_OFFSET));
     if (field_on(t, mask, "raw", kind)) {
         /* 🔴 원본이다. ma·value 는 반올림된 파생값이므로, 정밀도가 필요한
          *    분석은 이것을 쓴다 (규격 §7.2). */
@@ -379,9 +382,9 @@ static int build_i2c_record(MkTelem *t, const MkI2cOut *o,
     mk_json_i64(&j, "t", acquired_epoch_ms(t, o->t_ms));
     mk_json_str(&j, "type", "i2c");
 
-    if (field_on(t, mask, "connector_id", kind)) {
-        mk_json_u32(&j, "connector_id", (uint32_t)o->connector_id);
-    }
+    /* 🔴 connector_id 도 마스크로 끌 수 없다 (규격 §7.5 개정 2026-08-21) —
+     *    ain 의 build_record 와 같은 근거. */
+    mk_json_u32(&j, "connector_id", (uint32_t)o->connector_id);
     /* 🔴 quantity·value 는 마스크로 끌 수 없다 (규격 §7.5). 둘이 빠지면
      *    레코드가 아무 말도 안 한다. */
     mk_json_str(&j, "quantity", o->quantity ? o->quantity : "");
@@ -697,6 +700,16 @@ int mk_telem_tick(MkTelem *t, int64_t now_ms, MkTelemEmit emit, void *ctx)
             for (unsigned k = 0; k < MK_I2C_VALUES_MAX && sent_i2c < MK_TELEM_MAX_LINES; k++) {
                 MkI2cOut o;
                 if (!mk_i2c_last(t->i2c, p, k, &o)) {
+                    continue;
+                }
+                /* 🔴 주변 온도(적외 Ta)는 선택 필드다(2026-08-22) — 마스크
+                 *    비트가 꺼져 있으면 본선에도 안 싣는다. 켜기 전의
+                 *    화면·저장에 낯선 수량이 불쑥 나타나지 않게 하려는
+                 *    게이트다(젯슨 링크는 mk_cloud 가 같은 비트를 본다). */
+                if (o.quantity != NULL &&
+                    strcmp(o.quantity, "temp_ambient") == 0 &&
+                    !field_on(t, cfg_u32(t->cfg, "tx.fields_i2c", 0u),
+                              "temp_ambient", MK_FIELD_I2C)) {
                     continue;
                 }
                 char body[MK_LINE_MAX + 8];

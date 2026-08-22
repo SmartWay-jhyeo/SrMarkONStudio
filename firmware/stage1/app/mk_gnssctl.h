@@ -38,9 +38,17 @@ typedef struct MkGnssCtl {
     int      done;                 /* sentence_seen 이 되어 더 안 보낸다 */
     int      sentence_seen_cached; /* 마지막 tick 이 받은 sentence_seen 값 —
                                      * $STAT 조회용(mk_gnssctl_sentence_seen) */
+    int      imu_enabled;          /* 켜지면 초기화 명령에 RAWIMUXA 가 붙는다
+                                     * (클라우드 설계 2026-08-21 §4.8) */
 } MkGnssCtl;
 
 void mk_gnssctl_init(MkGnssCtl *c);
+
+/* UM981 내장 IMU 출력을 함께 요구할지 (gnss.imu 설정). tick 시그니처를
+ * 안 바꾸려고 세터로 뺐다 — 값이 초기화 명령 묶음의 내용만 바꾼다.
+ * 🔴 이미 명령을 다 보낸 뒤(done)에 켜면 다음 enabled 재시작 때 반영된다
+ * — 설정을 바꾸면 GUI 로 gnss.enabled 를 껐다 켜는 것이 절차다. */
+void mk_gnssctl_set_imu(MkGnssCtl *c, int on);
 
 /* 매 tick 부른다.
  *

@@ -569,9 +569,42 @@ static void test_field_mask_selects(void)
 
     CHECK_HAS(LINES[0], "\"ma\":", "켠 필드는 실린다");
     CHECK(strstr(LINES[0], "\"raw\":") == NULL, "끈 필드는 안 실린다");
-    CHECK(strstr(LINES[0], "\"connector_id\":") == NULL, "끈 필드는 안 실린다");
     CHECK_HAS(LINES[0], "\"seq\":", "seq 는 마스크로 못 끈다 (규격 §7.1)");
     CHECK_HAS(LINES[0], "\"type\":\"ain\"", "type 도 마찬가지");
+}
+
+/* 🔴 [신규, 2026-08-21] connector_id 는 마스크로 못 끈다 (규격 §7.2·§7.5
+ *    개정). 실기기에서 겪었다 — 사용자가 필드를 고르다 connector_id 를
+ *    끄자, 대시보드는 레코드를 어느 카드에 붙일지 몰라 버렸고(J3 이
+ *    "연결 안 됨"), 스트림 필터는 커넥터 없는 줄을 장비 전체 소속으로
+ *    취급해 J4 만 체크해도 J3 값이 보였다. 채널이 빠진 다채널 레코드는
+ *    아무 말도 안 한다 — i2c 의 quantity·value, din 의 connector_id·state
+ *    와 같은 자리다. */
+static void test_connector_id_cannot_be_masked_off(void)
+{
+    setup();
+    set_u32("tx.fields_ain", 0u);            /* 전부 꺼도 */
+    set_last(0, 1000, 4000000);
+    mk_telem_tick(&T, 100, sink, NULL);
+    CHECK_HAS(LINES[0], "\"connector_id\":3", "ain 의 connector_id 는 잠겼다");
+
+    setup();
+    static MkI2c I2C;
+    MkI2cIo io = { fake_xfer_ok, NULL };
+    mk_i2c_init(&I2C, &io);
+    mk_telem_attach_i2c(&T, &I2C);
+    set_u32("tx.fields_i2c", 0u);            /* i2c 쪽도 전부 꺼도 */
+    I2C.last[0][0] = (MkI2cOut){ .connector_id = 10u, .quantity = "lux",
+                                 .value = 401.5f, .have_value = 1,
+                                 .status = 0u, .t_ms = 1000 };
+    I2C.last_valid[0][0] = 1u;
+    mk_telem_tick(&T, 100, sink, NULL);
+    int found = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"i2c\"") &&
+            strstr(LINES[k], "\"connector_id\":10")) { found = 1; }
+    }
+    CHECK(found, "i2c 의 connector_id 도 잠겼다");
 }
 
 /* 🔴 [신규, 2026-08-19] tx.fields 를 셋으로 나눈 핵심 계약 — ain 마스크를
@@ -602,11 +635,13 @@ static void test_i2c_mask_is_independent_of_ain_mask(void)
     }
     CHECK(ain_idx >= 0 && i2c_idx >= 0, "두 레코드가 함께 나간다");
     if (ain_idx >= 0) {
-        CHECK(strstr(LINES[ain_idx], "\"connector_id\":") == NULL,
-              "tx.fields_ain 을 껐으면 ain 의 connector_id 는 안 나온다");
+        /* connector_id 는 이제 잠겼으므로(2026-08-21) 마스크 독립성은
+         * raw 로 본다 — ain 마스크를 껐으면 raw 가 빠져야 한다. */
+        CHECK(strstr(LINES[ain_idx], "\"raw\":") == NULL,
+              "tx.fields_ain 을 껐으면 ain 의 raw 는 안 나온다");
     }
     if (i2c_idx >= 0) {
-        CHECK_HAS(LINES[i2c_idx], "\"connector_id\":10",
+        CHECK_HAS(LINES[i2c_idx], "\"status\":",
                   "tx.fields_i2c 는 기본대로 살아 있다 — ain 마스크와 무관");
     }
 }
@@ -1565,6 +1600,7 @@ int main(int argc, char **argv)
     test_drops_rise_when_send_stalls_long_enough_to_overflow();
     test_changing_tx_period_ms_changes_the_interval();
     test_field_mask_selects();
+    test_connector_id_cannot_be_masked_off();
     test_i2c_mask_is_independent_of_ain_mask();
     test_field_on_ignores_a_bit_not_applicable_to_the_kind();
     test_value_follows_the_spec_formula();

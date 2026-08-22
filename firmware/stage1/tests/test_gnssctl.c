@@ -75,8 +75,22 @@ static void test_enabling_sends_the_two_log_commands_immediately(void)
     if (N == 2) {
         /* 🔴 줄 끝 CR/LF 는 여기(app/)가 붙인다 — bsp 의 send 콜백은 받은
          * 바이트를 그대로 내보내기만 하는 얇은 관이다(규격 §4.1). */
-        CHECK_EQ(SENT[0], "LOG GPRMC ONTIME 1\r\n", "시각에 필요한 문장");
-        CHECK_EQ(SENT[1], "LOG GPGGA ONTIME 1\r\n", "위성 수를 보려면 GGA도");
+        /* 🔴 0.05 = 20 Hz — mk_gnssctl.c 가 2026-08-20 에 실측 상한으로
+         *    올린 값이다(그쪽 주석 참고). 이 시험이 1 인 채 낡아 있었다
+         *    (2026-08-21 정정). */
+        CHECK_EQ(SENT[0], "LOG GPRMC ONTIME 0.05\r\n", "시각에 필요한 문장");
+        CHECK_EQ(SENT[1], "LOG GPGGA ONTIME 0.05\r\n", "위성 수를 보려면 GGA도");
+    }
+
+    /* IMU 를 켜면(클라우드 설계 §4.8) RAWIMUXA 가 묶음에 붙는다. */
+    MkGnssCtl c2;
+    mk_gnssctl_init(&c2);
+    mk_gnssctl_set_imu(&c2, 1);
+    sink_reset();
+    mk_gnssctl_tick(&c2, 1, 0, 1000, fake_send, NULL);
+    CHECK(N == 3, "IMU 켜짐 = 명령이 셋");
+    if (N == 3) {
+        CHECK_EQ(SENT[2], "RAWIMUXA 0.1\r\n", "10 Hz IMU 요구");
     }
     CHECK(mk_gnssctl_sent(&c) == 1, "sent 가 참이 된다");
     CHECK(mk_gnssctl_exhausted(&c) == 0, "아직 상한에 안 닿았다");

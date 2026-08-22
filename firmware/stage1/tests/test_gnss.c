@@ -327,6 +327,22 @@ static void test_sentence_seen_never_resets(void)
 #define REAL_GGA "$GNGGA,023115.00,3719.14416560,N,12720.43544199,E,1,20,1.2,100.8517,M,23.8989,M,,*70\r\n"
 #define REAL_RMC "$GNRMC,023115.00,A,3719.14416560,N,12720.43544199,E,0.139,208.1,200826,8.6,W,A,C*5E\r\n"
 
+/* 짝지어진 GGA 의 체크섬 두 글자가 fix 에 보존되는지 (클라우드 계약 §3 의
+ * `cs`, 2026-08-21). */
+static void test_gga_checksum_is_preserved_in_the_fix(void)
+{
+    MkGnss g;
+    mk_gnss_init(&g);
+    feed_str(&g, REAL_GGA);
+    feed_str(&g, REAL_RMC);
+
+    MkGnssFix f;
+    CHECK(mk_gnss_last_fix(&g, &f) == 1, "fix 사본이 있다");
+    CHECK(f.have_cs == 1, "짝지어진 GGA 의 cs 가 붙는다");
+    CHECK(f.cs[0] == '7' && f.cs[1] == '0', "REAL_GGA 의 *70 그대로");
+    CHECK(mk_gnss_fix_count(&g) == 1u, "fix 카운터가 오른다");
+}
+
 static void test_ddmm_conversion_known_values(void)
 {
     int64_t v = 0;
@@ -511,6 +527,7 @@ int main(void)
     test_sentence_seen_never_resets();
     printf("-- 측위 레코드 (규격 §7.8) --\n");
     test_ddmm_conversion_known_values();
+    test_gga_checksum_is_preserved_in_the_fix();
     test_real_device_fix_record();
     test_gga_of_a_different_second_is_not_merged();
     test_no_fix_still_emits_a_record();

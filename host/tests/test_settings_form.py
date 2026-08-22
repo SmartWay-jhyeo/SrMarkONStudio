@@ -335,7 +335,11 @@ def test_repeated_items_fold_into_a_table(form):
     m = matrix_of(_group(form, "ain"))
     assert m is not None
     assert len(m.rows) == 7
-    assert len(m.columns) == 5
+    # 🔴 열 수를 못박지 않는다 — 카탈로그가 채널 속성을 늘릴 때마다(이름
+    #    2026-08-20, 타입 2026-08-22) 이 숫자가 깨졌다. 표가 성립하는
+    #    최소(속성 여럿)와 핵심 열의 존재만 본다.
+    assert len(m.columns) >= 5
+    assert "zero" in m.columns and "cloud" in m.columns
 
 
 def test_table_rows_and_columns_are_named_from_the_labels(form):
@@ -482,10 +486,11 @@ def test_record_shape_din_has_no_channel_count():
     assert record_shape(f, "din").channels == 0
 
 
-def test_field_mask_keys_cover_all_four_record_kinds(form):
-    """🔴 [신규, 2026-08-19 · 확장 2026-08-20] 네 키 모두 카탈로그에 실제로
-    있어야 한다. `gnss` 는 GNSS 측위 레코드(규격 §7.8)의 마스크다."""
-    assert set(FIELD_MASK_KEYS) == {"ain", "i2c", "din", "gnss"}
+def test_field_mask_keys_cover_all_five_record_kinds(form):
+    """🔴 [신규, 2026-08-19 · 확장 2026-08-20 · 2026-08-22] 다섯 키 모두
+    카탈로그에 실제로 있어야 한다. `gnss` 는 GNSS 측위 레코드(규격 §7.8),
+    `imu` 는 젯슨 링크 imu 레코드(§7.2 비트 21)의 마스크다."""
+    assert set(FIELD_MASK_KEYS) == {"ain", "i2c", "din", "gnss", "imu"}
     for key in FIELD_MASK_KEYS.values():
         assert form.row(key) is not None
 
@@ -493,13 +498,19 @@ def test_field_mask_keys_cover_all_four_record_kinds(form):
 def test_locked_fields_are_defined_for_every_record_kind():
     """🔴 [신규, 2026-08-19] 잠긴 필드 목록이 규격과 같다 — time_source는
     모든 레코드, i2c는 quantity·value, din은 connector_id·state(§7.1·
-    §7.5·§7.6)."""
-    assert LOCKED_FIELDS["ain"] == ("time_source",)
-    assert set(LOCKED_FIELDS["i2c"]) == {"time_source", "quantity", "value"}
+    §7.5·§7.6). [개정 2026-08-21] connector_id 는 ain·i2c 에서도 잠겼다
+    (§7.2·§7.5) — 채널이 빠진 다채널 레코드는 아무 말도 안 한다."""
+    assert set(LOCKED_FIELDS["ain"]) == {"time_source", "connector_id"}
+    assert set(LOCKED_FIELDS["i2c"]) == {"time_source", "quantity", "value",
+                                         "connector_id"}
     assert set(LOCKED_FIELDS["din"]) == {"time_source", "connector_id", "state"}
     # 🔴 [2026-08-20] gnss 는 lat·lon·fix_t (규격 §7.8.5) — 위치가 빠지면
     #    레코드가 아무 말도 안 한다.
     assert set(LOCKED_FIELDS["gnss"]) == {"time_source", "lat", "lon", "fix_t"}
+    # 🔴 [2026-08-22] imu(젯슨 링크) — 6축이 빠진 imu 레코드는 아무 말도
+    #    안 한다. 마스크가 정하는 것은 imu_temp 하나뿐이다.
+    assert set(LOCKED_FIELDS["imu"]) == {"time_source", "ax", "ay", "az",
+                                         "gx", "gy", "gz"}
 
 
 def test_telemetry_shape_reads_the_spec_named_keys(form):

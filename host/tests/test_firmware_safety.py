@@ -397,6 +397,65 @@ def test_i2c_owner_does_not_touch_the_sol_or_led_pins():
         )
 
 
+#: 🔴 젯슨 링크 핀 (넷리스트 확인 2026-08-21, HANDOFF.md §7.4).
+#:
+#:    PA1 = JET_HB (J29 핀6, 보드→젯슨 하트비트 — 사용자 설계 2026-08-21)
+#:    PA2 = JET_TX (J29 핀2, USART2_TX — DS13313 Rev 1 p.72 Table 8)
+#:
+#:    둘 다 커넥터에 직결이다. GPIOA 를 여는 파일이 넷(sol·WS2812·I2C·jet)
+#:    이 됐으므로, sol 과 같은 방식으로 핀 번호까지 묶는다.
+JET_OWNER = "mk_jet.c"
+JET_PINS = {
+    "GPIO_PIN_1": "PA1 = JET_HB (J29 핀6)",
+    "GPIO_PIN_2": "PA2 = JET_TX (J29 핀2)",
+}
+
+
+def test_only_one_file_drives_the_jetson_pins():
+    """젯슨 링크 핀을 GPIOA 에서 만지는 파일은 mk_jet.c 하나여야 한다."""
+    touching = []
+    for path in _sources():
+        code = _strip_comments(path.read_text(encoding="utf-8"))
+        if "GPIOA" not in code:
+            continue
+        if any(re.search(rf"\b{pin}\b", code) for pin in JET_PINS):
+            touching.append(path.name)
+    assert touching == [JET_OWNER], (
+        f"GPIOA 에서 젯슨 링크 핀을 건드리는 파일: {touching} — "
+        f"{JET_OWNER} 하나여야 한다"
+    )
+
+
+def test_jet_owner_does_not_touch_the_sol_or_led_pins():
+    """mk_jet.c 가 같은 포트의 sol(PA4~6)·WS2812(PA7) 핀을 건드리지 않는지.
+
+    🔴 I2C 파일에 있는 것과 같은 방향의 검사다 — GPIOA 를 여는 파일이
+       늘 때마다 이 검사도 하나씩 따라와야 한다.
+    """
+    path = FW / "bsp" / JET_OWNER
+    assert path.exists(), f"{JET_OWNER} 이 없다"
+    code = _strip_comments(path.read_text(encoding="utf-8"))
+    for pin in SOL_AND_LED_PINS:
+        assert not re.findall(rf"\b{pin}\b", code), (
+            f"{JET_OWNER} 이 {pin} 을 언급한다 — sol·WS2812 의 핀이다"
+        )
+
+
+def test_jet_owner_uses_usart2_and_does_not_command_the_reset_direction():
+    """mk_jet.c 가 USART2(AF7)를 쓰는지 — 그리고 수신을 켜 두지 않았는지.
+
+    🔴 수신(PA3)은 다음 단계다. RXNE 인터럽트가 여기 생기면 그 단계가
+       시작된 것이므로, 이 검사의 금지 목록에서 빼면서 젯슨 명령 경로를
+       설계하고 넣어야 한다 — 지금 몰래 켜지는 것을 막는다.
+    """
+    code = _strip_comments((FW / "bsp" / JET_OWNER).read_text(encoding="utf-8"))
+    assert "USART2" in code and "GPIO_AF7_USART2" in code
+    assert "UART_IT_RXNE" not in code, (
+        f"{JET_OWNER} 가 수신 인터럽트를 켠다 — 젯슨 명령 경로는 아직 "
+        f"설계되지 않았다"
+    )
+
+
 #: 🔴 [검토 지적 I6] 역방향 검사. 위 test_i2c_owner_does_not_touch_the_sol_
 #:    or_led_pins 는 mk_i2c_io.c 가 **남의** 핀을 안 건드리는지만 본다 —
 #:    반대로 **다른 파일이 I2C 핀을 건드리는지**는 아무도 안 봤다. 레일이

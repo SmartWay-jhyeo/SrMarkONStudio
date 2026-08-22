@@ -334,6 +334,10 @@ static void push_fix(MkGnss *g, const MkGnssFix *fix)
         g->fix_tail = (g->fix_tail + 1u) % MK_GNSS_FIX_QUEUE_CAP;
     }
     g->fix_head = next;
+    /* 클라우드용 사본 — 큐와 별개다(MkGnss.last_fix 주석). */
+    g->last_fix = *fix;
+    g->have_last_fix = 1;
+    g->fix_count++;
 }
 
 static void parse_rmc(MkGnss *g, const char *body, size_t body_len)
@@ -440,6 +444,20 @@ static void parse_rmc(MkGnss *g, const char *body, size_t body_len)
             fix.have_hdop = 1;
             fix.hdop_1e2 = g->gga_hdop_1e2;
         }
+        if (g->gga_cs[0] != '\0') {
+            fix.have_cs = 1;
+            fix.cs[0] = g->gga_cs[0];
+            fix.cs[1] = g->gga_cs[1];
+            fix.cs[2] = '\0';
+        }
+        if (g->gga_have_age) {
+            fix.have_diff_age = 1;
+            fix.diff_age_1e1 = g->gga_age_1e1;
+        }
+        if (g->gga_have_station) {
+            fix.have_station = 1;
+            fix.station_id = g->gga_station;
+        }
     }
 
     push_fix(g, &fix);
@@ -460,6 +478,11 @@ static void parse_gga(MkGnss *g, const char *body, size_t body_len)
     Field f_sats = next_field(&cursor, end);
     Field f_hdop = next_field(&cursor, end);
     Field f_alt  = next_field(&cursor, end);
+    next_field(&cursor, end);                 /* alt 단위 'M' */
+    next_field(&cursor, end);                 /* 지오이드 이격 */
+    next_field(&cursor, end);                 /* 이격 단위 'M' */
+    Field f_age     = next_field(&cursor, end);   /* 13열 — RTK 보정 나이 s */
+    Field f_station = next_field(&cursor, end);   /* 14열 — 기준국 ID */
 
     int32_t fixq = parse_leading_int(f_fix);
     int32_t sats = parse_leading_int(f_sats);
@@ -495,6 +518,20 @@ static void parse_gga(MkGnss *g, const char *body, size_t body_len)
         g->gga_have_hdop = 0;
         g->gga_hdop_1e2 = 0;
     }
+
+    /* RTK 보정 나이·기준국 (GGA 13·14열 — 젯슨 링크 선택 필드 2026-08-22).
+     * no-fix 문장에서는 둘 다 비어 온다 — 값을 지어내지 않는다. */
+    int32_t age_1e1;
+    if (parse_scaled(f_age, 1, &age_1e1) && age_1e1 >= 0 && age_1e1 <= 65535) {
+        g->gga_have_age = 1;
+        g->gga_age_1e1 = (uint16_t)age_1e1;
+    } else {
+        g->gga_have_age = 0;
+        g->gga_age_1e1 = 0;
+    }
+    int32_t station = parse_leading_int(f_station);
+    g->gga_have_station = (station >= 0 && station <= 65535) ? 1 : 0;
+    g->gga_station = g->gga_have_station ? (uint16_t)station : 0;
 }
 
 /* 완성된 한 줄(g->line[0..used)) 을 처리한다. '$' 와 '\r'/'\n' 은 이미
@@ -549,6 +586,12 @@ static void process_line(MkGnss *g)
         parse_rmc(g, line, star);
         g->sentences_seen_count++;   /* 체크섬 통과 — 모듈이 말은 하고 있다 */
     } else if (addr_is(addr, "GGA")) {
+        /* 체크섬 두 글자를 보존한다 (클라우드 계약 §3 의 `cs`) — 검증에
+         * 쓴 그 글자를 그대로. parse_gga 가 gga_* 를 채우기 전에 잡아야
+         * 짝짓기(parse_rmc)가 같은 문장의 값을 가져간다. */
+        g->gga_cs[0] = line[star + 1];
+        g->gga_cs[1] = line[star + 2];
+        g->gga_cs[2] = '\0';
         parse_gga(g, line, star);
         g->sentences_seen_count++;
     }
@@ -669,6 +712,18 @@ int mk_gnss_take_gga(MkGnss *g, MkGnssGga *out)
 uint32_t mk_gnss_checksum_fail_count(const MkGnss *g)
 {
     return g->checksum_fail_count;
+}
+
+int mk_gnss_last_fix(const MkGnss *g, MkGnssFix *out)
+{
+    if (!g->have_last_fix) { return 0; }
+    *out = g->last_fix;
+    return 1;
+}
+
+uint32_t mk_gnss_fix_count(const MkGnss *g)
+{
+    return g->fix_count;
 }
 
 uint32_t mk_gnss_parse_fail_count(const MkGnss *g)

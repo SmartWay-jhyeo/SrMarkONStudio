@@ -294,6 +294,7 @@ KEY_FIELD_MASK_I2C = "tx.fields_i2c"
 KEY_FIELD_MASK_DIN = "tx.fields_din"
 #: 🔴 [신설, 2026-08-20] 네 번째. GNSS 측위 레코드(규격 §7.8)의 마스크.
 KEY_FIELD_MASK_GNSS = "tx.fields_gnss"
+KEY_FIELD_MASK_IMU = "tx.fields_imu"
 KEY_PERIOD_MS = "tx.period_ms"
 KEY_FLOAT_DIGITS = "tx.float_digits"
 #: GNSS 를 켜고 끄는 항목(규격 §7.8.4 — 꺼져 있으면 아무것도 안 나간다).
@@ -306,6 +307,9 @@ FIELD_MASK_KEYS: dict[str, str] = {
     "i2c": KEY_FIELD_MASK_I2C,
     "din": KEY_FIELD_MASK_DIN,
     "gnss": KEY_FIELD_MASK_GNSS,
+    # [2026-08-22] imu — 젯슨 링크 전용 레코드(UM981 RAWIMUX)지만 필드
+    # 선택은 같은 화면이 다룬다 (사용자 확정 — "IMU 도 GNSS 와 분리").
+    "imu": KEY_FIELD_MASK_IMU,
 }
 
 #: GNSS 측위 레코드가 나가는 주기(규격 §7.8.6).
@@ -320,6 +324,14 @@ FIELD_MASK_KEYS: dict[str, str] = {
 #:    무엇을 명령했는지 기억하지 않으므로(규격 §4.1) 지어내지 않는다.
 GNSS_PERIOD_MS = 1000
 
+#: GNSS 를 켜고 끄는 항목 옆의 IMU 토글 — 켜면 보드가 UM981 에
+#: `RAWIMUXA 0.1`(10 Hz)을 걸어 젯슨 링크로 imu 레코드를 낸다.
+KEY_GNSS_IMU = "gnss.imu"
+
+#: imu 레코드 주기. 펌웨어 mk_gnssctl.c 가 거는 `RAWIMUXA 0.1` = 10 Hz 다 —
+#: `tx.period_ms` 와 무관하다(GNSS 와 같은 이유: 주기를 정하는 것은 모듈이다).
+IMU_PERIOD_MS = 100
+
 #: 레코드 종류 → 그 종류의 "채널 수" 를 셀 그룹. `din`(J18~J20)은 켜고 끄는
 #: 채널이 없다 — 남는 카탈로그 항목이 `sol.debounce_ms` 하나뿐이라
 #: `matrix_of` 가 표로 접지 못한다(반복 최소 3줄, MATRIX_MIN_ROWS). 그래서
@@ -330,19 +342,41 @@ GNSS_PERIOD_MS = 1000
 #:    켜고 끈다 — J16 하나뿐이라 반복이 없다. `record_shape` 이 그 자리를
 #:    따로 다룬다.
 RECORD_GROUPS: dict[str, str] = {"ain": "ain", "i2c": "i2c", "din": "sol",
-                                 "gnss": "gnss"}
+                                 "gnss": "gnss",
+                                 # imu 를 켜는 항목(`gnss.imu`)은 gnss 그룹에
+                                 # 있다 — 채널 수는 `record_shape` 의 특례가
+                                 # 세므로 이 표는 요약 카드 배치에만 쓰인다.
+                                 "imu": "gnss"}
 
 #: 이 필드는 잠겨 있다 — 마스크 비트가 아예 없어 항상 실린다(규격 §7.1·
 #: §7.5·§7.6). 카드가 "잠김" 으로 보여 줄 항목들이다. `time_source`는
 #: 모든 레코드에 공통이고, 나머지는 그 레코드가 아니면 뜻이 없는 필드다.
 LOCKED_FIELDS: dict[str, tuple[str, ...]] = {
-    "ain": ("time_source",),
-    "i2c": ("time_source", "quantity", "value"),
+    # 🔴 connector_id 는 ain·i2c 에서도 잠겼다(규격 §7.2·§7.5 개정
+    #    2026-08-21) — 어느 카드에 붙일지가 빠지면 레코드가 버려진다.
+    "ain": ("time_source", "connector_id"),
+    "i2c": ("time_source", "quantity", "value", "connector_id"),
     "din": ("time_source", "connector_id", "state"),
     # 🔴 위치가 빠진 GNSS 레코드는 아무 말도 안 한다(규격 §7.8.5). `fix_t`
     #    도 함께 잠근다 — "어디에" 만 있고 "언제" 가 없으면 주행 궤적을
     #    되짚을 수 없다.
     "gnss": ("time_source", "lat", "lon", "fix_t"),
+    # [2026-08-22] imu(젯슨 링크) — 6축이 빠진 imu 레코드는 아무 말도
+    # 안 한다. 지자기는 UM981 에 없어 아예 안 실린다(계약 v1.7.0 완화).
+    "imu": ("time_source", "ax", "ay", "az", "gx", "gy", "gz"),
+}
+
+#: 필드 카드 안의 소구획 (2026-08-22 사용자 요청 — "I2C 는 센서별로
+#: 나눠야"). 특정 센서에만 뜻이 있는 비트를 그 센서 이름 아래 묶어
+#: 보여준다. **표시용일 뿐**이다 — 마스크는 여전히 레코드 종류당 하나고,
+#: 여기 없는 비트는 카드의 공통 구획에 그려진다. 이름은 cfg_field 의
+#: `name` 이다(라벨이 아니라 — 라벨은 보드가 바꿀 수 있다).
+FIELD_SUBSECTIONS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
+    "i2c": (
+        ("적외 온도", ("temp_ambient",)),
+        ("온습도", ("dewpoint",)),
+    ),
+    # (imu_temp 는 이제 제 카드 — IMU 필드 카드 — 에 있다, 2026-08-22.)
 }
 
 #: 잠긴 필드의 사람이 읽는 이름표. 보드가 이 이름을 알려 주지 않는다 —
@@ -358,6 +392,8 @@ LOCKED_FIELD_LABELS: dict[str, str] = {
     "lat": "위도",
     "lon": "경도",
     "fix_t": "측위 시각",
+    "ax": "가속도 X", "ay": "가속도 Y", "az": "가속도 Z",
+    "gx": "각속도 X", "gy": "각속도 Y", "gz": "각속도 Z",
 }
 
 
@@ -423,6 +459,23 @@ def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
         return TelemetryShape(
             channels=1 if on else 0,
             period_ms=GNSS_PERIOD_MS,
+            float_digits=_int_or(form, KEY_FLOAT_DIGITS, 4, minimum=0),
+            labels=("J16",) if on else (),
+        )
+
+    if kind == "imu":
+        # [2026-08-22] GNSS 와 같은 특례 — J16 하나뿐이고, 켜는 것도 항목
+        # 하나(`gnss.imu`, 단 GNSS 자체가 켜져 있어야 한다). 주기는 펌웨어가
+        # 모듈에 거는 10 Hz 고정(`IMU_PERIOD_MS`).
+        on = False
+        try:
+            on = (form.row(KEY_GNSS_ENABLED).value == "true"
+                  and form.row(KEY_GNSS_IMU).value == "true")
+        except KeyError:
+            on = False                        # 옛 펌웨어 — IMU 항목이 없다
+        return TelemetryShape(
+            channels=1 if on else 0,
+            period_ms=IMU_PERIOD_MS,
             float_digits=_int_or(form, KEY_FLOAT_DIGITS, 4, minimum=0),
             labels=("J16",) if on else (),
         )

@@ -124,6 +124,8 @@
 #define MK_SPI4_KERNEL_HZ      MK_APB2_HZ   /* D2CCIP1R.SPI45SEL=000 리셋값 */
 #define MK_I2C_KERNEL_HZ       MK_APB1_HZ   /* D2CCIP2R.I2C1235SEL=00 리셋값 */
 #define MK_USART3_KERNEL_HZ    MK_APB1_HZ   /* 호스트 링크(PB10/PB11) */
+#define MK_USART2_KERNEL_HZ    MK_APB1_HZ   /* Jetson 링크(PA2/PA3) — USART3 과
+                                               같은 D2CCIP2R.USART234578SEL 리셋값 */
 #define MK_USART6_KERNEL_HZ    MK_APB2_HZ   /* GNSS(PC6/PC7) */
 
 /* 🔴 SPI2(LCD)만 sys_ck 계열이 아니다. per_ck = hsi_ker_ck 를

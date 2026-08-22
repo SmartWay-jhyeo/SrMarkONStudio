@@ -7,6 +7,11 @@ void mk_gnssctl_init(MkGnssCtl *c)
     memset(c, 0, sizeof *c);
 }
 
+void mk_gnssctl_set_imu(MkGnssCtl *c, int on)
+{
+    c->imu_enabled = on ? 1 : 0;
+}
+
 void mk_gnssctl_tick(MkGnssCtl *c, int enabled, int sentence_seen,
                      int64_t now_ms, MkGnssSend send, void *ctx)
 {
@@ -65,6 +70,12 @@ void mk_gnssctl_tick(MkGnssCtl *c, int enabled, int sentence_seen,
          sizeof "LOG GPRMC ONTIME 0.05\r\n" - 1u);
     send(ctx, "LOG GPGGA ONTIME 0.05\r\n",
          sizeof "LOG GPGGA ONTIME 0.05\r\n" - 1u);
+    if (c->imu_enabled) {
+        /* 🔴 0.1 = 10 Hz. RAWIMUXA 는 최대 100 Hz 까지 가능하지만
+         *    (UM981_Auto_Commands p.20), 921600 링크·본선 파서 부담을
+         *    계산하기 전에는 10 Hz 로 시작한다(클라우드 설계 §4.8). */
+        send(ctx, "RAWIMUXA 0.1\r\n", sizeof "RAWIMUXA 0.1\r\n" - 1u);
+    }
 
     c->attempts++;
     c->last_attempt_ms = now_ms;
