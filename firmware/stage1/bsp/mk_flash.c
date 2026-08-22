@@ -2,6 +2,7 @@
 
 #include "mk_config.h"   /* MK_CFG_BLOB_MAX — 필요한 양은 설정표가 안다 */
 #include "mk_crc.h"
+#include "mk_iwdg.h"
 #include "stm32h7xx_hal.h"
 
 #include <string.h>
@@ -82,6 +83,10 @@ int mk_flash_save(const void *data, size_t len)
     er.Sector = MK_FLASH_CFG_SECTOR;
     er.NbSectors = 1;
     er.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+
+    /* 🔴 소거는 이 파일에서 가장 오래 막히는 자리다(실측 $CFG,SAVE 전체가
+     *    2초 안). 직전에 도장을 찍어 워치독 예산 5초를 온전히 준다. */
+    mk_iwdg_kick();
 
     uint32_t err = 0;
     if (HAL_FLASHEx_Erase(&er, &err) != HAL_OK) {

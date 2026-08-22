@@ -48,6 +48,7 @@
 #include "app/mk_linkbaud.h"
 #include "mk_uart.h"
 #include "bsp/mk_jet.h"
+#include "bsp/mk_iwdg.h"
 #include "app/mk_cloud.h"
 #include "app/mk_imu.h"
 
@@ -621,7 +622,13 @@ int main(void)
     char rx[MK_RX_LINE_MAX];
     uint32_t last_blink = 0;
 
+    /* 🔴 워치독은 초기화가 다 끝난 여기서 켠다 — 위의 LCD 대기(수백 ms)
+     *    등이 예산을 먹지 않게. 이 아래로 루프가 5초 서면 칩이 스스로
+     *    리셋한다(bsp/mk_iwdg.h — 사용자 결정 2026-08-22). */
+    mk_iwdg_init();
+
     for (;;) {
+        mk_iwdg_kick();
         /* 🔴 HAL_GetTick() 을 직접 쓰지 않는다. 32비트라 49.7일에 되감기고,
          *    그 순간 타임스탬프가 과거로 뛴다 (bsp/mk_time.h). */
         int64_t now = mk_time_ms();

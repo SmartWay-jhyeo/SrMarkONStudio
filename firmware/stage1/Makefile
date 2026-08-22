@@ -70,6 +70,7 @@ C_SRC = \
   bsp/mk_sol.c \
   bsp/mk_ads_io.c \
   bsp/mk_flash.c \
+  bsp/mk_iwdg.c \
   bsp/mk_uart.c \
   bsp/mk_jet.c \
   bsp/mk_i2c_io.c \
@@ -91,7 +92,8 @@ C_SRC = \
   $(HAL)/Src/stm32h7xx_hal_tim.c \
   $(HAL)/Src/stm32h7xx_hal_tim_ex.c \
   $(HAL)/Src/stm32h7xx_hal_flash.c \
-  $(HAL)/Src/stm32h7xx_hal_flash_ex.c
+  $(HAL)/Src/stm32h7xx_hal_flash_ex.c \
+  $(HAL)/Src/stm32h7xx_hal_iwdg.c
 
 ASM_SRC  = $(DEV)/Source/Templates/gcc/startup_stm32h723xx.s
 
