@@ -363,14 +363,37 @@ def test_table_cells_line_up_with_their_column(form):
         assert row.cells[zero].key.endswith(".zero")
 
 
-def test_scalars_beside_a_repeating_set_do_not_block_the_table(form):
+def test_scalars_beside_a_repeating_set_do_not_block_the_table():
     """🔴 그룹에 반복되지 않는 항목이 섞여 있어도 반복분은 접는다.
 
-    LED 그룹이 그렇다 — `체인 LED 수`·`밝기` 는 하나뿐이고 J21~J24 의
-    R·G·B 는 반복이다. 예전 규칙("하나라도 어긋나면 표가 아니다")은 이
-    그룹을 12줄로 늘어놓았다. 섞였다고 반복을 못 접을 이유가 없다.
+    예전 규칙("하나라도 어긋나면 표가 아니다")은 이런 그룹을 12줄로
+    늘어놓았다. 섞였다고 반복을 못 접을 이유가 없다.
+
+    🔴 [2026-08-22] 제품 카탈로그에서 빌리지 않는다 — 이 모양의 실례였던
+    LED 수동 색(led{n}.r/g/b)이 상태표시 전용화로 사라졌다(mk_statled).
+    접기 규칙 자체는 보드가 언제든 이런 그룹을 다시 만들 수 있으므로
+    합성 카탈로그로 지킨다(readonly_form 과 같은 방식).
     """
-    group = _group(form, "led")
+    import json
+    lines: list[str] = []
+
+    def item(**f):
+        base = {"schema_ver": 3, "seq": 0, "t": 0, "type": "cfg_item",
+                "vtype": "u8", "default": 0, "cur": 0, "ro": False,
+                "min": 0, "max": 255}
+        base.update(f)
+        lines.append(json.dumps(base))
+
+    item(key="mix.count", grp="mix", label="개수")
+    item(key="mix.gain", grp="mix", label="이득")
+    for n in (21, 22, 23, 24):
+        for sfx, lab in ((".r", "빨강"), (".g", "초록"), (".b", "파랑")):
+            item(key=f"mix{n}{sfx}", grp="mix", label=f"J{n} {lab}")
+    lines.append(json.dumps({"schema_ver": 3, "seq": 0, "t": 0,
+                             "type": "cfg_end", "count": len(lines)}))
+    form = SettingsForm(parse_catalog(lines))
+
+    group = _group(form, "mix")
     m = matrix_of(group)
     assert m is not None
     assert [r.label for r in m.rows] == [f"J{i}" for i in range(21, 25)]

@@ -45,6 +45,7 @@ C_SRC = \
   app/mk_cloud.c \
   app/mk_imu.c \
   app/mk_ws2812.c \
+  app/mk_statled.c \
   app/mk_solctl.c \
   app/mk_i2c.c \
   app/mk_i2c_drivers.c \

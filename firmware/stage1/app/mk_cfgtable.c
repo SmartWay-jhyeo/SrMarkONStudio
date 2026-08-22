@@ -73,19 +73,23 @@ static const char *const AIN_CLOUD_LABELS[] = {
  * 합성한다(사용자 확정). mk_cloud.c 의 cloud_valve_state 참고.) */
 
 /* dev 1 + tx 6(마스크 4 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
- * + sol 1(디바운스) + led 3+3×4 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
+ * + sol 1(디바운스) + led 3 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
  * + link 1(호스트 링크 속도)
- * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기) */
+ * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기)
+ *
+ * (led{21..24}.r/g/b 수동 색 12개는 2026-08-22 에 걷어냈다 — LED 가
+ *  상태 표시 전용이 됐다(app/mk_statled.h, 사용자 설계). 색을 사용자가
+ *  정하는 항목이 남아 있으면 상태 색과 싸운다.) */
 #define ITEM_COUNT   (1 + 8 + 4 + 2 + MK_AIN_COUNT * 7 \
                       + 1 \
-                      + 3 + MK_LED_COUNT * 3 \
+                      + 3 \
                       + MK_I2C_COUNT * 6 \
                       + 4 + 3 \
                       + 1 \
                       + 5)
 
-/* 이름을 만들어 써야 하는 항목 수 (ain·led·i2c). sol 은 고정 문자열이다. */
-#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_LED_COUNT * 3 + MK_I2C_COUNT * 6 + 3)
+/* 이름을 만들어 써야 하는 항목 수 (ain·i2c). sol 은 고정 문자열이다. */
+#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_I2C_COUNT * 6 + 3)
 
 static MkCfgItem s_items[ITEM_COUNT];
 
@@ -777,22 +781,8 @@ static size_t add_led(size_t i)
         .note = "빨강과 초록이 바뀌어 보이면 이 값을 뒤집는다 — 칩마다 다르다" };
     i++;
 
-    /* 🔴 색을 0xRRGGBB 한 덩이로 두지 않는다. 그러면 화면에 생짜 숫자가
-     *    떠서 손으로 계산해야 한다 — 필드 마스크가 `698` 로 보이던 것과
-     *    같은 문제다. R·G·B 로 나누면 각각 0~255 이고, 반복 구조라 화면이
-     *    표로 접는다. */
-    static const char *const RGB_SUFFIX[3] = { ".r", ".g", ".b" };
-    static const char *const RGB_LABEL[3]  = { "빨강", "초록", "파랑" };
-    for (unsigned lamp = 21; lamp < 21u + MK_LED_COUNT; lamp++) {
-        for (int c = 0; c < 3; c++) {
-            size_t k = gen("led", lamp, RGB_SUFFIX[c], lamp, RGB_LABEL[c]);
-            s_items[i] = (MkCfgItem){
-                .key = s_keys[k], .group = "led", .vtype = MK_VT_U8,
-                .min = 0, .max = 255, .has_min = 1, .has_max = 1,
-                .out = 1, .label = s_labels[k] };
-            i++;
-        }
-    }
+    /* (수동 색 항목 led{21..24}.r/g/b 는 걷어냈다 — 파일 위 ITEM_COUNT
+     *    주석. 색은 mk_statled 가 상태에서 계산한다.) */
     return i;
 }
 

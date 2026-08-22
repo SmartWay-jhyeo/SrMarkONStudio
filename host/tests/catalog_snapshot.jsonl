@@ -79,18 +79,6 @@
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led.count","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"체인 LED 수","out":true,"min":0,"max":4,"note":"J21 부터 순서대로 채운다 — 중간이 비면 뒤쪽이 동작하지 않는다"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led.brightness","grp":"led","vtype":"u8","default":64,"cur":64,"ro":false,"label":"밝기","out":true,"min":0,"max":255,"note":"5V 레일이 꺼져 있으면 LED 가 켜지지 않는다"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led.grb","grp":"led","vtype":"bool","default":false,"cur":false,"ro":false,"label":"색 순서 GRB","note":"빨강과 초록이 바뀌어 보이면 이 값을 뒤집는다 — 칩마다 다르다"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led21.r","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J21 빨강","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led21.g","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J21 초록","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led21.b","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J21 파랑","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led22.r","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J22 빨강","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led22.g","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J22 초록","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led22.b","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J22 파랑","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led23.r","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J23 빨강","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led23.g","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J23 초록","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led23.b","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J23 파랑","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led24.r","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J24 빨강","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led24.g","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J24 초록","out":true,"min":0,"max":255}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"led24.b","grp":"led","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J24 파랑","out":true,"min":0,"max":255}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"i2c10.bus","grp":"i2c","vtype":"str","default":"I2C3","cur":"I2C3","ro":true,"label":"J10 버스","max":7,"note":"같은 버스에 물린 두 포트는 주소가 겹치면 안 된다"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"i2c10.enabled","grp":"i2c","vtype":"bool","default":false,"cur":false,"ro":false,"label":"J10 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"i2c10.addr","grp":"i2c","vtype":"u8","default":0,"cur":0,"ro":false,"label":"J10 주소","min":0,"max":119,"note":"0 = 미지정. 쓸 수 있는 7비트 주소는 0x08~0x77"}
@@ -147,4 +135,4 @@
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_field","bit":19,"name":"temp_ambient","default":false,"label":"주변 온도 (적외)","records":["i2c"]}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_field","bit":20,"name":"dewpoint","default":false,"label":"이슬점 (온습도)","records":["i2c"]}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_field","bit":21,"name":"imu_temp","default":false,"label":"IMU 온도","records":["imu"]}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_end","count":149}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_end","count":137}

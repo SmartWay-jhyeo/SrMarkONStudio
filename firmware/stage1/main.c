@@ -49,6 +49,7 @@
 #include "mk_uart.h"
 #include "bsp/mk_jet.h"
 #include "bsp/mk_iwdg.h"
+#include "app/mk_statled.h"
 #include "app/mk_cloud.h"
 #include "app/mk_imu.h"
 
@@ -350,11 +351,23 @@ static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
  * 🔴 주기적으로도 보내는 이유: 5V 레일이 나중에 켜질 수 있다. 체인은 전원이
  *    없는 동안 받은 프레임을 기억하지 못하므로, 값이 안 바뀌었다는 이유로
  *    안 보내면 레일을 켜도 계속 깜깜하다. */
+static MkStatLed s_statled;
+
+/* 🔴 [개정 2026-08-22] LED 는 상태 표시 전용이다 (app/mk_statled.h —
+ *    사용자 설계). 수동 색 항목(led{n}.r/g/b)은 카탈로그에서 걷어냈고,
+ *    색은 mk_statled 가 보드 상태에서 계산한다. led.count·brightness·grb
+ *    는 남는다 — 물린 스트립의 성질이지 색이 아니다. */
 static void sync_leds(MkConfig *cfg, int64_t now_ms)
 {
-    static uint8_t last[1u + 1u + 1u + MK_LED_COUNT * 3u];
+    static uint8_t last[1u + 1u + 1u + MK_STATLED_COUNT * 3u];
     static int64_t last_send;
     static int primed;
+
+    /* 숨쉬기 패턴이 매 ms 변하므로 송신 빈도는 여기서 막는다 — 40ms(25fps)
+     * 면 눈에 매끈하고 DMA·CPU 로는 공짜다. */
+    if (primed && now_ms - last_send < 40) {
+        return;
+    }
 
     MkCfgItem *cnt = mk_cfg_find(cfg, "led.count");
     MkCfgItem *br  = mk_cfg_find(cfg, "led.brightness");
@@ -368,34 +381,24 @@ static void sync_leds(MkConfig *cfg, int64_t now_ms)
         n = MK_LED_COUNT;
     }
 
+    MkRgb status[MK_STATLED_COUNT];
+    mk_statled_colors(&s_statled, now_ms, status);
+
     MkRgb lamps[MK_LED_COUNT];
-    memset(lamps, 0, sizeof lamps);
+    memset(lamps, 0, sizeof lamps);     /* 4번째 이후 자리는 꺼 둔다 */
+    for (unsigned lamp = 0; lamp < MK_STATLED_COUNT && lamp < n; lamp++) {
+        lamps[lamp] = status[lamp];
+    }
 
     uint8_t now_state[sizeof last];
     size_t s = 0;
     now_state[s++] = (uint8_t)n;
     now_state[s++] = bright;
     now_state[s++] = (uint8_t)order;
-
-    static const char *const SUFFIX[3] = { ".r", ".g", ".b" };
-    for (unsigned lamp = 0; lamp < MK_LED_COUNT; lamp++) {
-        uint8_t rgb[3] = {0, 0, 0};
-        for (int c = 0; c < 3; c++) {
-            /* "led21.r" 를 손으로 만든다 — app/ 과 같은 이유로 snprintf 없다. */
-            char key[12];
-            int k = 0;
-            key[k++] = 'l'; key[k++] = 'e'; key[k++] = 'd';
-            key[k++] = (char)('0' + (21u + lamp) / 10u);
-            key[k++] = (char)('0' + (21u + lamp) % 10u);
-            for (const char *p = SUFFIX[c]; *p; p++) { key[k++] = *p; }
-            key[k] = '\0';
-            MkCfgItem *it = mk_cfg_find(cfg, key);
-            rgb[c] = it != NULL ? (uint8_t)it->cur.u : 0u;
-            now_state[s++] = rgb[c];
-        }
-        lamps[lamp].r = rgb[0];
-        lamps[lamp].g = rgb[1];
-        lamps[lamp].b = rgb[2];
+    for (unsigned lamp = 0; lamp < MK_STATLED_COUNT; lamp++) {
+        now_state[s++] = lamps[lamp].r;
+        now_state[s++] = lamps[lamp].g;
+        now_state[s++] = lamps[lamp].b;
     }
 
     int changed = !primed || memcmp(now_state, last, sizeof last) != 0;
@@ -420,6 +423,13 @@ static void sync_leds(MkConfig *cfg, int64_t now_ms)
 int main(void)
 {
     HAL_Init();
+
+    /* 🔴 리셋 원인을 지금 읽는다 — RSR 플래그는 지우기 전까지 누적되므로
+     *    (2026-08-22 실측 0x00fa0000 — 과거 리셋들이 다 쌓여 있었다),
+     *    읽고 바로 지워야 "이번 부팅이 워치독이었나"가 다음 부팅에도
+     *    참말이 된다. 상태 LED1 이 이 값으로 주황을 켠다(mk_statled). */
+    int woke_from_iwdg = (RCC->RSR & RCC_RSR_IWDG1RSTF) != 0u;
+    __HAL_RCC_CLEAR_RESET_FLAGS();
     /* 🔴 HAL_Init() 뒤여야 한다. 크리스털 대기 시한을 HAL_GetTick() 으로
      *    재는데, SysTick 은 HAL_Init() 이 켠다. 순서가 바뀌면 시한이
      *    영영 안 지나가고 — 벽돌을 막으려고 넣은 장치가 그 자리에서
@@ -615,6 +625,12 @@ int main(void)
     mk_telem_attach_timeax(&s_telem, &s_timeax);
     mk_cloud_attach_gnss(&s_cloud, &s_gnss);
     mk_cloud_attach_timeax(&s_cloud, &s_timeax);
+
+    /* 🔴 상태 LED (app/mk_statled.h) — 모든 출처가 선 뒤에 붙인다.
+     *    mk_screen 과 같은 이유: 포인터만 들고 매 바퀴 그때의 값을 읽는다. */
+    mk_statled_init(&s_statled, &s_cfg, &s_ads, woke_from_iwdg);
+    mk_statled_attach_i2c(&s_statled, &s_i2c);
+    mk_statled_attach_gnss(&s_statled, &s_gnss);
     mk_hostlink_attach_timeax(&link, &s_timeax);
     /* 🔴 $GNSS(규격 §4.1) 와 원시 문장 에코(규격 §7.7) — 둘 다 UART6 가
      *    이미 열려 있어야 뜻이 있으므로 mk_gnss_io_init() 뒤에 놓는다. */

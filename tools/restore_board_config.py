@@ -38,6 +38,7 @@ PLAN = [
     ("gnss.echo",     "false",  "원문 에코 끔 — gnss 정식 레코드가 있고, 안 읽는 구간의 브리지 버퍼 압력을 줄인다"),
     ("gnss.imu",      "true",   "UM981 RAWIMUX 10Hz → 젯슨 imu 레코드"),
     ("lcd.enabled",   "true",   "J25 ILI9488 화면"),
+    ("led.count",     "3",      "상태 LED 3개 (J21~J23) — 0이면 전부 꺼진다"),
     ("ain0.name",     "유압",     "커넥터 이름 — 대시보드·스트림에 보인다"),
     ("i2c12.name",    "적외온도", ""),
     ("i2c13.name",    "온습도",   ""),
