@@ -12,21 +12,11 @@
 #define MK_CLOUD_LINE_MAX  512
 #include "mk_telem.h"        /* mk_telem_raw_to_ma — 환산식은 한 곳(규격 §7.2.1) */
 
-/* ── ain 채널의 클라우드 타입 표 ─────────────────────────────────────────
- *
- * 🔴 인덱스가 카탈로그의 ain{n}.cloud 열거값이다 (mk_cfgtable.c 의
- *    AIN_CLOUD_LABELS 와 같은 순서). 전선 문자열은 여기에만 있다 —
- *    화면 이름표("도료 분사압")와 계약 문자열(pressure_paint)을 한 곳에
- *    섞으면 규격 §7.3 의 이름표 규칙이 깨진다. */
-static const struct {
-    const char *type;        /* 계약 §2 의 record type */
-    const char *field;       /* 값 필드 이름 (계약의 단위 약어 관례) */
-} AIN_CLOUD[] = {
-    { NULL,             NULL  },          /* 0 = 없음 → 미발행 (계약 §16.6) */
-    { "pressure_paint", "bar" },
-    { "pressure_bead",  "bar" },
-    { "flow",           "lpm" },
-};
+/* (ain 의 클라우드 타입 표는 2026-08-26 에 없앴다 — 타입 문자열은 이제
+ * 사용자가 카탈로그의 ain{n}.cloud 에 직접 치고, 값 필드 이름은
+ * ain{n}.unit 을 그대로 쓴다. 유량계 두 대가 똑같이 "flow" 로 나가
+ * 젯슨에서 구분이 안 됐던 것이 계기다. 글자 제한은 mk_config 의
+ * ascii_ident 가 건다.) */
 
 /* ── 설정 접근 (mk_telem.c 의 ain_key 와 같은 요령 — app 층은 stdio 금지) ── */
 
@@ -47,16 +37,16 @@ static MkCfgItem *ain_item(MkConfig *cfg, int ch, const char *suffix)
     return mk_cfg_find(cfg, key);
 }
 
-static uint32_t ain_u32(MkConfig *cfg, int ch, const char *suffix, uint32_t def)
-{
-    MkCfgItem *it = ain_item(cfg, ch, suffix);
-    return it ? it->cur.u : def;
-}
-
 static float ain_f32(MkConfig *cfg, int ch, const char *suffix, float def)
 {
     MkCfgItem *it = ain_item(cfg, ch, suffix);
     return it ? it->cur.f : def;
+}
+
+static const char *ain_str(MkConfig *cfg, int ch, const char *suffix)
+{
+    MkCfgItem *it = ain_item(cfg, ch, suffix);
+    return it ? it->cur.s : "";
 }
 
 /* i2c 키 — "i2c10.cloud" 처럼 커넥터 번호 두 자리가 들어간다. */
@@ -212,18 +202,21 @@ static int finish_and_emit(char *body, size_t cap, int len,
 static int build_ain(MkCloud *c, int ch, const MkSample *s,
                      char *out, size_t cap)
 {
-    uint32_t sel = ain_u32(c->cfg, ch, ".cloud", 0u);
-    if (sel == 0u || sel >= sizeof AIN_CLOUD / sizeof *AIN_CLOUD) { return 0; }
+    const char *type = ain_str(c->cfg, ch, ".cloud");
+    if (type[0] == '\0') { return 0; }       /* 빈 타입 = 미발행 (계약 §16.6) */
 
     MkJson j;
-    begin_record(c, &j, out, cap, AIN_CLOUD[sel].type, s->t_ms);
+    begin_record(c, &j, out, cap, type, s->t_ms);
 
     /* 계약 §9·§10 — 값은 환산 실수, 소수 1자리 (계약 예시의 자릿수.
-     * tx.float_digits 는 본선 방언의 설정이라 여기 적용하지 않는다). */
+     * tx.float_digits 는 본선 방언의 설정이라 여기 적용하지 않는다).
+     * 값 필드 이름은 단위 칸을 그대로 쓴다 ("lpm": 5.0) — 비면 value. */
     float ma = mk_telem_raw_to_ma(s->raw);
     float zero = ain_f32(c->cfg, ch, ".zero", 4.0f);
     float scale = ain_f32(c->cfg, ch, ".scale", 1.0f);
-    mk_json_f32(&j, AIN_CLOUD[sel].field, (ma - zero) * scale, 1);
+    const char *fieldkey = ain_str(c->cfg, ch, ".unit");
+    mk_json_f32(&j, fieldkey[0] != '\0' ? fieldkey : "value",
+                (ma - zero) * scale, 1);
 
     /* 선택 필드 — 본선과 같은 마스크(tx.fields_ain)가 정한다 (2026-08-22).
      * ma·raw 는 v1.7.1 의 선택 필드로 등재된다. */
@@ -250,7 +243,7 @@ static int tick_ain(MkCloud *c, MkCloudEmit emit, void *ctx)
 
         char body[MK_CLOUD_LINE_MAX];
         int len = build_ain(c, ch, &s, body, sizeof body);
-        if (len == 0 && ain_u32(c->cfg, ch, ".cloud", 0u) == 0u) {
+        if (len == 0 && ain_str(c->cfg, ch, ".cloud")[0] == '\0') {
             /* 없음 = 미발행. 표본은 소비한 것으로 친다 — 안 그러면 켜는
              * 순간 묵은 표본이 소급 발행된다. */
             c->ain_primed[ch] = 1u;
@@ -573,7 +566,13 @@ static uint32_t cap_fingerprint(MkCloud *c)
 {
     uint32_t fp = 1u;
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
-        fp = fp * 31u + ain_u32(c->cfg, ch, ".cloud", 0u);
+        /* 타입이 문자열이 됐으므로 글자를 그대로 접는다. 채널 사이에
+         * 0 을 끼워 "ab"+"c" 와 "a"+"bc" 를 가른다. */
+        const char *t = ain_str(c->cfg, ch, ".cloud");
+        for (const char *p = t; *p; p++) {
+            fp = fp * 31u + (uint8_t)*p;
+        }
+        fp = fp * 31u;
     }
     for (unsigned p = 0; p < MK_I2C_COUNT; p++) {
         fp = fp * 31u + i2c_u32(c->cfg, p, ".enabled", 0u);
@@ -595,10 +594,8 @@ static int tick_capability(MkCloud *c, int64_t now_ms,
     const char *sensors[12];
     size_t n = 0;
     for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
-        uint32_t sel = ain_u32(c->cfg, ch, ".cloud", 0u);
-        if (sel < sizeof AIN_CLOUD / sizeof *AIN_CLOUD) {
-            add_sensor(sensors, 12, &n, AIN_CLOUD[sel].type);
-        }
+        const char *t = ain_str(c->cfg, ch, ".cloud");
+        if (t[0] != '\0') { add_sensor(sensors, 12, &n, t); }
     }
     for (unsigned p = 0; p < MK_I2C_COUNT; p++) {
         if (!i2c_u32(c->cfg, p, ".enabled", 0u)) { continue; }

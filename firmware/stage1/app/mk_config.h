@@ -107,6 +107,10 @@ typedef struct {
      *    카탈로그에 실어 보낸다 — `sol` 이라는 글자를 보고 판단하면
      *    이름을 바꾸는 순간 조용히 틀린다. */
     uint8_t     out;
+    /* 🔴 값이 전선 JSON 의 **이름**(record type·값 필드 키)으로 쓰인다.
+     *    영문·숫자·밑줄만 받는다 — 한글·공백이 들어가면 젯슨 쪽 파서가
+     *    깨지거나 키가 스키마 밖으로 나간다. 빈 값은 허용(= 미발행). */
+    uint8_t     ascii_ident;
     const char *label;
     const char *note;
     /* enum 의 허용값. 개수가 0 이면 enum 이 아니다. */

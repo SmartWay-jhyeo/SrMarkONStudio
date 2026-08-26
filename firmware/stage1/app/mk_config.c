@@ -159,6 +159,12 @@ static MkCfgResult coerce(const MkCfgItem *item, const char *raw, MkValue *out)
             if (c == '$' || c == ',' || c == '*') {
                 return MK_CFG_RANGE;
             }
+            /* 전선 JSON 이름으로 쓰이는 값 — mk_config.h 의 ascii_ident. */
+            if (item->ascii_ident &&
+                !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_')) {
+                return MK_CFG_RANGE;
+            }
         }
         memcpy(out->s, raw, n);
         out->s[n] = '\0';

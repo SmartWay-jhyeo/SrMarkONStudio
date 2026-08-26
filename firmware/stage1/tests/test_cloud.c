@@ -64,6 +64,12 @@ static void set_f32(const char *key, float v)
     if (it) { it->cur.f = v; }
 }
 
+static void set_str(const char *key, const char *v)
+{
+    MkCfgItem *it = mk_cfg_find(&CFG, key);
+    if (it) { snprintf(it->cur.s, sizeof it->cur.s, "%s", v); }
+}
+
 /* 필드 표에서 이름으로 비트값을 얻는다 — 비트 번호를 시험에 적지 않는다
  * (test_telem.c 의 test_field_mask_selects 와 같은 이유). */
 static uint32_t bit_of(const char *name)
@@ -113,7 +119,11 @@ static void test_ain_pressure_paint_record(void)
 {
     setup();
     drain_capability();
-    set_u32("ain0.cloud", 1u);            /* 타입 = 도료 분사압 */
+    /* 🔴 타입은 사용자가 치는 문자열이다 (사용자 확정 2026-08-26 — 유량
+     *    두 개를 flow_front 처럼 이름으로 가르기 위해). 값 필드 이름은
+     *    단위 칸이 정한다. */
+    set_str("ain0.cloud", "pressure_paint");
+    set_str("ain0.unit", "bar");
     set_f32("ain0.zero", 4.0f);
     set_f32("ain0.scale", 9.375f);
     set_last(0, 1000, 4026531);
@@ -139,7 +149,8 @@ static void test_common_field_values_are_config(void)
     set_u32("tx.schema_ver", 2u);
     MkCfgItem *dev = mk_cfg_find(&CFG, "dev.id");
     if (dev) { snprintf(dev->cur.s, sizeof dev->cur.s, "car-7"); }
-    set_u32("ain0.cloud", 3u);
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
     set_last(0, 1000, 4026531);
 
     mk_cloud_tick(&C, 100, sink, NULL);
@@ -155,7 +166,8 @@ static void test_ain_optional_fields_follow_the_mask(void)
      *    같이 움직인다(사용자 확정 2026-08-22). */
     setup();
     drain_capability();
-    set_u32("ain0.cloud", 1u);
+    set_str("ain0.cloud", "pressure_paint");
+    set_str("ain0.unit", "bar");
     set_last(0, 1000, 4026531);
     set_u32("tx.fields_ain", 0u);
     mask_on("tx.fields_ain", "ma");
@@ -171,16 +183,45 @@ static void test_ain_optional_fields_follow_the_mask(void)
 static void test_ain_none_is_not_published(void)
 {
     setup();
-    drain_capability();                    /* ain0.cloud 기본 = 없음 */
+    drain_capability();                    /* ain0.cloud 기본 = 빈 문자열 */
     set_last(0, 1000, 4026531);
-    CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0, "없음 = 미발행 (계약 §16.6)");
+    CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0, "빈 타입 = 미발행 (계약 §16.6)");
+}
+
+static void test_ain_type_string_is_the_users(void)
+{
+    /* 🔴 이 기능의 존재 이유 — 유량계 두 대가 같은 "flow" 로 나가면
+     *    젯슨에서 구분이 안 된다(실측 2026-08-26). 사용자가 친 문자열이
+     *    그대로 type 이 된다. */
+    setup();
+    drain_capability();
+    set_str("ain0.cloud", "flow_front");
+    set_str("ain0.unit", "lpm");
+    set_last(0, 1000, 4026531);
+    mk_cloud_tick(&C, 100, sink, NULL);
+    const char *ln = find_line("flow_front");
+    CHECK(ln != NULL, "사용자 문자열이 그대로 type 으로 나간다");
+    CHECK_HAS(ln, "\"lpm\":", "값 필드 이름은 단위 칸을 따른다");
+}
+
+static void test_ain_empty_unit_falls_back_to_value(void)
+{
+    setup();
+    drain_capability();
+    set_str("ain0.cloud", "flow_front");
+    set_str("ain0.unit", "");
+    set_last(0, 1000, 4026531);
+    mk_cloud_tick(&C, 100, sink, NULL);
+    CHECK_HAS(find_line("flow_front"), "\"value\":",
+              "단위가 비면 값 필드는 value");
 }
 
 static void test_moving_the_sensor_is_a_config_change(void)
 {
     setup();
     drain_capability();
-    set_u32("ain1.cloud", 1u);            /* J4 로 옮겼다 */
+    set_str("ain1.cloud", "pressure_paint");   /* J4 로 옮겼다 */
+    set_str("ain1.unit", "bar");
     set_last(1, 1000, 4026531);
     mk_cloud_tick(&C, 100, sink, NULL);
     CHECK(find_line("pressure_paint") != NULL, "타입이 채널을 따라간다");
@@ -189,7 +230,8 @@ static void test_moving_the_sensor_is_a_config_change(void)
 static void test_a_sample_is_published_once(void)
 {
     setup();
-    set_u32("ain0.cloud", 3u);
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
     drain_capability();
     set_last(0, 1000, 4026531);
 
@@ -344,7 +386,7 @@ static void test_valve_mask_bit_tags_records(void)
 {
     setup_with_sol();
     sol_set_confirmed(2, 1);
-    set_u32("ain0.cloud", 1u);
+    set_str("ain0.cloud", "pressure_paint");
     mask_on("tx.fields_ain", "valve");
     set_last(0, 1000, 4026531);
 
@@ -359,7 +401,7 @@ static void test_valve_mask_bit_tags_records(void)
 static void test_capability_is_first_and_reflects_config(void)
 {
     setup();
-    set_u32("ain0.cloud", 1u);
+    set_str("ain0.cloud", "pressure_paint");
     set_u32("i2c13.enabled", 1u);
     set_u32("i2c13.kind", 2u);            /* 온습도 */
 
@@ -384,7 +426,7 @@ static void test_capability_reemits_on_config_change(void)
 {
     setup();
     drain_capability();
-    set_u32("ain1.cloud", 3u);             /* 유량 추가 */
+    set_str("ain1.cloud", "flow");         /* 유량 추가 */
     mk_cloud_tick(&C, 200, sink, NULL);
     CHECK_HAS(find_line("device_capability"), "\"flow\"",
               "설정이 바뀌면 즉시 재발행 (계약 §16.4)");
@@ -535,6 +577,8 @@ int main(void)
     test_common_field_values_are_config();
     test_ain_optional_fields_follow_the_mask();
     test_ain_none_is_not_published();
+    test_ain_type_string_is_the_users();
+    test_ain_empty_unit_falls_back_to_value();
     test_moving_the_sensor_is_a_config_change();
     test_a_sample_is_published_once();
     test_i2c_values_flow_without_a_switch();

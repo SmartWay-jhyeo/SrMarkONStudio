@@ -15,53 +15,53 @@
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"adc.drate","grp":"adc","vtype":"enum","default":60,"cur":60,"ro":false,"label":"ADC 변환 속도","unit":"SPS","note":"초당 표본 수 — 60이면 약 17 ms에 한 번. 채널별 수집 주기(ms)와는 다른 값이다","choices":[2,5,10,15,25,30,50,60,100,500,1000,2000,3750,7500]}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.enabled","grp":"ain","vtype":"bool","default":true,"cur":true,"ro":false,"label":"J3 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.period_ms","grp":"ain","vtype":"u16","default":100,"cur":100,"ro":false,"label":"J3 수집 주기","min":10,"max":60000,"unit":"ms"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.zero","grp":"ain","vtype":"f32","default":4.0000,"cur":4.0000,"ro":false,"label":"J3 영점","min":0,"max":25,"unit":"mA"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.scale","grp":"ain","vtype":"f32","default":1.0000,"cur":1.0000,"ro":false,"label":"J3 스케일"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J3 단위","max":7}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.zero","grp":"ain","vtype":"f32","default":4.0,"cur":4.0,"ro":false,"label":"J3 영점","min":0,"max":25,"unit":"mA"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.scale","grp":"ain","vtype":"f32","default":1.0,"cur":1.0,"ro":false,"label":"J3 스케일"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J3 단위","max":7,"note":"젯슨 레코드의 값 이름으로도 쓰인다 — 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.name","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J3 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.cloud","grp":"ain","vtype":"enum","default":0,"cur":0,"ro":false,"label":"J3 타입","note":"젯슨으로 내보낼 레코드 타입","choices":[0,1,2,3],"choice_labels":["없음","도료 분사압","유리알 분사압","유량"]}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.cloud","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J3 타입","max":15,"note":"젯슨 레코드의 type — 비우면 안 내보낸다. 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.enabled","grp":"ain","vtype":"bool","default":false,"cur":false,"ro":false,"label":"J4 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.period_ms","grp":"ain","vtype":"u16","default":100,"cur":100,"ro":false,"label":"J4 수집 주기","min":10,"max":60000,"unit":"ms"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.zero","grp":"ain","vtype":"f32","default":4.0000,"cur":4.0000,"ro":false,"label":"J4 영점","min":0,"max":25,"unit":"mA"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.scale","grp":"ain","vtype":"f32","default":1.0000,"cur":1.0000,"ro":false,"label":"J4 스케일"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J4 단위","max":7}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.zero","grp":"ain","vtype":"f32","default":4.0,"cur":4.0,"ro":false,"label":"J4 영점","min":0,"max":25,"unit":"mA"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.scale","grp":"ain","vtype":"f32","default":1.0,"cur":1.0,"ro":false,"label":"J4 스케일"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J4 단위","max":7,"note":"젯슨 레코드의 값 이름으로도 쓰인다 — 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.name","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J4 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.cloud","grp":"ain","vtype":"enum","default":0,"cur":0,"ro":false,"label":"J4 타입","note":"젯슨으로 내보낼 레코드 타입","choices":[0,1,2,3],"choice_labels":["없음","도료 분사압","유리알 분사압","유량"]}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain1.cloud","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J4 타입","max":15,"note":"젯슨 레코드의 type — 비우면 안 내보낸다. 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.enabled","grp":"ain","vtype":"bool","default":false,"cur":false,"ro":false,"label":"J5 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.period_ms","grp":"ain","vtype":"u16","default":100,"cur":100,"ro":false,"label":"J5 수집 주기","min":10,"max":60000,"unit":"ms"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.zero","grp":"ain","vtype":"f32","default":4.0000,"cur":4.0000,"ro":false,"label":"J5 영점","min":0,"max":25,"unit":"mA"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.scale","grp":"ain","vtype":"f32","default":1.0000,"cur":1.0000,"ro":false,"label":"J5 스케일"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J5 단위","max":7}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.zero","grp":"ain","vtype":"f32","default":4.0,"cur":4.0,"ro":false,"label":"J5 영점","min":0,"max":25,"unit":"mA"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.scale","grp":"ain","vtype":"f32","default":1.0,"cur":1.0,"ro":false,"label":"J5 스케일"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J5 단위","max":7,"note":"젯슨 레코드의 값 이름으로도 쓰인다 — 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.name","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J5 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.cloud","grp":"ain","vtype":"enum","default":0,"cur":0,"ro":false,"label":"J5 타입","note":"젯슨으로 내보낼 레코드 타입","choices":[0,1,2,3],"choice_labels":["없음","도료 분사압","유리알 분사압","유량"]}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain2.cloud","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J5 타입","max":15,"note":"젯슨 레코드의 type — 비우면 안 내보낸다. 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.enabled","grp":"ain","vtype":"bool","default":false,"cur":false,"ro":false,"label":"J6 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.period_ms","grp":"ain","vtype":"u16","default":100,"cur":100,"ro":false,"label":"J6 수집 주기","min":10,"max":60000,"unit":"ms"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.zero","grp":"ain","vtype":"f32","default":4.0000,"cur":4.0000,"ro":false,"label":"J6 영점","min":0,"max":25,"unit":"mA"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.scale","grp":"ain","vtype":"f32","default":1.0000,"cur":1.0000,"ro":false,"label":"J6 스케일"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J6 단위","max":7}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.zero","grp":"ain","vtype":"f32","default":4.0,"cur":4.0,"ro":false,"label":"J6 영점","min":0,"max":25,"unit":"mA"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.scale","grp":"ain","vtype":"f32","default":1.0,"cur":1.0,"ro":false,"label":"J6 스케일"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J6 단위","max":7,"note":"젯슨 레코드의 값 이름으로도 쓰인다 — 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.name","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J6 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.cloud","grp":"ain","vtype":"enum","default":0,"cur":0,"ro":false,"label":"J6 타입","note":"젯슨으로 내보낼 레코드 타입","choices":[0,1,2,3],"choice_labels":["없음","도료 분사압","유리알 분사압","유량"]}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain3.cloud","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J6 타입","max":15,"note":"젯슨 레코드의 type — 비우면 안 내보낸다. 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.enabled","grp":"ain","vtype":"bool","default":false,"cur":false,"ro":false,"label":"J7 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.period_ms","grp":"ain","vtype":"u16","default":100,"cur":100,"ro":false,"label":"J7 수집 주기","min":10,"max":60000,"unit":"ms"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.zero","grp":"ain","vtype":"f32","default":4.0000,"cur":4.0000,"ro":false,"label":"J7 영점","min":0,"max":25,"unit":"mA"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.scale","grp":"ain","vtype":"f32","default":1.0000,"cur":1.0000,"ro":false,"label":"J7 스케일"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J7 단위","max":7}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.zero","grp":"ain","vtype":"f32","default":4.0,"cur":4.0,"ro":false,"label":"J7 영점","min":0,"max":25,"unit":"mA"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.scale","grp":"ain","vtype":"f32","default":1.0,"cur":1.0,"ro":false,"label":"J7 스케일"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J7 단위","max":7,"note":"젯슨 레코드의 값 이름으로도 쓰인다 — 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.name","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J7 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.cloud","grp":"ain","vtype":"enum","default":0,"cur":0,"ro":false,"label":"J7 타입","note":"젯슨으로 내보낼 레코드 타입","choices":[0,1,2,3],"choice_labels":["없음","도료 분사압","유리알 분사압","유량"]}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain4.cloud","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J7 타입","max":15,"note":"젯슨 레코드의 type — 비우면 안 내보낸다. 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.enabled","grp":"ain","vtype":"bool","default":false,"cur":false,"ro":false,"label":"J8 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.period_ms","grp":"ain","vtype":"u16","default":100,"cur":100,"ro":false,"label":"J8 수집 주기","min":10,"max":60000,"unit":"ms"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.zero","grp":"ain","vtype":"f32","default":4.0000,"cur":4.0000,"ro":false,"label":"J8 영점","min":0,"max":25,"unit":"mA"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.scale","grp":"ain","vtype":"f32","default":1.0000,"cur":1.0000,"ro":false,"label":"J8 스케일"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J8 단위","max":7}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.zero","grp":"ain","vtype":"f32","default":4.0,"cur":4.0,"ro":false,"label":"J8 영점","min":0,"max":25,"unit":"mA"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.scale","grp":"ain","vtype":"f32","default":1.0,"cur":1.0,"ro":false,"label":"J8 스케일"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J8 단위","max":7,"note":"젯슨 레코드의 값 이름으로도 쓰인다 — 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.name","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J8 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.cloud","grp":"ain","vtype":"enum","default":0,"cur":0,"ro":false,"label":"J8 타입","note":"젯슨으로 내보낼 레코드 타입","choices":[0,1,2,3],"choice_labels":["없음","도료 분사압","유리알 분사압","유량"]}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain5.cloud","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J8 타입","max":15,"note":"젯슨 레코드의 type — 비우면 안 내보낸다. 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.enabled","grp":"ain","vtype":"bool","default":false,"cur":false,"ro":false,"label":"J9 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.period_ms","grp":"ain","vtype":"u16","default":100,"cur":100,"ro":false,"label":"J9 수집 주기","min":10,"max":60000,"unit":"ms"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.zero","grp":"ain","vtype":"f32","default":4.0000,"cur":4.0000,"ro":false,"label":"J9 영점","min":0,"max":25,"unit":"mA"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.scale","grp":"ain","vtype":"f32","default":1.0000,"cur":1.0000,"ro":false,"label":"J9 스케일"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J9 단위","max":7}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.zero","grp":"ain","vtype":"f32","default":4.0,"cur":4.0,"ro":false,"label":"J9 영점","min":0,"max":25,"unit":"mA"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.scale","grp":"ain","vtype":"f32","default":1.0,"cur":1.0,"ro":false,"label":"J9 스케일"}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.unit","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J9 단위","max":7,"note":"젯슨 레코드의 값 이름으로도 쓰인다 — 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.name","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J9 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.cloud","grp":"ain","vtype":"enum","default":0,"cur":0,"ro":false,"label":"J9 타입","note":"젯슨으로 내보낼 레코드 타입","choices":[0,1,2,3],"choice_labels":["없음","도료 분사압","유리알 분사압","유량"]}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain6.cloud","grp":"ain","vtype":"str","default":"","cur":"","ro":false,"label":"J9 타입","max":15,"note":"젯슨 레코드의 type — 비우면 안 내보낸다. 영문·숫자·_ 만"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"sol.debounce_ms","grp":"sol","vtype":"u16","default":5,"cur":5,"ro":false,"label":"디바운스","min":0,"max":1000,"unit":"ms","note":"이보다 짧게 흔들리는 신호는 상태 변화로 보지 않는다"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"din18.name","grp":"sol","vtype":"str","default":"","cur":"","ro":false,"label":"J18 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"din19.name","grp":"sol","vtype":"str","default":"","cur":"","ro":false,"label":"J19 이름","max":23,"note":"비우면 커넥터 번호로 보인다"}

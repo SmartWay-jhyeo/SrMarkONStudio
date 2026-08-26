@@ -60,13 +60,9 @@ static const char *const I2C_KIND_LABELS[] = {
     "없음", "조도", "온습도", "적외 온도", "방수 온도"
 };
 
-/* 클라우드 타입 선택 (설계 2026-08-21 §4.2). 🔴 전선의 계약 문자열
- * (pressure_paint 등)은 여기가 아니라 mk_cloud.c 의 표가 정한다 — 화면
- * 이름표와 전선 이름을 한 곳에 섞으면 §7.3 의 이름표 규칙이 깨진다. */
-static const uint32_t AIN_CLOUD_CHOICES[] = { 0u, 1u, 2u, 3u };
-static const char *const AIN_CLOUD_LABELS[] = {
-    "없음", "도료 분사압", "유리알 분사압", "유량"
-};
+/* (클라우드 타입은 2026-08-26 에 열거형에서 자유 문자열로 바뀌었다 —
+ * 유량계 두 대가 똑같이 "flow" 로 나가면 젯슨에서 구분할 수 없었다.
+ * 사용자가 친 문자열이 그대로 record type 이 된다. mk_cloud.c 참고.) */
 
 /* (밸브 입력 선택은 2026-08-22 에 걷어냈다 — 좌·우 밸브가 어느 입력에서
  * 올지 모르는 현장 구성이라, 밸브 상태는 **디지털 입력들의 OR** 로
@@ -498,10 +494,15 @@ static size_t add_ain(size_t i)
         s_items[i].def.f = 1.0f;
         i++;
 
+        /* 🔴 단위는 젯슨 레코드의 **값 필드 이름**으로도 쓰인다
+         *    ("lpm": 5.0). 그래서 영문·숫자·밑줄만 받는다 (2026-08-26). */
         k = gen("ain", (unsigned)ch, ".unit", jack, "단위");
         s_items[i] = (MkCfgItem){ .key = s_keys[k], .group = "ain",
                                   .vtype = MK_VT_STR, .max = 7, .has_max = 1,
-                                  .label = s_labels[k] };
+                                  .ascii_ident = 1,
+                                  .label = s_labels[k],
+                                  .note = "젯슨 레코드의 값 이름으로도 쓰인다"
+                                          " — 영문·숫자·_ 만" };
         i++;
 
         /* 🔴 사용자가 붙이는 이름 — "J3" 대신 "유압" (사용자 요청
@@ -517,18 +518,18 @@ static size_t add_ain(size_t i)
         i++;
 
         /* 🔴 타입 — "이 채널의 센서가 NDJSON 에서 뭐라 불리는가"를
-         *    사용자가 정한다(사용자 확정 2026-08-21/22). 센서를 딴 커넥터로
-         *    옮기면 이 선택만 옮기면 된다 — 타입 이름이 채널을 따라가고,
-         *    펌웨어·젯슨·Cloud 어느 코드도 안 바뀐다. 없음 = 젯슨 링크
-         *    미발행 (계약 §16.6 — 미장착은 레코드 자체를 안 낸다).
-         *    전선 문자열 표는 mk_cloud.c 가 정한다. */
+         *    사용자가 **직접 친다** (사용자 확정 2026-08-26 — 열거형이던
+         *    것을 자유 문자열로. 유량계 두 대가 같은 "flow" 로 나가면
+         *    젯슨에서 구분이 안 됐다. flow_front 처럼 가른다).
+         *    빈 값 = 젯슨 링크 미발행 (계약 §16.6). 이름(.name)과 다르다 —
+         *    이름은 화면 표시용(한글 OK), 이것은 전선의 type 문자열. */
         k = gen("ain", (unsigned)ch, ".cloud", jack, "타입");
         s_items[i] = (MkCfgItem){ .key = s_keys[k], .group = "ain",
-                                  .vtype = MK_VT_ENUM,
-                                  .choices = AIN_CLOUD_CHOICES, .n_choices = 4,
-                                  .choice_labels = AIN_CLOUD_LABELS,
+                                  .vtype = MK_VT_STR, .max = 15, .has_max = 1,
+                                  .ascii_ident = 1,
                                   .label = s_labels[k],
-                                  .note = "젯슨으로 내보낼 레코드 타입" };
+                                  .note = "젯슨 레코드의 type — 비우면 안"
+                                          " 내보낸다. 영문·숫자·_ 만" };
         i++;
     }
     return i;
