@@ -82,7 +82,11 @@ def _flash(elf: Path) -> str:
         "set mem inaccessible-by-default off\n"
         "set remote memory-write-packet-size 256\n"
         "set remote memory-write-packet-size fixed\n"
-        "target extended-remote \\\\.\\COM24\n"
+        # 🔴 //./COM24 표기를 쓴다 [2026-08-26]. \\.\COM24 는 GDB 가 백슬래시를
+        #    한 겹 삼켜 \.\COM24 로 열다가 error 2 로 죽는 날이 있다 — 같은
+        #    보드·같은 스크립트로 8번 연속 실패했고, 슬래시 표기로 바꾸자
+        #    첫 시도에 열렸다. MinGW 계열 gdb 는 //./ 를 같은 장치로 받는다.
+        "target extended-remote //./COM24\n"
         "monitor connect_rst enable\n"
         "monitor swdp_scan\n"
         "attach 1\n"
@@ -113,7 +117,11 @@ def _readback(size: int) -> tuple[bytes, int]:
         # 🔴 읽기도 고정한다. 쓰기 쪽만 고정해 온 탓에 되읽기가 흔들렸다.
         "set remote memory-read-packet-size 256\n"
         "set remote memory-read-packet-size fixed\n"
-        "target extended-remote \\\\.\\COM24\n"
+        # 🔴 //./COM24 표기를 쓴다 [2026-08-26]. \\.\COM24 는 GDB 가 백슬래시를
+        #    한 겹 삼켜 \.\COM24 로 열다가 error 2 로 죽는 날이 있다 — 같은
+        #    보드·같은 스크립트로 8번 연속 실패했고, 슬래시 표기로 바꾸자
+        #    첫 시도에 열렸다. MinGW 계열 gdb 는 //./ 를 같은 장치로 받는다.
+        "target extended-remote //./COM24\n"
         "monitor connect_rst enable\n"
         "monitor swdp_scan\n"
         "attach 1\n"
@@ -148,7 +156,11 @@ def _release() -> str:
     return _run_gdb(
         "set confirm off\n"
         "set pagination off\n"
-        "target extended-remote \\\\.\\COM24\n"
+        # 🔴 //./COM24 표기를 쓴다 [2026-08-26]. \\.\COM24 는 GDB 가 백슬래시를
+        #    한 겹 삼켜 \.\COM24 로 열다가 error 2 로 죽는 날이 있다 — 같은
+        #    보드·같은 스크립트로 8번 연속 실패했고, 슬래시 표기로 바꾸자
+        #    첫 시도에 열렸다. MinGW 계열 gdb 는 //./ 를 같은 장치로 받는다.
+        "target extended-remote //./COM24\n"
         "monitor connect_rst disable\n"
         "monitor swdp_scan\n"
         "attach 1\n"
