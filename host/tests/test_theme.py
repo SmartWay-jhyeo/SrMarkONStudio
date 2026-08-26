@@ -82,6 +82,24 @@ def test_labels_do_not_paint_the_window_ground():
     assert blanket and rule.start() > blanket.start()
 
 
+def test_shell_buttons_are_legible_on_the_dark_panel():
+    """🔴 스트림 화면의 `전체 선택`·`전체 해제` 글씨가 안 보였다 (2026-08-26).
+
+    `QFrame#shell QWidget { background: transparent }` 이 id 선택자라
+    QPushButton 의 흰 배경 규칙을 이기는데, 글자색은 전역 INK(거의 검정)를
+    그대로 물려받아 SHELL(먹빛) 위에서 사라진다. 라벨은 어두운 면 색을
+    돌려놨지만(`QFrame#shell QLabel`) 버튼이 빠져 있었다.
+    """
+    import re
+
+    css = stylesheet()
+    rule = re.search(r"^QFrame#shell QPushButton \{[^}]*\}", css, re.MULTILINE)
+    assert rule, "어두운 면 버튼 규칙이 없다"
+    assert Color.SHELL_INK in rule.group(0)
+    # 색을 지정해도 대비가 없으면 소용없다
+    assert contrast_ratio(Color.SHELL_INK, Color.SHELL) >= 4.5
+
+
 def test_mono_font_has_fallback():
     """Cascadia Mono 가 없는 기기가 있다. 폴백이 있어야 자릿수가 흔들리지 않는다."""
     assert "," in Font.MONO

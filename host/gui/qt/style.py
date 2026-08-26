@@ -91,6 +91,21 @@ QFrame#shell QLabel {{
     background: transparent;
     color: {Color.SHELL_INK};
 }}
+/* 🔴 버튼도 라벨과 같은 함정에 빠진다 — 위의 `QFrame#shell QWidget` 이
+ *    id 선택자라 QPushButton 의 흰 배경을 이기는데, 글자색은 전역
+ *    INK(거의 검정)를 물려받아 SHELL(먹빛) 위에서 사라진다. 스트림
+ *    화면의 `전체 선택`·`전체 해제`가 빈 상자로 보였던 이유다.
+ *    hover 규칙도 여기 다시 쓴다 — 전역 `QPushButton:hover` 는 특이도가
+ *    낮아 어두운 면 안에서는 지므로. */
+QFrame#shell QPushButton {{
+    background: transparent;
+    border: 1px solid {Color.SHELL_LINE};
+    border-radius: 4px;
+    padding: {Space.XS}px {Space.MD}px;
+    color: {Color.SHELL_INK};
+}}
+QFrame#shell QPushButton:hover {{ border-color: {Color.SHELL_DIM}; }}
+QFrame#shell QPushButton:disabled {{ color: {Color.SHELL_DIM}; }}
 QLabel#shellDim {{
     background: transparent;
     color: {Color.SHELL_DIM};
