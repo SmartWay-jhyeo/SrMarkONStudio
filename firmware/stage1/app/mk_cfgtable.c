@@ -432,10 +432,20 @@ static size_t add_adc(size_t i)
                               .label = "PGA" };
     s_items[i].def.u = 1;
     i++;
+    /* 🔴 [개정 2026-08-23] "데이터율" 이라는 이름표가 아날로그 탭의
+     *    "수집 주기(ms)" 와 헷갈렸다 — 사용자가 60 을 보고 "얼마를 넣어야
+     *    몇 ms 인지 모르겠다" 고 했다. 단위가 다른 값이다: 이것은 변환기
+     *    자체의 속도(초당 표본 수)이고, 채널을 언제 읽을지는 채널별 수집
+     *    주기가 정한다. 이름표와 안내문이 그 관계를 말하게 한다.
+     *    🔴 안내문은 짧아야 한다 — choices 14개가 같은 줄에 실려
+     *    MK_CFGWIRE_LIST_LINE_MAX(384B)가 빠듯하다. 길면 그 줄이 통째로
+     *    빠져 카탈로그가 거기서 끊긴다(재동결에서 실제로 그랬다). */
     s_items[i] = (MkCfgItem){ .key = "adc.drate", .group = "adc",
                               .vtype = MK_VT_ENUM, .unit = "SPS",
                               .choices = DRATE_CHOICES, .n_choices = 14,
-                              .label = "데이터율" };
+                              .label = "ADC 변환 속도",
+                              .note = "초당 표본 수 — 60이면 약 17 ms에 한 번. "
+                                      "채널별 수집 주기(ms)와는 다른 값이다" };
     s_items[i].def.u = 60;
     i++;
     return i;

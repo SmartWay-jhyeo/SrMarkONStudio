@@ -12,7 +12,7 @@
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"pwr.5v","grp":"pwr","vtype":"bool","default":true,"cur":true,"ro":false,"label":"5V 전원","out":true,"note":"끄면 24V·14.9V·팬·수집·WS2812 가 함께 멈춘다"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"pwr.seq_delay_ms","grp":"pwr","vtype":"u16","default":500,"cur":500,"ro":false,"label":"레일 기동 간격","min":0,"max":5000,"unit":"ms"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"adc.pga","grp":"adc","vtype":"enum","default":1,"cur":1,"ro":false,"label":"PGA","choices":[1,2,4,8,16,32,64]}
-{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"adc.drate","grp":"adc","vtype":"enum","default":60,"cur":60,"ro":false,"label":"데이터율","unit":"SPS","choices":[2,5,10,15,25,30,50,60,100,500,1000,2000,3750,7500]}
+{"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"adc.drate","grp":"adc","vtype":"enum","default":60,"cur":60,"ro":false,"label":"ADC 변환 속도","unit":"SPS","note":"초당 표본 수 — 60이면 약 17 ms에 한 번. 채널별 수집 주기(ms)와는 다른 값이다","choices":[2,5,10,15,25,30,50,60,100,500,1000,2000,3750,7500]}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.enabled","grp":"ain","vtype":"bool","default":true,"cur":true,"ro":false,"label":"J3 사용"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.period_ms","grp":"ain","vtype":"u16","default":100,"cur":100,"ro":false,"label":"J3 수집 주기","min":10,"max":60000,"unit":"ms"}
 {"schema_ver":3,"seq":0,"t":0,"type":"cfg_item","key":"ain0.zero","grp":"ain","vtype":"f32","default":4.0000,"cur":4.0000,"ro":false,"label":"J3 영점","min":0,"max":25,"unit":"mA"}
