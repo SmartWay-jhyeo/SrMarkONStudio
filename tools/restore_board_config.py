@@ -10,38 +10,53 @@ sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 from host.service.board_service import SerialTransport, BoardService
 
 # (키, 값, 무엇인가)
+# [2026-08-26 전면 갱신] 최종 시험 배선: J3 유량1 / J4 유량2 / J5 유압 /
+# J20 Sol / J13 온습도 / GNSS / LED 3. 값은 같은 날 실물 카탈로그 덤프에서
+# 옮겼다(영점은 그날 영점 잡기 결과). ain 의 .cloud 는 이날부터 자유
+# 문자열이다 — 젯슨 레코드의 type 이 그대로 이 글자가 된다.
 PLAN = [
-    # 🔴 tx.period_ms 는 기본값(100ms)을 그대로 쓴다 (사용자 결정 2026-08-22).
-    #    대신 100ms×6채널을 아무도 안 읽으면 F103 브리지가 몇 분 만에 굳는다
-    #    (같은 날 실증) — 보드를 켜 두는 동안은 GUI 든 뭐든 COM23 을 읽는
-    #    쪽을 붙여 둘 것.
-    ("pwr.24v",       "true",   "4~20mA 루프 전원 — 없으면 J3 이 0mA 로 보인다"),
-    ("pwr.14v9",      "true",   "젯슨 전원(J30) — 2026-08-22 젯슨을 J30 에 결선"),
-    ("ain0.zero",     "4.0",    "J3 유압 (ain0 = J3, 0부터 세는 채널 번호)"),
-    ("ain0.scale",    "15.625", "0~250 bar / 16 mA"),
-    ("ain0.unit",     "bar",    ""),
-    ("ain0.enabled",  "true",   ""),
-    # [2026-08-22] 실기기에 유압 3개(J3~J5)·유량 3개(J6~J8)가 물렸다.
-    # 영점·눈금·타입 배정은 사용자가 별도 지시 예정 — 켜기만 한다.
-    ("ain1.enabled",  "true",   "J4 유압"),
-    ("ain2.enabled",  "true",   "J5 유압"),
-    ("ain3.enabled",  "true",   "J6 유량"),
-    ("ain4.enabled",  "true",   "J7 유량"),
-    ("ain5.enabled",  "true",   "J8 유량"),
-    ("i2c12.kind",    "3",      "J12 MLX90614 적외 온도"),
-    ("i2c12.addr",    "90",     "0x5A"),
-    ("i2c12.enabled", "true",   ""),
-    ("i2c13.kind",    "2",      "J13 AM2320 온습도"),
-    ("i2c13.addr",    "92",     "0x5C"),
-    ("i2c13.enabled", "true",   ""),
-    ("gnss.enabled",  "true",   "UM981"),
-    ("gnss.echo",     "false",  "원문 에코 끔 — gnss 정식 레코드가 있고, 안 읽는 구간의 브리지 버퍼 압력을 줄인다"),
-    ("gnss.imu",      "true",   "UM981 RAWIMUX 10Hz → 젯슨 imu 레코드"),
-    ("lcd.enabled",   "true",   "J25 ILI9488 화면"),
-    ("led.count",     "3",      "상태 LED 3개 (J21~J23) — 0이면 전부 꺼진다"),
-    ("ain0.name",     "유압",     "커넥터 이름 — 대시보드·스트림에 보인다"),
-    ("i2c12.name",    "적외온도", ""),
-    ("i2c13.name",    "온습도",   ""),
+    ("pwr.24v",        "true",     "4~20mA 루프 전원 — 없으면 채널이 0mA 로 보인다"),
+    ("pwr.14v9",       "true",     "젯슨 전원(J30)"),
+    ("adc.drate",      "500",      "3채널×10ms 에 필요 (60이면 채널당 52ms — 실측 2026-08-26)"),
+    ("tx.period_ms",   "10",       ""),
+    ("tx.fields_ain",  "184",      "필드 마스크 — 사용자 선택 그대로"),
+    ("tx.fields_i2c",  "128",      ""),
+    ("tx.fields_gnss", "7168",     ""),
+    ("ain0.enabled",   "true",     "J3 유량1"),
+    ("ain0.period_ms", "10",       ""),
+    ("ain0.zero",      "3.841",    "2026-08-26 영점 잡기"),
+    ("ain0.scale",     "3.75",     ""),
+    ("ain0.unit",      "lpm",      "젯슨 레코드의 값 필드 이름이 된다"),
+    ("ain0.name",      "유량1",     "화면 표시용"),
+    ("ain0.cloud",     "flow",     "젯슨 type — 사용자가 GUI 에서 flow_front 등으로 바꾼다"),
+    ("ain1.enabled",   "true",     "J4 유량2"),
+    ("ain1.period_ms", "10",       ""),
+    ("ain1.zero",      "4.0",      ""),
+    ("ain1.scale",     "3.75",     ""),
+    ("ain1.unit",      "lpm",      ""),
+    ("ain1.name",      "유량2",     ""),
+    ("ain1.cloud",     "flow",     ""),
+    ("ain2.enabled",   "true",     "J5 유압"),
+    ("ain2.period_ms", "10",       ""),
+    ("ain2.zero",      "3.992",    ""),
+    ("ain2.scale",     "15.625",   "0~250 bar / 16 mA"),
+    ("ain2.unit",      "bar",      ""),
+    ("ain2.name",      "유압",      ""),
+    ("ain2.cloud",     "pressure_paint", ""),
+    ("din20.name",     "Sol Valve", "J20 옵토 입력"),
+    ("i2c12.kind",     "3",        "J12 MLX90614 적외 온도 (미장착 — 꺼 둔다)"),
+    ("i2c12.addr",     "90",       "0x5A"),
+    ("i2c12.name",     "적외온도",  ""),
+    ("i2c13.kind",     "2",        "J13 AM2320 온습도"),
+    ("i2c13.addr",     "92",       "0x5C"),
+    ("i2c13.period_ms","10",       ""),
+    ("i2c13.enabled",  "true",     ""),
+    ("i2c13.name",     "온습도",    ""),
+    ("gnss.enabled",   "true",     "UM981"),
+    ("gnss.echo",      "false",    "원문 에코 끔"),
+    ("gnss.imu",       "true",     "UM981 RAWIMUX 10Hz → 젯슨 imu 레코드"),
+    ("lcd.enabled",    "true",     "J25 ILI9488 화면"),
+    ("led.count",      "3",        "상태 LED 3개 (J21~J23) — 0이면 전부 꺼진다"),
 ]
 
 def main(port="COM23", extra=()):
