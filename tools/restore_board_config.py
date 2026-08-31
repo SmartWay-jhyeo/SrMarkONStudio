@@ -44,14 +44,15 @@ PLAN = [
     ("ain2.name",      "유압",      ""),
     ("ain2.cloud",     "pressure_paint", ""),
     ("din20.name",     "Sol Valve", "J20 옵토 입력"),
-    ("i2c12.kind",     "3",        "J12 MLX90614 적외 온도 (미장착 — 꺼 둔다)"),
-    ("i2c12.addr",     "90",       "0x5A"),
-    ("i2c12.name",     "적외온도",  ""),
-    ("i2c13.kind",     "2",        "J13 AM2320 온습도"),
-    ("i2c13.addr",     "92",       "0x5C"),
-    ("i2c13.period_ms","10",       ""),
-    ("i2c13.enabled",  "true",     ""),
-    ("i2c13.name",     "온습도",    ""),
+    # [2026-08-31] valve 레코드 발행원이 OR 합성에서 dinN.cloud 로 이동
+    # (HANDOFF_0831 검토 5). 이 줄이 없으면 새 펌웨어에서 valve 가 안 나간다.
+    ("din20.cloud",    "valve",    "젯슨 valve 레코드의 발행원"),
+    # [2026-08-31] 온습도는 J12 다 — 8/30~31 현장에서 J13→J12 로 옮겼고,
+    # 그날 주소 중복(i2c12+i2c13 둘 다 92) 사고를 정리하며 실보드 확정.
+    ("i2c12.kind",     "2",        "J12 AM2320 온습도"),
+    ("i2c12.addr",     "92",       "0x5C"),
+    ("i2c12.enabled",  "true",     ""),
+    ("i2c12.name",     "온습도",    ""),
     ("gnss.enabled",   "true",     "UM981"),
     ("gnss.echo",      "false",    "원문 에코 끔"),
     ("gnss.imu",       "true",     "UM981 RAWIMUX 10Hz → 젯슨 imu 레코드"),
