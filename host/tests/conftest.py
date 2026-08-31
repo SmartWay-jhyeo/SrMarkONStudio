@@ -32,6 +32,22 @@ def _items() -> list[FakeItem]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _isolated_config_snapshot(tmp_path, monkeypatch):
+    """🔴 시험이 실전 보드 사본(data/board_config.json)을 오염시키지 못하게
+    전 시험 자동 격리한다.
+
+    실사고(2026-08-31): GUI 시험이 가짜 보드 카탈로그로 _load_catalog 를
+    돌리면서 실전 경로에 스텁 스냅샷(port="스텁")을 남겼고, 새 보드 굽기
+    직후의 설정 복원이 그 파일을 진짜 사본으로 믿어 **실보드에 스텁
+    설정이 들어갔다**(온습도 꺼짐·valve 미지정·영점 엉터리). 복원 소스가
+    "사본 우선" 인 설계에서 사본의 출처 격리는 선택이 아니다.
+    """
+    import host.core.config_snapshot as snap
+
+    monkeypatch.setattr(snap, "DEFAULT_PATH", tmp_path / "board_config.json")
+
+
 @pytest.fixture
 def interlocked_items():
     """호출할 때마다 새 항목 목록을 만든다 (시험끼리 상태를 공유하지 않게)."""

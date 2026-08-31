@@ -55,6 +55,24 @@ def test_missing_file_means_empty(tmp_path):
     assert load_snapshot(tmp_path / "none.json") == {}
 
 
+def test_default_path_is_isolated_during_tests():
+    """🔴 회귀 방지(2026-08-31 실사고) — 시험 중의 기본 경로는 저장소의
+    data/ 가 아니어야 한다. 아니면 가짜 보드 시험이 실전 사본을 오염시켜,
+    굽기 직후 복원이 스텁 설정을 실보드에 넣는다."""
+    from pathlib import Path
+
+    import host.core.config_snapshot as snap
+
+    repo = Path(snap.__file__).resolve().parents[2]
+    assert repo not in Path(snap.DEFAULT_PATH).parents, (
+        "conftest 의 자동 격리가 안 걸렸다")
+    # 인자 없이 저장해도 격리 경로로 간다 (기본값이 호출 시점 해석인지 —
+    # def 시점에 굳혔다면 이 왕복이 실전 경로를 만졌을 것이다).
+    save_snapshot({"x": "1"})
+    assert load_snapshot() == {"x": "1"}
+    assert Path(snap.DEFAULT_PATH).exists()
+
+
 def test_restore_prefers_snapshot_and_falls_back_to_plan(tmp_path):
     """굽기 후 복원이 사본을 우선한다 — PLAN 은 손 관리라 낡는다
     (2026-08-31 온습도 J13→J12 를 PLAN 이 몰랐다)."""

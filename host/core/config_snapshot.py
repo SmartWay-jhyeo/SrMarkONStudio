@@ -44,10 +44,16 @@ def items_from_schema(schema: ConfigSchema) -> dict[str, str]:
     }
 
 
-def save_snapshot(items: dict[str, str], path: Path = DEFAULT_PATH,
+def save_snapshot(items: dict[str, str], path: Path | None = None,
                   *, port: str = "") -> None:
-    """실패해도 조용히 넘어가지 않는다 — 호출측이 잡아서 알린다."""
-    path = Path(path)
+    """실패해도 조용히 넘어가지 않는다 — 호출측이 잡아서 알린다.
+
+    🔴 path 기본값을 def 시점에 굳히지 않는다(None → 호출 시점 해석).
+       시험이 DEFAULT_PATH 를 임시 폴더로 바꿔치기할 수 있어야 하기
+       때문이다 — 실제로 2026-08-31 에 GUI 시험(가짜 보드)이 실전 경로에
+       스텁 스냅샷을 써 놨고, 굽기 직후 복원이 그것을 진짜로 믿어 실보드에
+       스텁 설정이 들어가는 사고가 났다(conftest 의 자동 격리 참고)."""
+    path = Path(path if path is not None else DEFAULT_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -58,9 +64,9 @@ def save_snapshot(items: dict[str, str], path: Path = DEFAULT_PATH,
         json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def load_snapshot(path: Path = DEFAULT_PATH) -> dict[str, str]:
+def load_snapshot(path: Path | None = None) -> dict[str, str]:
     """없으면 빈 dict — 호출측(restore)이 PLAN 폴백을 탄다."""
-    path = Path(path)
+    path = Path(path if path is not None else DEFAULT_PATH)
     if not path.exists():
         return {}
     payload = json.loads(path.read_text(encoding="utf-8"))
