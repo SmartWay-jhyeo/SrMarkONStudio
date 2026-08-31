@@ -60,12 +60,30 @@ PLAN = [
     ("led.count",      "3",        "상태 LED 3개 (J21~J23) — 0이면 전부 꺼진다"),
 ]
 
+def resolve_plan(snapshot_path=None):
+    """무엇으로 되세울지 고른다 — GUI 가 남긴 사본(HANDOFF_0831 결정 3)이
+    있으면 그것이 진실이고, 없을 때만 이 파일의 PLAN 으로 돌아간다.
+
+    🔴 PLAN 은 손 관리라 낡는다 — 실제로 2026-08-31 에 온습도가 J13→J12 로
+    옮겨진 것을 PLAN 이 모르고 있었다(주소 중복 사고의 재생산 위험).
+    사본은 접속·SET 때마다 GUI 가 갱신하므로 낡지 않는다.
+    """
+    from host.core.config_snapshot import DEFAULT_PATH, load_snapshot
+
+    items = load_snapshot(snapshot_path if snapshot_path else DEFAULT_PATH)
+    if items:
+        return [(k, v, "") for k, v in items.items()], "사본(data/board_config.json)"
+    return list(PLAN), "내장 PLAN (사본 없음)"
+
+
 def main(port="COM23", extra=()):
     tr = SerialTransport(port, 921600)
     svc = BoardService(tr, clock=lambda: int(time.time()*1000))
     svc.heartbeat(); time.sleep(0.3); svc.pump()
+    plan, source = resolve_plan()
+    print(f"복원 소스: {source} — {len(plan)}개 항목")
     bad = []
-    for key, val, why in list(PLAN) + list(extra):
+    for key, val, why in list(plan) + list(extra):
         ok, err = svc.set_config(key, val)
         mark = "  " if ok else "🔴"
         print(f"{mark} {key:16s} = {val:8s} {why}")
