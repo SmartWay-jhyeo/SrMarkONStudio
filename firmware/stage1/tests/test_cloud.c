@@ -572,6 +572,27 @@ static void test_imu_off_is_silent(void)
     CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0, "꺼져 있으면 미발행");
 }
 
+/* ---- i2c 송신 주기 (HANDOFF_0831 결정 1 — 수집·송신 분리) ---------------- */
+
+static void test_i2c_repeats_at_tx_period(void)
+{
+    /* 수집은 센서 되는 대로(온습도 2초), 송신은 캐시 최신값을 포트별
+     * 송신 주기마다 반복 — "변수 a 에 수집된 값을 계속 넣고 송신할 때는
+     * 변수 a 를 쓴다"(사용자, 2026-08-30). */
+    setup_with_i2c();
+    set_u32("i2c13.tx_period_ms", 100u);
+    N = 0;
+    mk_cloud_tick(&C, 100, sink, NULL);          /* 새 표본 → 즉시 발행 */
+    int first = N;
+    CHECK(first >= 2, "temp_air·humidity 가 즉시 나간다");
+    mk_cloud_tick(&C, 150, sink, NULL);          /* 주기 미달 */
+    CHECK(N == first, "주기 전에는 같은 표본을 반복하지 않는다");
+    mk_cloud_tick(&C, 200, sink, NULL);          /* 100ms 도달 */
+    CHECK(N > first, "주기가 차면 캐시 최신값이 반복된다");
+    CHECK_HAS(LINES[N - 1], "\"t\":1000",
+              "반복 줄의 t 는 획득 시각 그대로 (설계 원칙 2)");
+}
+
 /* ---- seq (HANDOFF_0831 결정 2 — 유실 검출을 두 링크 공통으로) ------------ */
 
 static void test_seq_increments_per_line(void)
@@ -639,6 +660,7 @@ int main(void)
     test_imu_off_is_silent();
     test_seq_increments_per_line();
     test_seq_checkbox_off_omits_field();
+    test_i2c_repeats_at_tx_period();
 
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all ok\n");

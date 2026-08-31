@@ -70,7 +70,8 @@ static const char *const I2C_KIND_LABELS[] = {
 
 /* dev 1 + tx 9(마스크 5 + 주기 + 자릿수 + 스키마 버전 + 순번 seq)
  * + pwr 4 + adc 2 + ain 5×7
- * + sol 1(디바운스) + led 3 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
+ * + sol 1(디바운스) + led 3 + i2c 5×7(송신 주기 포함)
+ * + gnss 3(사용·통신속도·원시 문장 에코)
  * + link 1(호스트 링크 속도)
  * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기)
  *
@@ -80,13 +81,13 @@ static const char *const I2C_KIND_LABELS[] = {
 #define ITEM_COUNT   (1 + 9 + 4 + 2 + MK_AIN_COUNT * 7 \
                       + 1 \
                       + 3 \
-                      + MK_I2C_COUNT * 6 \
+                      + MK_I2C_COUNT * 7 \
                       + 4 + 3 \
                       + 1 \
                       + 5)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·i2c). sol 은 고정 문자열이다. */
-#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_I2C_COUNT * 6 + 3)
+#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_I2C_COUNT * 7 + 3)
 
 static MkCfgItem s_items[ITEM_COUNT];
 
@@ -862,6 +863,18 @@ static size_t add_i2c(size_t i)
             .key = s_keys[k], .group = "i2c", .vtype = MK_VT_U16,
             .min = 10, .max = 60000, .has_min = 1, .has_max = 1,
             .unit = "ms", .label = s_labels[k] };
+        s_items[i].def.u = 200;
+        i++;
+
+        /* 🔴 송신 주기 — 수집과 분리 (HANDOFF_0831 결정 1, 사용자 결정
+         *    2026-08-31 포트별 두 손잡이). 수집은 위 `주기`(센서 하한의
+         *    지배를 받는다), 송신은 캐시 최신값을 이 주기마다 반복. */
+        k = gen("i2c", jack, ".tx_period_ms", jack, "송신 주기");
+        s_items[i] = (MkCfgItem){
+            .key = s_keys[k], .group = "i2c", .vtype = MK_VT_U16,
+            .min = 10, .max = 60000, .has_min = 1, .has_max = 1,
+            .unit = "ms", .label = s_labels[k],
+            .note = "짧게 잡으면 젯슨 링크가 포화할 수 있다 — 전송 탭 사용량 확인" };
         s_items[i].def.u = 200;
         i++;
 

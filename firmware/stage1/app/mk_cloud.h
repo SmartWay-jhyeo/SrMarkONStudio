@@ -57,6 +57,10 @@ typedef struct MkCloud {
     uint8_t  ain_primed[MK_ADS_CHANNELS];
     int64_t  i2c_sent_t[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
     uint8_t  i2c_primed[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
+    /* 포트별 마지막 발행 시각 — i2cN.tx_period_ms(수집·송신 분리, HANDOFF_0831
+     * 결정 1)의 기준점. 슬롯이 아니라 포트 단위다: 온도·습도는 같은 수집에서
+     * 나오므로 함께 반복된다. */
+    int64_t  i2c_tx_last_ms[MK_I2C_COUNT];
     /* 마지막으로 발행한 밸브 상태 — 확정 상태의 **변화**에만 valve
      * 레코드를 낸다(설계 §4.5). */
     uint8_t  valve_sent_state;

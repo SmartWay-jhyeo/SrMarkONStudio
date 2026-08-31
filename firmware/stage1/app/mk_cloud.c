@@ -350,18 +350,31 @@ static int build_i2c(MkCloud *c, unsigned port, const MkI2cOut *o,
     return 0;                        /* 계약에 없는 물리량은 미발행 */
 }
 
-static int tick_i2c(MkCloud *c, MkCloudEmit emit, void *ctx)
+static int tick_i2c(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
 {
     int sent = 0;
     if (c->i2c == NULL) { return 0; }
     for (unsigned p = 0; p < MK_I2C_COUNT; p++) {
         /* 별도 발행 스위치는 없다(사용자 확정 2026-08-22) — `사용`이 켜져
          * 값이 오고 있으면 나간다. last 는 켜진 포트만 채워진다. */
+
+        /* 🔴 수집·송신 분리 (HANDOFF_0831 결정 1, 사용자 2026-08-30) —
+         *    새 표본이 아니어도 포트별 송신 주기(i2cN.tx_period_ms)가 차면
+         *    캐시 최신값을 반복 발행한다. 온습도의 새 값은 2초에 한 번뿐이라
+         *    이 반복이 없으면 스트림이 그 속도로 묶인다. 반복 줄의 t 는
+         *    획득 시각 그대로다(설계 원칙 2) — 클라우드 dedupe(device_id,
+         *    t, type)가 같은 t 반복을 한 건으로 접는 것까지가 의도다. */
+        uint32_t txp = i2c_u32(c->cfg, p, ".tx_period_ms", 200u);
+        if (txp == 0u) { txp = 1u; }
+        int due = (now_ms - c->i2c_tx_last_ms[p]) >= (int64_t)txp;
+        int port_sent = 0;
+
         for (unsigned k = 0; k < MK_I2C_VALUES_MAX; k++) {
             MkI2cOut o;
             if (!mk_i2c_last(c->i2c, p, k, &o)) { continue; }
-            if (c->i2c_primed[p][k] && c->i2c_sent_t[p][k] == o.t_ms) {
-                continue;            /* 같은 표본은 두 번 안 낸다 (설계 §4.7) */
+            int fresh = !(c->i2c_primed[p][k] && c->i2c_sent_t[p][k] == o.t_ms);
+            if (!fresh && !due) {
+                continue;            /* 새 표본도 아니고 주기도 안 찼다 */
             }
             char body[MK_CLOUD_LINE_MAX];
             int len = build_i2c(c, p, &o, body, sizeof body);
@@ -373,10 +386,12 @@ static int tick_i2c(MkCloud *c, MkCloudEmit emit, void *ctx)
             }
             if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
                 sent++;
+                port_sent = 1;
                 c->i2c_primed[p][k] = 1u;
                 c->i2c_sent_t[p][k] = o.t_ms;
             }
         }
+        if (port_sent) { c->i2c_tx_last_ms[p] = now_ms; }
     }
     return sent;
 }
@@ -684,6 +699,6 @@ int mk_cloud_tick(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
      *    레코드보다 앞 — 같은 tick 의 태깅과 어긋나지 않게. */
     return tick_capability(c, now_ms, emit, ctx)
          + tick_valve(c, now_ms, emit, ctx)
-         + tick_ain(c, emit, ctx) + tick_i2c(c, emit, ctx)
+         + tick_ain(c, emit, ctx) + tick_i2c(c, now_ms, emit, ctx)
          + tick_gnss(c, emit, ctx) + tick_imu(c, emit, ctx);
 }
