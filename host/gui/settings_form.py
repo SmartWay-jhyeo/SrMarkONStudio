@@ -457,9 +457,10 @@ def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
        않고, `channels`는 항상 0이다 — 이벤트성 레코드라 "채널 수 × 주기"
        로 대역폭을 어림할 근거 자체가 없다(모듈 위 `RECORD_GROUPS` 주석).
 
-    🔴 `i2c`의 전송 주기도 `ain`과 같은 `tx.period_ms`다(규격 §7.1) —
-       포트마다 다른 `i2cN.period_ms`는 **수집** 주기이지 **송신** 주기가
-       아니다.
+    🔴 [개정 2026-08-31] `i2c` 의 송신 주기는 포트별 `i2cN.tx_period_ms`
+       다(HANDOFF_0831 결정 1·검토 8 — 수집 `i2cN.period_ms` 와 분리).
+       표는 종류당 한 줄이라 켜진 포트 중 **가장 짧은** 주기로 잰다 —
+       넉넉한 쪽(과대) 어림이다.
 
     🔴 [개정, 2026-08-20] `i2c`의 `channels`는 **켜진 포트 수가 아니라 그
        포트들이 내는 양(quantity)의 수**다. 포트 하나가 레코드 하나가 아니다 —
@@ -519,8 +520,19 @@ def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
         ports = i2c_ports(form)
         channels = sum(i2c_record_count(ports.get(index, (0, False))[0])
                        for index, _label in enabled)
-    else:
-        channels = len(enabled)
+        # 포트별 송신 주기(위 docstring) — 켜진 포트 중 최단으로 잰다.
+        periods = [
+            _int_or(form, f"i2c{index}.tx_period_ms", 200, minimum=1)
+            for index, _label in enabled
+        ]
+        return TelemetryShape(
+            channels=max(channels, 0),
+            period_ms=min(periods) if periods else 200,
+            float_digits=_int_or(form, KEY_FLOAT_DIGITS, 4, minimum=0),
+            labels=tuple(label for _index, label in enabled),
+        )
+
+    channels = len(enabled)
 
     return TelemetryShape(
         channels=max(channels, 0),

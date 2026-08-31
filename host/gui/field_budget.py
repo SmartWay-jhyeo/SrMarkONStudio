@@ -89,27 +89,43 @@ class Budget:
         return self.line_bytes - LINE_ENDING_BYTES > TELEM_RECORD_JSON_MAX
 
 
-#: 마스크로 끌 수 없는 필드들 (규격 §7.1). 표본에 언제나 들어간다.
-ALWAYS_ON = ("schema_ver", "seq", "t", "type")
+#: 공통 필드 — 표본 머리에 이미 있어 이름 목록에서 다시 얹지 않는다
+#: (규격 §7.1 개정 2026-08-31 — Cloud 계약의 공통 필드).
+ALWAYS_ON = ("schema_ver", "seq", "t", "type", "device_id", "time_source")
 
-#: 레코드 종류별로 **항상** 실리는 잠긴 필드 (마스크 밖, 규격 §7.5·§7.6).
+#: 레코드 종류별로 **항상** 실리는 잠긴 필드 (마스크 밖).
 #: `sample_record` 가 마스크 선택과 무관하게 이 필드들을 얹는다 — 실제
-#: 레코드가 늘 그렇기 때문이다. `host/gui/settings_form.py` 의
-#: `LOCKED_FIELDS` 와 같은 표다(그쪽은 화면에 "잠김" 으로 보여 주는 용도,
-#: 여기는 대역폭 표본을 만드는 용도 — 목적이 달라 따로 둔다).
+#: 레코드가 늘 그렇기 때문이다.
+#:
+#: 🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] 전부 Cloud 계약의 모양이다 —
+#:    connector_id·quantity 는 전선에서 사라졌고(역매핑이 대신한다), 값
+#:    필드의 **이름**이 물리량을 말한다(ain 은 단위 문자열이 이름이 된다 —
+#:    아래 "L/min" 은 ainN.unit 최장(7바이트) 표본이다).
 _LOCKED_BY_KIND: dict[str, tuple[str, ...]] = {
-    # 🔴 connector_id 는 ain·i2c 에서도 잠겼다(규격 §7.2·§7.5 개정
-    #    2026-08-21). 채널이 빠진 다채널 레코드는 아무 말도 안 한다 —
-    #    실기기에서 사용자가 이 필드를 끄자 대시보드가 레코드를 버렸다.
-    "ain": ("connector_id",),
-    "i2c": ("quantity", "value", "connector_id"),
-    "din": ("connector_id", "state"),
-    # 🔴 위치가 빠진 GNSS 레코드는 아무 말도 안 한다(규격 §7.8.5). 빼고
-    #    재면 실제보다 60바이트쯤 짧게 잡힌다.
-    "gnss": ("lat", "lon", "fix_t"),
-    # [2026-08-22] imu(젯슨 링크, 계약 v1.7.x) — 6축은 마스크 밖이다.
-    # 마스크가 정하는 것은 `imu_temp`(전선 이름 `degc`) 하나뿐이다.
-    "imu": ("time_source", "ax", "ay", "az", "gx", "gy", "gz"),
+    "ain": ("L/min",),
+    "i2c": ("degc",),
+    "din": ("state",),
+    # 🔴 계약 §3 — gnss 는 전 필드 필수 + valve 태깅 필수.
+    "gnss": ("lat_e8", "lon_e8", "fix", "sat", "hdop_x100", "cs", "valve"),
+    # imu(계약 §7) — 6축은 마스크 밖. 마스크가 정하는 것은
+    # `imu_temp`(전선 이름 `degc`) 하나뿐이다.
+    "imu": ("ax", "ay", "az", "gx", "gy", "gz"),
+}
+
+#: 마스크 비트로는 존재하지만 Cloud 전선에는 **안 나가는** 이름들.
+#: (v3 시절의 비트가 카탈로그에 남아 있다 — 켜져 있어도 줄에 안 실리므로
+#: 표본에 넣으면 그만큼 크게 잰다. 넉넉히 재는 것과 없는 것을 세는 것은
+#: 다르다.)
+_NOT_ON_WIRE = frozenset({"unit", "status", "capture_counter", "time_quality"})
+
+#: 사용자 정의 type 문자열의 표본 — 카탈로그 상한(15바이트)을 꽉 채운 값.
+#: 좁은 표본으로 재면 정확히 여유가 없을 때 모자란다(모듈 머리말).
+_CLOUD_TYPE_SAMPLE = {
+    "ain": "pressure_paintx",      # ainN.cloud, 최장 15
+    "i2c": "temp_road",            # 종류 유도 타입 중 최장
+    "din": "valve_left_gate",      # dinN.cloud, 최장 15
+    "gnss": "gnss",
+    "imu": "imu",
 }
 
 #: 필드 하나가 실을 **넉넉한** 표본값.
@@ -137,15 +153,22 @@ _SAMPLE = {
     #    나머지는 필드마다 다르다(§7.8.5). 어림하면 정확히 그 자릿수만큼
     #    짧게 잡힌다. 값은 넉넉한 쪽(서반구·남반구의 세 자리 경도, 두 자리
     #    HDOP)으로 잡되 실기기가 낸 자릿수를 그대로 채운다.
-    "lat": -37.31906943,
-    "lon": -127.34059070,
-    "fix_t": 1_787_193_075_000,
-    "alt": 1234.567,
-    "sats": 32,
+    # 🔴 계약 §3 의 정수 좌표 — 서반구·남반구(부호 포함) 최장 자릿수.
+    "lat_e8": -9_000_000_000,
+    "lon_e8": -18_000_000_000,
     "fix": 5,
-    "hdop": 99.99,
+    "sat": 32,
+    "hdop_x100": 9999,
+    "cs": "7F",
+    "valve": 1,
+    "alt": 1234.567,
     "speed": 99.999,
     "course": 359.99,
+    "diff_age": 99.9,
+    "station_id": 4095,
+    # 계약 i2c 선택 필드 (v1.7.1) — 전선 이름 기준.
+    "ambient_degc": -105.0,
+    "dewpoint_degc": -105.0,
     # 🔴 imu(젯슨 링크, 펌웨어 mk_cloud.c) — 자릿수가 필드마다 고정이라
     #    (6축 3자리, 온도 1자리) `tx.float_digits` 밖이다. 값은 넉넉한 쪽:
     #    가속은 ±2 g, 자이로는 ±250 dps 눈금의 끝(RAWIMUXA 눈금,
@@ -155,25 +178,22 @@ _SAMPLE = {
     "degc": -105.0,
 }
 
-#: 실수 필드 — 자릿수가 `tx.float_digits` 를 따른다.
+#: 실수 필드 — 자릿수가 `tx.float_digits` 를 따른다. "L/min" 은 ain 값
+#: 필드의 표본(이름 = 단위 문자열, 최장 7바이트).
 #:
-#: 🔴 GNSS 필드는 여기 없다. 그쪽은 자릿수가 필드마다 고정이라(규격 §7.8.2)
-#:    `tx.float_digits` 를 따르면 안 된다 — 기본값 4자리면 위치 분해능이
-#:    약 11 m 가 되는데 화면에는 소수점이 그럴듯하게 붙어 있다.
-_SAMPLE_FLOAT = {"ma": 19.999999, "value": 1234.567891}
+#: 🔴 GNSS 필드는 여기 없다. 계약 §3 이 좌표를 정수(±1e8)로 실으므로
+#:    `tx.float_digits` 와 무관하다.
+_SAMPLE_FLOAT = {"ma": 19.999999, "value": 1234.567891,
+                 "L/min": 1234.567891}
 
 #: 모르는 필드에 넣을 자리끼움. 🔴 빼지 않는다 — 빼면 적게 잡는다.
 _UNKNOWN_PLACEHOLDER = "00000000"
 
-#: 마스크 이름 ≠ 전선 이름인 필드 (규격 §7.2 표의 주석). 미리보기가 마스크
-#: 이름으로 그리면 실제로 나가는 줄과 달라진다.
-_WIRE_NAME = {"imu_temp": "degc"}
-
-#: 젯슨 링크 계약(v1.7.x)으로만 나가는 레코드 종류 — 공통 필드가 v3 와
-#: 다르다: `seq` 가 없고 `device_id`·`time_source` 가 있으며 `schema_ver`
-#: 는 계약의 것(기본 1)이다. v3 머리로 재면 실제로 나가는 줄과 다른 것을
-#: 보여 주게 된다(펌웨어 mk_cloud.c begin_record).
-_CLOUD_KINDS = ("imu",)
+#: 마스크 이름 ≠ 전선 이름인 필드. 미리보기가 마스크 이름으로 그리면
+#: 실제로 나가는 줄과 달라진다. i2c 의 곁값 둘은 계약 v1.7.1 의 전선 이름.
+_WIRE_NAME = {"imu_temp": "degc",
+              "temp_ambient": "ambient_degc",
+              "dewpoint": "dewpoint_degc"}
 
 
 def sample_record(names, *, float_digits: int = 4,
@@ -187,23 +207,20 @@ def sample_record(names, *, float_digits: int = 4,
        그 이름을 모르는데, 그때 빼고 재면 화면이 여유가 있다고 말하면서
        실제로는 없는 상태가 된다.
 
-    🔴 [개정, 2026-08-19] `record_type` 이 `"ain"`이 아니면 그 레코드의
-       **잠긴 필드**(`_LOCKED_BY_KIND`)를 `names` 와 무관하게 항상 얹는다
-       — 실제 `i2c`·`din` 레코드가 마스크와 무관하게 `quantity`·`value`나
-       `connector_id`·`state` 를 늘 싣는 것과 같다. 이것 없이 재면 그
-       레코드의 진짜 크기보다 작게 잡혀, 여유가 있다고 말하는데 실제로는
-       없는 바로 그 실패가 된다(위 문단과 같은 이유).
+    🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] 머리가 전부 Cloud 계약이다 —
+       두 링크가 같은 줄을 받으므로 방언이 하나뿐이다. `seq` 는 tx.seq
+       기본(켜짐)대로 최장(uint32)으로 넣고, type 은 사용자 문자열 상한
+       (15바이트) 표본이다. v3 시절 비트가 카탈로그에 남긴 이름 중 전선에
+       안 나가는 것(`_NOT_ON_WIRE`)은 뺀다 — 넉넉히 재는 것과 없는 것을
+       세는 것은 다르다.
     """
-    if record_type in _CLOUD_KINDS:
-        # 젯슨 링크 계약의 공통 필드(모듈 위 `_CLOUD_KINDS` 주석).
-        rec: dict = {"schema_ver": 1, "device_id": "board-01",
-                     "t": 1_700_000_000_000, "type": record_type}
-    else:
-        rec = {"schema_ver": 3, "seq": 4294967295, "t": 1_700_000_000_000,
-               "type": record_type}
+    rec: dict = {"schema_ver": 1, "seq": 4294967295,
+                 "device_id": "board-01", "t": 1_700_000_000_000,
+                 "type": _CLOUD_TYPE_SAMPLE.get(record_type, record_type),
+                 "time_source": "device_clock"}
     for name in (*_LOCKED_BY_KIND.get(record_type, ()), *names):
         name = _WIRE_NAME.get(name, name)
-        if name in ALWAYS_ON or name in rec:
+        if name in ALWAYS_ON or name in rec or name in _NOT_ON_WIRE:
             continue
         if name in _SAMPLE_FLOAT:
             rec[name] = round(_SAMPLE_FLOAT[name], float_digits)

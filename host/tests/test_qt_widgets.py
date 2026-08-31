@@ -836,7 +836,8 @@ def test_turning_on_an_i2c_port_moves_the_summary_immediately(app, form):
     assert after.bytes_per_s > before
     # 카드가 실제로 그 수를 그리고 있다.
     text = " ".join(c._message.text() for c in _usage_cards(page))
-    assert f"{after.ratio * 100:.0f}%" in text
+    # 카드는 소수 1자리로 쓴다(_verdict 의 pct 서식) — 같은 자릿수로 대조.
+    assert f"{after.ratio * 100:.1f}%" in text
 
 
 def test_the_two_places_show_the_same_number(app, form):

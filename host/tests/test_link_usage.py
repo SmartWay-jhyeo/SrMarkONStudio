@@ -75,8 +75,10 @@ def test_a_two_quantity_sensor_costs_more_than_a_one_quantity_sensor(form):
 
     assert two > one
     # 같은 줄이 두 배로 나가는 것이므로 I2C 줄의 초당 바이트도 정확히 두 배다.
+    # 주기는 포트별 송신 주기(i2cN.tx_period_ms, 기본 200ms)다 —
+    # 옛 카탈로그(스냅샷)에 항목이 없으면 기본값으로 잰다.
     assert _row(compute_usage(form), "i2c").lines_per_s == pytest.approx(
-        2 * 1000.0 / 100)
+        2 * 1000.0 / 200)
 
 
 def test_a_port_without_a_kind_sends_nothing(form):
@@ -117,10 +119,12 @@ def test_field_names_only_lists_bits_of_that_record(form):
 
 
 def test_i2c_line_carries_the_locked_fields(form):
-    """`quantity`·`value` 는 마스크에 없어도 항상 실린다 (규격 §7.5)."""
+    """[개정 2026-08-31] 계약 i2c 레코드 — 값 필드(degc 류)가 잠긴 전부다.
+    quantity·connector_id 는 전선에서 사라졌다(역매핑의 몫)."""
     line = record_line(form, "i2c")
-    assert line["type"] == "i2c"
-    assert "quantity" in line and "value" in line
+    assert line["type"] == "temp_road"     # 종류 유도 타입 중 최장 표본
+    assert "degc" in line
+    assert "quantity" not in line
 
 
 # ------------------------------------------------------------------ baud
@@ -136,9 +140,12 @@ def test_raising_the_link_baud_lowers_the_percentage(form):
     form.edit("link.baud", "2000000")
     fast = compute_usage(form)
 
-    assert fast.baud == 2000000
+    # 🔴 [개정 2026-08-31] 두 링크가 같은 줄을 받는다 — 기준은 빡빡한
+    #    쪽이다. 호스트를 2M 으로 올려도 젯슨 921600 이 바닥이다.
+    assert fast.baud == 921600
     assert fast.bytes_per_s == slow.bytes_per_s      # 트래픽은 그대로
     assert fast.ratio < slow.ratio
+    assert "젯슨" in fast.message, "왜 더 안 주는지 화면이 말해야 한다"
 
 
 def test_link_baud_falls_back_when_the_catalog_has_none(form):
@@ -211,7 +218,10 @@ def test_gnss_line_carries_the_locked_fields(form):
     실제로는 없는 바로 그 실패가 된다."""
     form.edit("tx.fields_gnss", "0")
     line = record_line(form, "gnss")
-    assert "lat" in line and "lon" in line and "fix_t" in line
+    # [개정 2026-08-31] 계약 §3 — 전 필드 필수 + valve 태깅.
+    assert "lat_e8" in line and "lon_e8" in line
+    assert "sat" in line and "hdop_x100" in line and "cs" in line
+    assert "valve" in line
 
 
 def test_gnss_mask_is_independent_of_the_other_masks(form):
@@ -262,8 +272,14 @@ def test_seven_channels_at_10ms_overflow_the_slowest_link(form):
 
     form.edit("link.baud", "115200")
     assert compute_usage(form).level == "fault"
+    # 🔴 [개정 2026-08-31] 호스트를 2M 으로 올려도 젯슨 921600 이 기준이고,
+    #    7채널 × 10ms 는 seq 까지 얹으면 그 선을 넘는다 — HANDOFF_0831
+    #    검토 4 의 계산이 화면에 그대로 보여야 한다. 넘치면 젯슨 링이
+    #    줄 단위로 버리고 seq 구멍으로 세어진다(조용히 썩지는 않는다).
     form.edit("link.baud", "2000000")
-    assert compute_usage(form).ratio < 1.0
+    over = compute_usage(form)
+    assert over.baud == 921600
+    assert over.ratio >= 1.0
 
 
 def test_the_message_says_what_to_reduce(form):

@@ -42,19 +42,22 @@ def test_capacity_scales_with_baud():
 # ----------------------------------------------------------------- 표본 줄
 
 def test_sample_always_carries_the_fields_that_cannot_be_turned_off():
-    """규격 §7.1 — `schema_ver` · `seq` · `t` · `type` 은 마스크로 못 끈다.
-
-    🔴 [개정 2026-08-21] `connector_id` 도 ain 의 잠긴 필드가 됐다(규격
-       §7.2) — 채널이 빠진 다채널 레코드는 아무 말도 안 한다.
-    """
+    """🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] 머리가 Cloud 계약이다 —
+    공통 필드(schema_ver·seq·device_id·t·type·time_source) + ain 의
+    값 필드(이름 = 단위 문자열 표본 "L/min"). connector_id 는 전선에서
+    사라졌다 — 채널 대응은 카탈로그 역매핑(typemap)의 몫이다."""
     rec = sample_record([])
-    assert set(rec) == {"schema_ver", "seq", "t", "type", "connector_id"}
+    assert set(rec) == {"schema_ver", "seq", "device_id", "t", "type",
+                        "time_source", "L/min"}
+    assert rec["schema_ver"] == 1
+    assert rec["seq"] == 4294967295, "tx.seq 기본 켜짐 — 최장 자릿수로 잰다"
 
 
 def test_sample_carries_exactly_what_was_selected():
-    rec = sample_record(["ma", "connector_id"])
-    assert "ma" in rec and "connector_id" in rec
-    assert "raw" not in rec and "unit" not in rec
+    rec = sample_record(["ma"])
+    assert "ma" in rec
+    assert "raw" not in rec
+    assert "unit" not in rec, "계약 전선에 unit 필드는 없다 — 이름이 단위다"
 
 
 def test_an_unknown_field_is_counted_not_dropped():
@@ -76,40 +79,55 @@ def test_more_float_digits_make_a_longer_line():
     assert long > short
 
 
-def test_sample_record_locks_i2c_quantity_and_value():
-    """🔴 [신규, 2026-08-19] i2c 는 quantity·value 를 마스크로 못 끈다
-    (규격 §7.5) — 무엇을 골랐든 표본에 항상 실려야 실제 크기를 잰다."""
+def test_sample_record_locks_i2c_value_field():
+    """🔴 [개정 2026-08-31] 계약 i2c 레코드의 잠긴 것은 값 필드(degc 류)
+    하나다 — quantity·connector_id 는 전선에서 사라졌다(역매핑의 몫)."""
     rec = sample_record([], record_type="i2c")
-    assert rec["type"] == "i2c"
-    assert "quantity" in rec and "value" in rec
+    assert rec["type"] == "temp_road", "종류 유도 타입 중 최장 표본"
+    assert "degc" in rec
+    assert "quantity" not in rec and "connector_id" not in rec
 
 
-def test_sample_record_locks_din_connector_id_and_state():
-    """🔴 [신규, 2026-08-19] din 은 connector_id·state 를 마스크로 못 끈다
-    (규격 §7.6)."""
+def test_sample_record_locks_din_state():
+    """계약 din 상태 레코드 — state 만 잠긴다. 타입은 사용자 문자열 상한
+    (15바이트) 표본이다."""
     rec = sample_record([], record_type="din")
-    assert rec["type"] == "din"
-    assert "connector_id" in rec and "state" in rec
+    assert len(rec["type"]) == 15
+    assert "state" in rec and "connector_id" not in rec
 
 
 def test_sample_record_defaults_to_ain_and_has_no_extra_locked_fields():
-    """옛 호출부(record_type 생략)는 예전과 똑같이 ain 만 만든다.
-
-    🔴 connector_id 는 이제 ain 의 잠긴 필드라(§7.2 개정 2026-08-21)
-       기본 표본에도 실린다 — i2c 전용 잠금(quantity)만 빠져 있으면 된다.
-    """
+    """옛 호출부(record_type 생략)는 ain 표본이다 — 타입은 사용자 문자열
+    상한(15바이트), 값 필드는 단위 이름(최장 7바이트) 하나."""
     rec = sample_record([])
-    assert rec["type"] == "ain"
-    assert "quantity" not in rec
-    assert "connector_id" in rec
+    assert len(rec["type"]) == 15
+    assert "degc" not in rec and "state" not in rec
+    assert "L/min" in rec
 
 
 def test_sample_is_not_optimistic_about_width():
     """🔴 넉넉한 값으로 잰다. 좁은 표본으로 재면 실제보다 작게 나오고,
        작게 나온 만큼이 정확히 여유가 없을 때 문제가 된다."""
-    rec = sample_record(["raw", "connector_id"])
+    rec = sample_record(["raw"])
     assert rec["raw"] >= 8_000_000        # 24비트 ADC 의 큰 쪽
-    assert rec["connector_id"] >= 9       # J9 — 커넥터 번호의 큰 쪽
+    assert rec["seq"] == 4294967295       # uint32 의 끝 — 열 자리
+
+
+def test_sample_matches_captured_lines_closely():
+    """실캡쳐(2026-08-29)와 크게 어긋나면 표본이 거짓말하는 것이다 —
+    넉넉하게(같거나 크게), 그러나 두 배씩 부풀리지는 않게."""
+    import json
+
+    from host.tests import cloud_vectors as V
+
+    sample = measure_line(sample_record(["ma", "raw"]))
+    real = len(V.FLOW1.encode("utf-8")) + 2   # 캡쳐에는 seq 가 없다
+    assert real <= sample <= real * 1.5, (sample, real)
+
+    rec = json.loads(V.GNSS)
+    sample = measure_line(sample_record(["alt"], record_type="gnss"))
+    real = len(V.GNSS.encode("utf-8")) + 2
+    assert real * 0.8 <= sample <= real * 1.5, (sample, real)
 
 
 # ----------------------------------------------------------------- 줄 길이
