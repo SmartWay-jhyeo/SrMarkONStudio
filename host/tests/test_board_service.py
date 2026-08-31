@@ -511,6 +511,41 @@ def test_gnssraw_line_is_not_counted_corrupt():
     assert svc.type_counts.get("gnssraw") == 1
 
 
+def test_seq_forgives_gate_reopen_jump_after_buffered_stragglers():
+    """🔴 규격 §7.1.3 개정(2026-08-31) — 침묵 중에도 seq 는 오른다(젯슨이
+    소비). 재개 순간의 실제 도착 순서는 실보드에서 관찰한 그대로다:
+    게이트가 닫히기 **전** 레코드들이 OS 버퍼에 남아 연속으로 먼저 오고,
+    그 뒤에 폐쇄 구간 점프가 온다. reset() 은 잔량에 기준선을 잡아 점프를
+    도로 셌다(실보드 798건 오집계) — 점프 한 번을 용서하는 방식이 맞다."""
+    clock = FakeClock()
+    svc = BoardService(_LinesTransport(), clock=clock)
+    svc.heartbeat()
+    svc.seq_tracker.observe(100)
+    clock.advance(5000)                        # HB 3초 초과 공백 = 게이트 닫힘
+    svc.heartbeat()                            # 재개 — 용서 플래그
+    t = svc.seq_tracker
+    assert t.observe(101) == 0                 # 버퍼 잔량(연속) — 플래그 생존
+    assert t.observe(102) == 0
+    assert t.observe(900) == 0, "폐쇄 구간 점프는 유실이 아니다"
+    assert t.missing_total == 0
+    assert t.forgiven_count == 1
+    assert t.observe(905) == 4, "그 뒤의 진짜 유실은 다시 센다"
+
+
+def test_seq_forgives_jump_when_tx_seq_reenabled():
+    """tx.seq 를 껐다 켜면 끔 구간에 소비된 번호만큼 점프한다 — 그 점프도
+    유실이 아니다(mk_cloud.h 의 seq 카운터 계약)."""
+    svc, _sim, _clock = (lambda c=FakeClock(): (
+        BoardService(LoopbackTransport(FakeBoard()), clock=c), None, c))()
+    svc.heartbeat()
+    svc.seq_tracker.observe(10)
+    ok, _ = svc.set_config("tx.seq", "true")   # 켬(재개) — 점프 용서
+    assert ok
+    assert svc.seq_tracker.observe(11) == 0    # 경계 잔량(연속)
+    assert svc.seq_tracker.observe(900) == 0   # 끔 구간 점프
+    assert svc.seq_tracker.missing_total == 0
+
+
 def test_set_config_refreshes_typemap():
     """이름을 바꾸는 SET 은 GUI 자신이 보내므로 역매핑을 즉시 갱신할 수
     있다(HANDOFF_0831 결정 2 보완)."""

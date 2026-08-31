@@ -260,6 +260,8 @@ class BoardService:
         #    사용자 타입 줄이 원문 그대로 흐른다(버리지 않는다).
         self._typemap = TypeMap({})
         self._schema = None
+        #: 마지막으로 $HB 를 보낸 시각 — 게이트 재개 판정(heartbeat 주석).
+        self._last_hb_ms: int | None = None
 
     # ------------------------------------------------------------- 역매핑
     def set_typemap(self, tmap: TypeMap) -> None:
@@ -332,8 +334,27 @@ class BoardService:
             )
         raise ProtocolError(f"응답 없음: {verb} {args} ({self.timeout_s}s 초과)")
 
+    #: 보드 침묵 게이트의 HB 신선도 시한 (규격 §6.2·§7.1.3 — 3초).
+    _GATE_STALE_MS = 3000
+
     def heartbeat(self) -> None:
-        """$HB 를 보낸다. 응답은 없다."""
+        """$HB 를 보낸다. 응답은 없다.
+
+        🔴 [개정 2026-08-31, 규격 §7.1.3] 우리 HB 가 3초 넘게 끊겼다
+        재개되면 그 사이 보드의 USB 게이트가 닫혔다 열린 것이다 — 침묵
+        중에도 seq 는 오르므로(젯슨이 소비) 재개 후 첫 레코드를 새
+        기준선으로 삼는다. 안 하면 게이트 점프 전체가 유실로 집계된다
+        (실보드 검증에서 79건이 그렇게 잡혔다, 2026-08-31).
+        """
+        now = self.clock()
+        if (self._last_hb_ms is not None
+                and now - self._last_hb_ms > self._GATE_STALE_MS):
+            # 🔴 reset() 이 아니라 forgive 다 — 게이트가 닫히기 전 레코드가
+            #    OS 버퍼에 남아 연속으로 먼저 오고, 리셋은 거기에 기준선을
+            #    잡아 정작 점프를 다시 센다(records.forgive_next_gap 주석,
+            #    실보드 798건 오집계로 확인).
+            self.seq_tracker.forgive_next_gap()
+        self._last_hb_ms = now
         self.transport.write(build_command("HB"))
         self.pump()
 
@@ -342,6 +363,10 @@ class BoardService:
         ack = self.send("CFG", "SET", key, value)
         if ack.args[-1] == "OK":
             self._refresh_typemap_for(key, value)
+            if key == "tx.seq":
+                # 끔 구간에도 카운터는 오른다(mk_cloud.h) — 다시 켠 순간의
+                # 점프 한 번을 용서한다(경계의 연속 잔량은 통과시키고).
+                self.seq_tracker.forgive_next_gap()
             return True, ""
         return False, ack.args[-1]
 

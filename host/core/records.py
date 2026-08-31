@@ -177,12 +177,31 @@ class SeqTracker:
         self.duplicate_count = 0
         #: 유실이라기엔 너무 큰 점프를 만난 횟수. 통계에서 제외했다는 표시다.
         self.discontinuity_count = 0
+        #: forgive_next_gap() 로 용서한 점프 횟수 — 게이트 재개·tx.seq 재개.
+        self.forgiven_count = 0
+        self._forgive_gap = False
 
     def reset(self) -> None:
         """재연결 시 호출. 다음 seq 를 새 기준점으로 삼는다."""
         self._last = None
         self._backward_run = 0
         self._restart_from = None
+
+    def forgive_next_gap(self) -> None:
+        """다음 **전방 점프 한 번**을 유실로 세지 않고 재기준선한다.
+
+        🔴 [2026-08-31, 규격 §7.1.3 개정] 침묵 게이트가 닫혔다 열리면
+        (HB 끊김 재개, tx.seq 껐다 켬) 그 구간에 젯슨이 소비한 번호만큼
+        점프가 온다 — 유실이 아니다. reset() 으로는 안 된다: 게이트가
+        닫히기 **전** 레코드들이 OS 수신 버퍼에 남아 있다가 재개 직후
+        연속으로 먼저 도착하고, 리셋은 거기에 기준선을 잡아 정작 점프를
+        다시 센다(실보드에서 798건이 그렇게 잡혔다). 연속 레코드는 이
+        플래그를 소모하지 않고 지나가고, 점프가 왔을 때 한 번만 용서한다.
+
+        대가: 그 창에 **진짜** 유실이 겹치면 한 번 가려진다 — 관리 이벤트
+        직후의 짧은 창 하나라 감수한다(횟수는 forgiven_count 로 보인다).
+        """
+        self._forgive_gap = True
 
     def observe(self, seq: int) -> int:
         """seq 하나를 관찰하고 이번에 발견한 누락 개수를 반환한다."""
@@ -223,6 +242,15 @@ class SeqTracker:
         self._backward_run = 0
         self._restart_from = None
         missing = delta - 1
+
+        if missing > 0 and self._forgive_gap:
+            # 게이트 재개·tx.seq 재개의 점프 — 유실이 아니라 재기준선이다
+            # (forgive_next_gap 주석). 연속 레코드(missing==0)는 이 분기에
+            # 안 들어오므로 플래그가 버퍼 잔량을 그대로 통과해 살아남는다.
+            self._forgive_gap = False
+            self.forgiven_count += 1
+            self._last = seq
+            return 0
 
         if missing > MAX_PLAUSIBLE_GAP:
             # 물리적으로 불가능한 크기다. 유실이 아니라 시퀀스 불연속으로
