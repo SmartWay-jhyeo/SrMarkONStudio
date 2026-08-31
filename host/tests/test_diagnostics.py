@@ -35,7 +35,11 @@ def _stat(**over) -> dict:
         "gnss": {"pps_age_ms": 842, "pps_raw_age_ms": 842, "pps_raw_count": 118,
                  "pps_unpaired_reason": None, "sats": 11,
                  "init_sent": True, "init_exhausted": False,
-                 "sentence_seen": True},
+                 "sentence_seen": True,
+                 # 보정을 아직 안 받는 벤치가 "정상적으로 도는 보드"다 —
+                 # 받은 적 없음(나이 null·계수 0)이 경고를 내면 안 된다.
+                 "rtcm_age_ms": None, "rtcm_bytes": 0,
+                 "rtcm_bad": 0, "rtcm_drop": 0, "rtcm_overrun": 0},
         "rails": {"v24": False, "v14v9": False, "v5": True},
         "din": [{"connector_id": 18, "state": 0},
                 {"connector_id": 19, "state": 0},
@@ -272,6 +276,70 @@ def test_init_sent_but_still_waiting_is_not_a_warning():
         "pps_unpaired_reason": None, "sats": None,
         "init_sent": True, "init_exhausted": False, "sentence_seen": False}),
         "gnss.init")
+    assert r.warning is False
+
+
+# ---------------------------------------------------------------- RTCM 보정
+
+def _gnss_with(**over) -> dict:
+    """기본 gnss 객체에서 rtcm_* 만 바꾼다."""
+    g = dict(_stat()["gnss"])
+    g.update(over)
+    return g
+
+
+def test_rtcm_never_received_is_not_a_warning():
+    """보정이 안 오는 것은 정상이다(설계 원칙 3) — 젯슨 포워더를 안 켠
+    벤치·캐스터 없는 현장이 그 상태다. 단독 측위는 보정 없이도 된다."""
+    r = _read(_stat(), "gnss.rtcm")
+    assert r.warning is False
+    assert "받은 적 없음" in r.value
+    assert "정상" in r.note
+
+
+def test_rtcm_flowing_shows_bytes_and_age():
+    """흐르고 있으면 누적량과 신선도를 사람이 읽게 말한다 — 이 두 수가
+    "젯슨이 보내고 있는가"의 답이다(2026-08-28 바로 그 질문)."""
+    r = _read(_stat(gnss=_gnss_with(rtcm_age_ms=1200, rtcm_bytes=345678)),
+              "gnss.rtcm")
+    assert r.warning is False
+    assert "345,678" in r.value
+    assert "1,200" in r.value
+
+
+def test_rtcm_bad_frames_are_a_warning():
+    """CRC 불일치는 보드가 직접 관측한 전선 오염이다 — Q2 에서 실측된
+    \\x00 삽입 오염이 이 계수로 잡힌다."""
+    r = _read(_stat(gnss=_gnss_with(rtcm_age_ms=500, rtcm_bytes=1000,
+                                    rtcm_bad=7)),
+              "gnss.rtcm")
+    assert r.warning is True
+    assert "깨진 프레임" in r.value
+
+
+def test_rtcm_drops_are_a_warning():
+    r = _read(_stat(gnss=_gnss_with(rtcm_age_ms=500, rtcm_bytes=1000,
+                                    rtcm_drop=3)),
+              "gnss.rtcm")
+    assert r.warning is True
+    assert "못 넘긴" in r.value
+
+
+def test_rtcm_overrun_is_a_warning():
+    r = _read(_stat(gnss=_gnss_with(rtcm_age_ms=500, rtcm_bytes=1000,
+                                    rtcm_overrun=42)),
+              "gnss.rtcm")
+    assert r.warning is True
+    assert "넘침" in r.value
+
+
+def test_missing_rtcm_fields_are_unknown_not_zero():
+    """구 펌웨어(rtcm_* 필드 없음)는 모름이지 0 이 아니다 — lcd.readback 의
+    null 과 같은 결."""
+    g = {k: v for k, v in _stat()["gnss"].items()
+         if not k.startswith("rtcm_")}
+    r = _read(_stat(gnss=g), "gnss.rtcm")
+    assert r.value == UNKNOWN_TEXT
     assert r.warning is False
 
 

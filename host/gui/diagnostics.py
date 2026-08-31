@@ -279,6 +279,7 @@ def _gnss_group(stat: dict | None) -> Group:
             _unknown("gnss.pps_raw", "원시 PPS 펄스"),
             _unknown("gnss.pps_unpaired", "짝짓기"),
             _unknown("gnss.init", "GNSS 초기화"),
+            _unknown("gnss.rtcm", "RTCM 보정"),
         ))
 
     sats = _int(g, "sats")
@@ -338,8 +339,62 @@ def _gnss_group(stat: dict | None) -> Group:
     # 초기화 시퀀스 -------------------------------------------------------
     init_r = _init_reading(g)
 
+    # RTCM 보정 하행 ------------------------------------------------------
+    rtcm_r = _rtcm_reading(g)
+
     return Group("gnss", "GNSS · PPS",
-                 (sats_r, paired_r, raw_r, unpaired_r, init_r))
+                 (sats_r, paired_r, raw_r, unpaired_r, init_r, rtcm_r))
+
+
+def _rtcm_reading(g: dict) -> Reading:
+    """RTCM 보정 하행(규격 §7.4 의 rtcm_*) — 젯슨 → 보드 → 위성 모듈.
+
+    🔴 보정이 안 오는 것은 **정상이다**(젯슨 포워더를 안 켰거나 캐스터가
+       없는 벤치) — 단독 측위는 보정 없이도 된다. 경고는 보드가 실제로
+       관측한 이상(깨진 프레임·못 넘긴 프레임·수신 링 넘침)에만 붙인다
+       (파일 머리의 원칙 — 정상인 것을 경고로 만들지 않는다).
+    """
+    key, label = "gnss.rtcm", "RTCM 보정"
+    age = _int(g, "rtcm_age_ms")
+    total = _int(g, "rtcm_bytes")
+    bad = _int(g, "rtcm_bad")
+    drop = _int(g, "rtcm_drop")
+    overrun = _int(g, "rtcm_overrun")
+
+    if total is None:
+        return _unknown(key, label,
+                        "보드가 RTCM 계수기를 답하지 않았다 — 이 필드가 없는 "
+                        "구 펌웨어다")
+
+    problems = []
+    if bad:
+        problems.append(f"깨진 프레임 {bad:,} (전선 오염을 보드가 관측)")
+    if drop:
+        problems.append(f"모듈로 못 넘긴 프레임 {drop:,} (송신 링 만재)")
+    if overrun:
+        problems.append(f"수신 링 넘침 {overrun:,} 바이트")
+    if problems:
+        age_s = f"{age:,} ms 전" if age is not None else "온전한 프레임 없음"
+        return Reading(
+            key, label, f"🔴 {' · '.join(problems)}",
+            f"보정 바이트는 오고 있다(누적 {total:,} B · 마지막 온전 프레임 "
+            f"{age_s}). 이 계수들이 계속 오르면 배선(J29 핀3)과 링크 품질을 "
+            "본다 — 젯슨 쪽이 아니라 보드가 직접 관측한 이상이다",
+            Level.WARN, Verification.VERIFIED)
+
+    if total == 0:
+        return Reading(
+            key, label, "받은 적 없음",
+            "젯슨 포워더가 꺼져 있으면 정상이다 — 보정 없이도 단독 측위는 "
+            "된다. RTK 를 쓰려면 젯슨에서 NTRIP 포워더를 켠다",
+            Level.IDLE, Verification.VERIFIED)
+
+    age_txt = f" · 마지막 {age:,} ms 전" if age is not None else ""
+    return Reading(
+        key, label, f"누적 {total:,} B{age_txt}",
+        "보정이 위성 모듈로 흐르고 있다 — 측위 품질(단독→RTK)은 하늘이 "
+        "보여야 올라간다. 나이가 수 초를 넘게 늙으면 캐스터·젯슨 쪽을 본다",
+        Level.IDLE, Verification.VERIFIED)
 
 
 def _unpaired_reading(reason, paired: int | None,
