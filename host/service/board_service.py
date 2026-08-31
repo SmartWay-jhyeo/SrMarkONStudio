@@ -4,6 +4,7 @@ GUI 와 분리돼 있다. GUI 가 없어도 이 계층만으로 수집·저장�
 나중에 Jetson 에서 GUI 없이 서비스만 돌리는 구성이 그대로 가능하다.
 """
 
+import re
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -22,8 +23,18 @@ from host.core.limits import (
     LINK_BAUD_CONFIRM_MS,
     LINK_BAUD_KEY,
 )
+from host.core.cloudnorm import normalize
 from host.core.framing import Command, build_command, parse_line
-from host.core.records import SeqTracker, is_telemetry, parse_record
+from host.core.records import (
+    COMMAND_RESPONSE_TYPES,
+    SeqTracker,
+    is_telemetry,
+    parse_record,
+)
+from host.core.typemap import TypeMap
+
+#: 이 키들이 바뀌면 역매핑(TypeMap)이 낡는다 — SET 성공 시 재구축한다.
+_TYPEMAP_KEYS = re.compile(r"(ain|i2c|din)\d+\.(cloud|unit|kind|enabled)$")
 
 #: 원문 줄 버퍼(`raw_lines`)와 파싱된 레코드 버퍼(`records`)의 기본 상한.
 #:
@@ -244,6 +255,32 @@ class BoardService:
         self._pending_records: deque[dict] = deque(maxlen=raw_buffer_maxlen)
         self._pending_raw: deque[str] = deque(maxlen=raw_buffer_maxlen)
 
+        # 🔴 [2026-08-31, HANDOFF_0831 결정 2] 역매핑 — 클라우드 레코드를
+        #    내부형으로 되붙이는 표. 카탈로그가 오기 전에는 빈 표라
+        #    사용자 타입 줄이 원문 그대로 흐른다(버리지 않는다).
+        self._typemap = TypeMap({})
+        self._schema = None
+
+    # ------------------------------------------------------------- 역매핑
+    def set_typemap(self, tmap: TypeMap) -> None:
+        """역매핑을 바깥에서 주입한다 — 카탈로그 없이 수신만 하는 구성
+        (시험·수집기)용. fetch_schema() 는 스스로 구축한다."""
+        self._typemap = tmap
+
+    def _refresh_typemap_for(self, key: str, value: str) -> None:
+        """SET 성공이 역매핑을 낡게 했으면 저장된 스키마를 고쳐 재구축한다.
+
+        이름 변경은 GUI 자신이 보내므로 이 갱신으로 스트림이 안 끊긴다
+        (HANDOFF_0831 결정 2 보완)."""
+        if self._schema is None or not _TYPEMAP_KEYS.match(key):
+            return
+        import dataclasses
+
+        item = self._schema.items.get(key)
+        if item is not None:
+            self._schema.items[key] = dataclasses.replace(item, current=value)
+        self._typemap = TypeMap.from_schema(self._schema)
+
     # ------------------------------------------------------------- 명령 송신
     def send(self, verb: str, *args: str) -> Command:
         """명령을 보내고 **그 명령에 대응하는** $SACK 를 반환한다.
@@ -304,6 +341,7 @@ class BoardService:
         """설정 변경을 시도하고 (성공여부, 거부사유) 를 반환한다."""
         ack = self.send("CFG", "SET", key, value)
         if ack.args[-1] == "OK":
+            self._refresh_typemap_for(key, value)
             return True, ""
         return False, ack.args[-1]
 
@@ -424,14 +462,21 @@ class BoardService:
                                 error=error, recovered=recovered)
 
     def fetch_schema(self) -> ConfigSchema:
-        """$CFG,LIST 로 카탈로그를 받아 스키마를 만든다."""
+        """$CFG,LIST 로 카탈로그를 받아 스키마를 만든다.
+
+        🔴 역매핑(TypeMap)도 여기서 함께 구축한다 — 카탈로그가 곧 "타입
+        문자열이 어느 채널인가"의 유일 출처다(HANDOFF_0831 결정 2 보완).
+        """
         self._catalog = []
         self._collect_catalog = True
         try:
             self.send("CFG", "LIST")
         finally:
             self._collect_catalog = False
-        return parse_catalog(self._catalog)
+        schema = parse_catalog(self._catalog)
+        self._schema = schema
+        self._typemap = TypeMap.from_schema(schema)
+        return schema
 
     def fetch_stat(self) -> dict:
         """$STAT 으로 지금 상태를 받는다.
@@ -506,6 +551,13 @@ class BoardService:
         if not line:
             return
 
+        # 🔴 $GNSSRAW 는 §3 체크섬이 없는 진단 줄이다(규격 §7.7 개정
+        #    2026-08-31 — 원문의 NMEA 체크섬이 그대로 실려 있다). parse_line
+        #    에 넣으면 켜는 순간 모든 에코가 corrupt 로 집계된다.
+        if line.startswith("$GNSSRAW,"):
+            self._record_raw(line, "gnssraw")
+            return
+
         if line.startswith("$"):
             try:
                 cmd = parse_line(line)
@@ -538,10 +590,14 @@ class BoardService:
             self._catalog.append(line)
             return
 
-        # 🔴 명령 응답은 seq 시퀀스에 넣지 않는다 (규격 §7.1.1).
-        # 타입을 손으로 나열하지 않고 is_telemetry() 를 쓴다 — 손으로 적으면
-        # cfg_item/cfg_field/cfg_end 처럼 빠뜨리는 것이 생긴다.
-        if not is_telemetry(rec):
+        # 🔴 명령 응답은 seq 시퀀스에 넣지 않는다 (규격 §7.1.1). 타입
+        # 집합은 records.py 의 화이트리스트 하나만 쓴다.
+        #
+        # [개정 2026-08-31] is_telemetry() 로 가르면 안 된다 — 그 함수는
+        # 이제 seq 존재까지 봐서, tx.seq 를 끈 보드의 **진짜 텔레메트리**가
+        # 이 분기로 빨려 들어와 records 에서 사라진다. 제어 응답 판정은
+        # 타입으로, 유실 집계 참여는 is_telemetry 로 — 둘은 다른 질문이다.
+        if rtype in COMMAND_RESPONSE_TYPES:
             self.last_payload = rec
             if rtype == "stat":
                 self.mode = rec.get("mode", self.mode)
@@ -550,9 +606,18 @@ class BoardService:
                 self.ctl_mode = rec.get("ctl_mode", self.ctl_mode)
             return
 
-        self.seq_tracker.observe(rec["seq"])
-        self.records.append(rec)
-        self._pending_records.append(rec)
+        # 🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] 계약 레코드를 내부형으로
+        #    정규화해 쌓는다. v3(굽기 전 실보드)·미해석 문자열은 그대로
+        #    통과하므로 전환기에도 아무것도 잃지 않는다.
+        #
+        #    seq 관찰은 **줄 기준 한 번**이다 — 한 줄이 두 레코드로 펴질 수
+        #    있고(temp_road + 주변 온도), 같은 seq 를 두 번 넣으면 duplicate
+        #    통계가 오염된다.
+        if is_telemetry(rec):
+            self.seq_tracker.observe(rec["seq"])
+        for out in normalize(rec, self._typemap):
+            self.records.append(out)
+            self._pending_records.append(out)
 
     def close(self) -> None:
         self.transport.close()
