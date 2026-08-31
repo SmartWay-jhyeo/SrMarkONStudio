@@ -39,10 +39,12 @@ from host.gui.qt.stream_view import StreamView
 from host.gui.qt.topbar import TopBar
 from host.gui.qt.view import View
 from host.gui.qt.worker import WorkerThread
+from host.core.typemap import TypeMap
 from host.gui.settings_form import (
     SettingsForm,
     channel_ranges,
     channel_units,
+    cloud_duplicate_warning,
     i2c_ports,
 )
 from host.gui.qt.rail import Rail
@@ -371,6 +373,12 @@ class MainWindow(QMainWindow):
         #    (tools/restore_board_config.py)·역매핑·백업의 공용 소스다.
         self._snapshot_items = items_from_schema(schema)
         self._save_snapshot()
+        # 🔴 타입 중복 경고 (HANDOFF_0831 결정 2 보완) — 같은 타입 문자열이
+        #    두 채널이면 역매핑이 못 가린다. 접속 직후가 알릴 자리다.
+        dup_warning = cloud_duplicate_warning(
+            TypeMap.from_schema(schema).duplicates())
+        if dup_warning:
+            self._top.set_link(dup_warning, bad=True)
 
     def _save_snapshot(self) -> None:
         try:

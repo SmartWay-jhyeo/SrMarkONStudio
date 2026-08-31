@@ -84,6 +84,18 @@ def test_same_kind_i2c_twice_is_detected():
     assert tmap.duplicates()["humidity"] == [12, 13]
 
 
+def test_duplicate_warning_names_types_and_connectors():
+    """경고문이 무엇이 어디에 겹쳤는지 말해야 사람이 고칠 수 있다 —
+    2026-08-31 온습도 진단에서 이 경고가 없어 주소 중복을 늦게 찾았다."""
+    from host.gui.settings_form import cloud_duplicate_warning
+
+    assert cloud_duplicate_warning({}) == ""
+    msg = cloud_duplicate_warning({"temp_air": [12, 13], "flow1": [3, 6]})
+    assert "temp_air" in msg and "J12" in msg and "J13" in msg
+    assert "flow1" in msg and "J3" in msg and "J6" in msg
+    assert "가릴 수 없다" in msg
+
+
 def test_kind_table_matches_screen_quantities():
     """🔴 이중 정의 감시 — typemap 의 종류→타입 표는 펌웨어 mk_cloud.c
     I2C_KIND_TYPES 의 복제다. 화면의 종류→물리량 표(screen.py)와 어긋나면

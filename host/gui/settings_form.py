@@ -273,6 +273,26 @@ def group_label(name: str) -> str:
     return GROUP_LABELS.get(name, name)
 
 
+def cloud_duplicate_warning(duplicates: dict[str, list[int]]) -> str:
+    """역매핑이 가릴 수 없는 타입 중복의 경고문 (HANDOFF_0831 결정 2 보완).
+
+    🔴 레코드에 채널 번호가 없으므로(사용자 결정 2026-08-30) 같은 타입
+    문자열이 두 채널에 있으면 — 같은 이름을 친 아날로그든, 동종 I2C
+    2대든 — 스트림·차트·영점이 어느 채널의 값인지 가릴 수 없다. 펌웨어는
+    막지 않는다(사용자 결정) — 이 경고가 설정 단계의 안전망이다.
+    2026-08-31 온습도 진단에서 실제로 이 구성(i2c12+i2c13 중복)이 사고를
+    냈다 — 그날은 경고가 없어서 늦게 찾았다.
+    """
+    if not duplicates:
+        return ""
+    parts = [
+        f"{t}({'·'.join(f'J{c}' for c in cs)})"
+        for t, cs in sorted(duplicates.items())
+    ]
+    return ("타입 중복 — 채널을 가릴 수 없다: " + ", ".join(parts)
+            + ". 설정에서 타입을 다르게 하거나 한쪽을 꺼라")
+
+
 #: 규격 §7.2 가 이름 지은 전송 설정 항목들. 카탈로그 항목을 하드코딩하는
 #: 것과 다르다 — 이것은 **규격이 정한 계약**이고, 규격이 바뀌면 여기도 바뀐다.
 #: 규격 §7.2.1 이 이름 지은 채널 환산 항목의 뒷부분.
