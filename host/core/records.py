@@ -1,16 +1,25 @@
 """NDJSON 텔레메트리 레코드 파싱과 seq 누락 추적.
 
-규격: protocol/specification.md §7
+규격: protocol/specification.md §7 (2026-08-31 개정 — Cloud 계약 통일)
 """
 
 import json
 
 from host.core.errors import ProtocolError
 
+#: 계약(Cloud v1.7)의 기본 schema_ver — 통일 후 텔레메트리의 값 (HANDOFF_0831
+#: 결정 2). 사용자가 tx.schema_ver 로 1~9 를 고를 수 있으므로 파서는 "양의
+#: 정수 수용"이고, 이 상수는 규격 동기 검증(test_spec_sync)과 표본 생성이 쓴다.
+CONTRACT_SCHEMA_VER = 1
+
+#: 제어 줄(cfg_item 등 $ 응답 본문)의 schema_ver — 규격 v3 그대로다.
+#: 전환기(굽기 전 실보드)의 v3 텔레메트리도 이 값으로 온다.
 SCHEMA_VER = 3
 
-#: 필드 마스크로 끌 수 없는 필드 (규격 §7.1)
-MANDATORY_FIELDS = ("schema_ver", "seq", "t", "type")
+#: 항상 있어야 하는 필드 (규격 §7.1 개정 2026-08-31).
+#: 🔴 seq 는 빠졌다 — tx.seq 체크박스(기본 켜짐)를 끄면 안 실린다.
+#:    seq 없는 레코드는 유실 집계에 불참할 뿐 버리지 않는다.
+MANDATORY_FIELDS = ("schema_ver", "t", "type")
 
 #: seq 시퀀스에 참여하지 않는 레코드 (규격 §7.1.1).
 #: 요청이 있을 때만 나가므로 "빠졌다"는 개념이 성립하지 않고,
@@ -19,12 +28,15 @@ COMMAND_RESPONSE_TYPES = frozenset(
     {"id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end"}
 )
 
-#: `time_source`가 실을 수 있는 값(규격 §7.1.2, Phase 3 GNSS/PPS 시간축).
+#: `time_source`가 실을 수 있는 값.
 #:
-#: 🔴 지어내지 않는다 — 계획서 §7.2는 6단계를 말하지만 지금 보드가 실제로
-#: 낼 수 있는 것은 이 셋뿐이다. 새 등급이 생기면 여기와 규격 §7.1.2를
-#: 함께 고친다.
-TIME_SOURCES = frozenset({"gnss_pps", "gnss_nmea", "device_clock"})
+#: 🔴 지어내지 않는다 — 보드(mk_cloud)가 내는 것은 gnss/gnss_nmea/
+#: device_clock 셋이고(설계 §4.1 매핑: gnss_pps → "gnss"), host_clock 은
+#: B단계($TRES), unknown 은 Cloud validator 보정값(계약 §1)이다. 전환기의
+#: v3 보드는 gnss_pps 를 그대로 낸다 — 함께 수용한다.
+TIME_SOURCES = frozenset(
+    {"gnss", "gnss_pps", "gnss_nmea", "device_clock", "host_clock", "unknown"}
+)
 
 #: seq 는 uint32
 SEQ_MODULO = 1 << 32
@@ -80,12 +92,14 @@ def parse_record(line: str) -> dict:
     if missing:
         raise ProtocolError(f"필수 필드 누락: {missing}")
 
-    if rec["schema_ver"] != SCHEMA_VER:
-        raise ProtocolError(
-            f"schema_ver 불일치: 받음 {rec['schema_ver']}, 기대 {SCHEMA_VER}"
-        )
+    # 🔴 [개정 2026-08-31] schema_ver 는 값 고정이 아니라 "양의 정수" 다.
+    # 제어 줄은 3, 계약 텔레메트리는 기본 1(tx.schema_ver 로 1~9), 전환기의
+    # v3 보드는 3 — 한 스트림에 둘이 섞이므로 값으로 거르면 절반이 죽는다.
+    ver = rec["schema_ver"]
+    if isinstance(ver, bool) or not isinstance(ver, int) or ver <= 0:
+        raise ProtocolError(f"schema_ver 가 양의 정수가 아님: {ver!r}")
 
-    # 🔴 필수 필드의 타입까지 검사한다. 존재만 확인하면 부족하다.
+    # 🔴 필수/선택 필드의 타입까지 검사한다. 존재만 확인하면 부족하다.
     #
     # 펌웨어의 직렬화 버그로 seq 가 문자열로 나오는 경우가 실제로 있다.
     # 그러면 parse_record 는 통과하고, 나중에 SeqTracker.observe() 안에서
@@ -94,11 +108,13 @@ def parse_record(line: str) -> dict:
     # 목적인데 한 줄 때문에 세션을 잃는다.
     #
     # bool 은 int 의 서브클래스라 따로 걸러야 한다.
-    seq = rec["seq"]
-    if isinstance(seq, bool) or not isinstance(seq, int):
-        raise ProtocolError(f"seq 가 정수가 아님: {seq!r}")
-    if not 0 <= seq < SEQ_MODULO:
-        raise ProtocolError(f"seq 가 uint32 범위 밖: {seq}")
+    # seq 는 선택이 됐지만(tx.seq) **있다면** 여전히 uint32 여야 한다.
+    if "seq" in rec:
+        seq = rec["seq"]
+        if isinstance(seq, bool) or not isinstance(seq, int):
+            raise ProtocolError(f"seq 가 정수가 아님: {seq!r}")
+        if not 0 <= seq < SEQ_MODULO:
+            raise ProtocolError(f"seq 가 uint32 범위 밖: {seq}")
 
     t = rec["t"]
     if isinstance(t, bool) or not isinstance(t, int):
@@ -115,8 +131,14 @@ def is_telemetry(rec: dict) -> bool:
 
     명령 응답의 seq(항상 0)를 SeqTracker 에 넣으면 매번 거대한 역방향
     점프로 보여 유실 통계가 망가진다. 호출측은 observe() 앞에 이걸 건다.
+
+    🔴 [개정 2026-08-31] seq 가 없으면(tx.seq 꺼짐) 시퀀스라는 것 자체가
+    없으므로 불참이다 — 레코드를 버리는 게 아니라 유실 집계만 건너뛴다.
+    사용자 타입 문자열이 제어 타입과 겹치는 사고는 펌웨어 입구가 막는다
+    (table_policy 의 예약 이름 거절).
     """
-    return rec.get("type") not in COMMAND_RESPONSE_TYPES
+    return ("seq" in rec
+            and rec.get("type") not in COMMAND_RESPONSE_TYPES)
 
 
 def is_utc_time(rec: dict) -> bool:
@@ -125,9 +147,12 @@ def is_utc_time(rec: dict) -> bool:
     🔴 `device_clock`(또는 필드 마스크로 꺼져 있어 `time_source`가 아예
     없는 경우)일 때 `t`는 부팅 후 경과 ms일 뿐이다 — 그 상태에서 시각으로
     저장하면 재부팅마다 시간축이 리셋된다. 이 판정을 호출마다 다시 짜지
-    않도록 여기 한 곳에 둔다.
+    않도록 여기 한 곳에 둔다. `unknown`(Cloud validator 보정값, 계약 §1)도
+    UTC 라 단정하지 않는다.
     """
-    return rec.get("time_source") in (TIME_SOURCES - {"device_clock"})
+    return rec.get("time_source") in (
+        TIME_SOURCES - {"device_clock", "unknown"}
+    )
 
 
 class SeqTracker:

@@ -197,10 +197,15 @@ def test_heartbeat_puts_board_in_config_mode(rig):
 
 
 def test_pump_collects_telemetry_records(rig):
+    """[개정 2026-08-31] 스텁은 계약 레코드(type=flow)를 낸다 — 카탈로그를
+    읽어 역매핑이 서면 내부형(ain)으로 정규화돼 쌓인다(실제 GUI 흐름)."""
     svc, _sim, clock = rig
+    svc.heartbeat()
+    svc.fetch_schema()
     clock.advance(100)
     svc.pump()
     assert any(r["type"] == "ain" for r in svc.records)
+    assert any(r.get("cloud_type") == "flow" for r in svc.records)
 
 
 def test_pump_tracks_seq_gaps(rig):
@@ -303,7 +308,8 @@ def test_line_stats_count_lines_bytes_types_and_last_seen(rig):
     svc.pump()
     assert svc.line_total > 0
     assert svc.byte_total > 0
-    assert svc.type_counts.get("ain", 0) > 0
+    # 원문 통계는 전선의 타입 그대로 센다 — 스텁의 계약 타입은 "flow".
+    assert svc.type_counts.get("flow", 0) > 0
     assert svc.last_line_at == clock.now_ms
 
 
@@ -430,6 +436,97 @@ def test_nothing_is_saved_before_the_change_is_confirmed(baud_rig):
     assert svc.send("BAUD", "CONFIRM", "1500000").args == ("BAUD", "OK")
     assert svc.send("CFG", "SAVE").args == ("CFG", "OK")
     assert sim.store.saved_value("link.baud") == 1500000
+
+
+# ── Cloud 형식 수신 (계획 2 Task 4 — HANDOFF_0831 결정 2) ────────────────
+
+
+class _LinesTransport:
+    """시험이 밀어 넣은 줄을 그대로 흘리는 트랜스포트."""
+
+    baud = 921600
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def write(self, data: str) -> None:
+        pass
+
+    def read_lines(self):
+        out, self.lines = self.lines, []
+        yield from out
+
+    def reopen(self, baud: int) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def _cloud_svc():
+    from host.core.typemap import TypeMap
+    from host.tests.test_typemap import _field_wiring
+
+    svc = BoardService(_LinesTransport(), clock=lambda: 0)
+    svc.set_typemap(TypeMap.from_schema(_field_wiring()))
+    return svc
+
+
+def test_cloud_vectors_land_as_internal_records():
+    from host.tests import cloud_vectors as V
+
+    svc = _cloud_svc()
+    svc.transport.lines = list(V.WITH_SEQ)
+    svc.pump()
+    assert svc.corrupt_total == 0
+    recs = svc.take_records()
+    ain = [r for r in recs if r["type"] == "ain"]
+    assert {r["connector_id"] for r in ain} == {3, 4, 5}
+    assert any(r["type"] == "i2c" and r["quantity"] == "temp" for r in recs)
+    assert any(r["type"] == "din" and r["state"] == 1 for r in recs)
+    assert svc.seq_tracker.received_total == len(V.WITH_SEQ)
+
+
+def test_seqless_records_are_kept_but_not_tracked():
+    """tx.seq 를 끈 보드 — 레코드는 살고 유실 집계만 불참한다."""
+    from host.tests import cloud_vectors as V
+
+    svc = _cloud_svc()
+    svc.transport.lines = [V.FLOW1]            # 캡쳐 원문 — seq 없음
+    svc.pump()
+    recs = svc.take_records()
+    assert len(recs) == 1 and recs[0]["type"] == "ain"
+    assert svc.seq_tracker.received_total == 0
+
+
+def test_gnssraw_line_is_not_counted_corrupt():
+    """$GNSSRAW 는 §3 체크섬이 없는 진단 줄이다(규격 §7.7 개정) —
+    parse_line 에 넣으면 전부 corrupt 로 오염된다."""
+    svc = _cloud_svc()
+    svc.transport.lines = [
+        "$GNSSRAW,$GNRMC,235959.999,A,4807.038,N,01131.000,E,0.0,0.0,180826,,,A*73",
+    ]
+    svc.pump()
+    assert svc.corrupt_total == 0
+    assert svc.type_counts.get("gnssraw") == 1
+
+
+def test_set_config_refreshes_typemap():
+    """이름을 바꾸는 SET 은 GUI 자신이 보내므로 역매핑을 즉시 갱신할 수
+    있다(HANDOFF_0831 결정 2 보완)."""
+    from host.tests import cloud_vectors as V
+
+    svc, sim, _clock = (lambda c=FakeClock(): (
+        BoardService(LoopbackTransport(FakeBoard()), clock=c), None, c))()
+    svc.heartbeat()
+    svc.fetch_schema()                          # 카탈로그 → 역매핑 구축
+    ok, _ = svc.set_config("ain0.cloud", "flow1")
+    assert ok
+    svc.transport._pending.append(
+        (svc.transport.baud, V.FLOW1))
+    svc.pump()
+    recs = [r for r in svc.take_records() if r.get("cloud_type") == "flow1"]
+    assert recs and recs[0]["type"] == "ain" and recs[0]["connector_id"] == 3
 
 
 def test_the_board_reverts_on_its_own_when_no_one_confirms(baud_rig):

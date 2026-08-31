@@ -361,6 +361,43 @@ static void dump_catalog(void)
     mk_cfgwire_list(&CFG, fields, n_fields, 0, emit, NULL);
 }
 
+/* ---- i2c 수집 주기 하한 (HANDOFF_0831 검토 8 — 조용한 클램프 폐지) ------- */
+
+static void test_i2c_period_floor_follows_kind(void)
+{
+    /* 하한은 펌웨어의 취향이 아니라 센서(종류)를 따라다니는 데이터시트
+     * 값이다(사용자 합의 2026-08-31). 예전에는 실효 주기 = max(설정, 하한)
+     * 으로 조용히 덮어서 화면 설정값이 거짓말을 했다 — 이제 입구에서
+     * 거절하거나(주기 SET), 끌어올린다(종류 SET). */
+    setup();
+    CHECK(mk_cfg_set(&CFG, "i2c13.kind", "2") == MK_CFG_OK, "종류=온습도 수락");
+    MkCfgItem *per = mk_cfg_find(&CFG, "i2c13.period_ms");
+    CHECK(per != NULL && per->cur.u == 2000u,
+          "종류 SET 이 기본 200ms 를 AM2320 하한 2000ms 로 끌어올린다");
+    CHECK(mk_cfg_set(&CFG, "i2c13.period_ms", "500") == MK_CFG_RANGE,
+          "하한 미만 SET 은 RANGE 로 거절 — 조용히 덮지 않는다");
+    CHECK(mk_cfg_set(&CFG, "i2c13.period_ms", "2000") == MK_CFG_OK,
+          "하한 이상은 수락");
+    CHECK(mk_cfg_set(&CFG, "i2c13.kind", "1") == MK_CFG_OK, "종류=조도로 변경");
+    CHECK(mk_cfg_set(&CFG, "i2c13.period_ms", "200") == MK_CFG_OK,
+          "조도 하한(180ms) 이상이라 200 수락 — 하한이 종류를 따라간다");
+    CHECK(mk_cfg_set(&CFG, "i2c13.period_ms", "100") == MK_CFG_RANGE,
+          "조도 하한 미만은 거절");
+}
+
+static void test_cloud_type_rejects_reserved_control_names(void)
+{
+    /* 사용자 문자열이 제어 응답 타입(id/stat/cfg_*)과 같으면 호스트의
+     * 제어/텔레메트리 판별이 오판한다 — 입구에서 거절한다 (계획 2 Task 9). */
+    setup();
+    CHECK(mk_cfg_set(&CFG, "ain0.cloud", "stat") == MK_CFG_RANGE,
+          "제어 응답 타입과 같은 이름은 거절");
+    CHECK(mk_cfg_set(&CFG, "din20.cloud", "cfg_item") == MK_CFG_RANGE,
+          "din 도 같다");
+    CHECK(mk_cfg_set(&CFG, "ain0.cloud", "flow1") == MK_CFG_OK,
+          "보통 이름은 통과");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--catalog") == 0) {
@@ -383,6 +420,8 @@ int main(int argc, char **argv)
     test_the_old_combined_field_mask_key_is_gone();
     test_bus_table_matches_the_catalog();
     test_pack_unpack_round_trips();
+    test_i2c_period_floor_follows_kind();
+    test_cloud_type_rejects_reserved_control_names();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;
 }

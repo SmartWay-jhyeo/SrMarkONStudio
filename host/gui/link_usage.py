@@ -74,14 +74,12 @@ KIND_LABELS: dict[str, str] = {
 #: 초당 줄 수를 알 수 없는 종류 — 보드가 **일이 생길 때** 보낸다(규격 §7.6).
 EVENT_KINDS: tuple[str, ...] = ("din",)
 
-#: 젯슨 링크(J29, USART2)로만 나가는 종류 (규격 §7.2 비트 21 주석).
-#:
-#: 🔴 호스트 링크 요약 표에 넣지 않는다 — 이 선을 한 바이트도 안 쓰는데
-#:    합산하면 "무엇을 꺼야 % 가 주는가" 에 틀린 답을 준다. 카드의 % 는
-#:    젯슨 링크의 고정 속도로 잰다.
-JETSON_KINDS: tuple[str, ...] = ("imu",)
-
 #: 젯슨 링크 속도 — 펌웨어 bsp 가 921600 으로 고정한다(설정이 아니다).
+#:
+#: 🔴 [개정 2026-08-31, HANDOFF_0831 결정 2·검토 4] 두 링크가 **같은
+#:    줄**을 받는다 — "젯슨 전용 종류" 구분(옛 JETSON_KINDS)은 사라졌다.
+#:    기준 용량은 빡빡한 쪽이다: 젯슨은 921600 고정이라 호스트 링크를
+#:    올려도 그쪽이 남는다.
 JETSON_BAUD = 921600
 
 #: 요약을 띄울 설정 그룹들 = 채널·포트를 **켜고 끄는** 자리.
@@ -214,10 +212,6 @@ def record_budget(form: SettingsForm, kind: str, baud: int) -> Budget:
        계산하면 언젠가 한쪽만 고쳐지고, 그때 두 화면이 다른 수를 말한다.
     """
     shape = record_shape(form, kind)
-    if kind in JETSON_KINDS:
-        # 이 레코드는 호스트 링크를 타지 않는다 — `link.baud` 로 재면
-        # 있지도 않은 트래픽을 이 선에 얹는 셈이다(모듈 위 주석).
-        baud = JETSON_BAUD
     return compute_budget(record_line(form, kind),
                           channels_enabled=shape.channels,
                           period_ms=shape.period_ms, baud=baud)
@@ -249,15 +243,16 @@ def compute_usage(form: SettingsForm,
     `fallback_baud` 는 카탈로그에 `link.baud` 가 없을 때만 쓰인다 — 호스트가
     실제로 포트를 연 속도를 넣으면 된다.
     """
-    baud = link_baud(form, fallback_baud)
+    host_baud = link_baud(form, fallback_baud)
+    # 🔴 [개정 2026-08-31] 두 링크가 같은 줄을 받는다(모듈 위 JETSON_BAUD
+    #    주석). 기준은 빡빡한 쪽 — 젯슨 921600 은 고정이라 대개 그쪽이다.
+    baud = min(host_baud, JETSON_BAUD)
     capacity = capacity_bytes_per_s(baud)
 
     rows: list[UsageRow] = []
     total = 0.0
     unmeasured: list[str] = []
     for kind in FIELD_MASK_KEYS:
-        if kind in JETSON_KINDS:
-            continue        # 이 선을 안 쓴다 — 모듈 위 `JETSON_KINDS` 주석
         shape = record_shape(form, kind)
         budget = record_budget(form, kind, baud)
         event = kind in EVENT_KINDS
@@ -279,6 +274,9 @@ def compute_usage(form: SettingsForm,
         ))
 
     level, message = _verdict(total, capacity, tuple(unmeasured))
+    if host_baud > JETSON_BAUD:
+        message += (f"  기준은 젯슨 링크({JETSON_BAUD})다 — "
+                    f"호스트 링크({host_baud})는 더 여유가 있다.")
     return LinkUsage(
         baud=baud,
         capacity_bytes_per_s=capacity,

@@ -273,6 +273,26 @@ def group_label(name: str) -> str:
     return GROUP_LABELS.get(name, name)
 
 
+def cloud_duplicate_warning(duplicates: dict[str, list[int]]) -> str:
+    """역매핑이 가릴 수 없는 타입 중복의 경고문 (HANDOFF_0831 결정 2 보완).
+
+    🔴 레코드에 채널 번호가 없으므로(사용자 결정 2026-08-30) 같은 타입
+    문자열이 두 채널에 있으면 — 같은 이름을 친 아날로그든, 동종 I2C
+    2대든 — 스트림·차트·영점이 어느 채널의 값인지 가릴 수 없다. 펌웨어는
+    막지 않는다(사용자 결정) — 이 경고가 설정 단계의 안전망이다.
+    2026-08-31 온습도 진단에서 실제로 이 구성(i2c12+i2c13 중복)이 사고를
+    냈다 — 그날은 경고가 없어서 늦게 찾았다.
+    """
+    if not duplicates:
+        return ""
+    parts = [
+        f"{t}({'·'.join(f'J{c}' for c in cs)})"
+        for t, cs in sorted(duplicates.items())
+    ]
+    return ("타입 중복 — 채널을 가릴 수 없다: " + ", ".join(parts)
+            + ". 설정에서 타입을 다르게 하거나 한쪽을 꺼라")
+
+
 #: 규격 §7.2 가 이름 지은 전송 설정 항목들. 카탈로그 항목을 하드코딩하는
 #: 것과 다르다 — 이것은 **규격이 정한 계약**이고, 규격이 바뀌면 여기도 바뀐다.
 #: 규격 §7.2.1 이 이름 지은 채널 환산 항목의 뒷부분.
@@ -437,9 +457,10 @@ def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
        않고, `channels`는 항상 0이다 — 이벤트성 레코드라 "채널 수 × 주기"
        로 대역폭을 어림할 근거 자체가 없다(모듈 위 `RECORD_GROUPS` 주석).
 
-    🔴 `i2c`의 전송 주기도 `ain`과 같은 `tx.period_ms`다(규격 §7.1) —
-       포트마다 다른 `i2cN.period_ms`는 **수집** 주기이지 **송신** 주기가
-       아니다.
+    🔴 [개정 2026-08-31] `i2c` 의 송신 주기는 포트별 `i2cN.tx_period_ms`
+       다(HANDOFF_0831 결정 1·검토 8 — 수집 `i2cN.period_ms` 와 분리).
+       표는 종류당 한 줄이라 켜진 포트 중 **가장 짧은** 주기로 잰다 —
+       넉넉한 쪽(과대) 어림이다.
 
     🔴 [개정, 2026-08-20] `i2c`의 `channels`는 **켜진 포트 수가 아니라 그
        포트들이 내는 양(quantity)의 수**다. 포트 하나가 레코드 하나가 아니다 —
@@ -499,8 +520,19 @@ def record_shape(form: "SettingsForm", kind: str = "ain") -> TelemetryShape:
         ports = i2c_ports(form)
         channels = sum(i2c_record_count(ports.get(index, (0, False))[0])
                        for index, _label in enabled)
-    else:
-        channels = len(enabled)
+        # 포트별 송신 주기(위 docstring) — 켜진 포트 중 최단으로 잰다.
+        periods = [
+            _int_or(form, f"i2c{index}.tx_period_ms", 200, minimum=1)
+            for index, _label in enabled
+        ]
+        return TelemetryShape(
+            channels=max(channels, 0),
+            period_ms=min(periods) if periods else 200,
+            float_digits=_int_or(form, KEY_FLOAT_DIGITS, 4, minimum=0),
+            labels=tuple(label for _index, label in enabled),
+        )
+
+    channels = len(enabled)
 
     return TelemetryShape(
         channels=max(channels, 0),

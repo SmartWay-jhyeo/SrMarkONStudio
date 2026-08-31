@@ -42,19 +42,22 @@ def test_capacity_scales_with_baud():
 # ----------------------------------------------------------------- 표본 줄
 
 def test_sample_always_carries_the_fields_that_cannot_be_turned_off():
-    """규격 §7.1 — `schema_ver` · `seq` · `t` · `type` 은 마스크로 못 끈다.
-
-    🔴 [개정 2026-08-21] `connector_id` 도 ain 의 잠긴 필드가 됐다(규격
-       §7.2) — 채널이 빠진 다채널 레코드는 아무 말도 안 한다.
-    """
+    """🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] 머리가 Cloud 계약이다 —
+    공통 필드(schema_ver·seq·device_id·t·type·time_source) + ain 의
+    값 필드(이름 = 단위 문자열 표본 "L/min"). connector_id 는 전선에서
+    사라졌다 — 채널 대응은 카탈로그 역매핑(typemap)의 몫이다."""
     rec = sample_record([])
-    assert set(rec) == {"schema_ver", "seq", "t", "type", "connector_id"}
+    assert set(rec) == {"schema_ver", "seq", "device_id", "t", "type",
+                        "time_source", "L/min"}
+    assert rec["schema_ver"] == 1
+    assert rec["seq"] == 4294967295, "tx.seq 기본 켜짐 — 최장 자릿수로 잰다"
 
 
 def test_sample_carries_exactly_what_was_selected():
-    rec = sample_record(["ma", "connector_id"])
-    assert "ma" in rec and "connector_id" in rec
-    assert "raw" not in rec and "unit" not in rec
+    rec = sample_record(["ma"])
+    assert "ma" in rec
+    assert "raw" not in rec
+    assert "unit" not in rec, "계약 전선에 unit 필드는 없다 — 이름이 단위다"
 
 
 def test_an_unknown_field_is_counted_not_dropped():
@@ -76,40 +79,55 @@ def test_more_float_digits_make_a_longer_line():
     assert long > short
 
 
-def test_sample_record_locks_i2c_quantity_and_value():
-    """🔴 [신규, 2026-08-19] i2c 는 quantity·value 를 마스크로 못 끈다
-    (규격 §7.5) — 무엇을 골랐든 표본에 항상 실려야 실제 크기를 잰다."""
+def test_sample_record_locks_i2c_value_field():
+    """🔴 [개정 2026-08-31] 계약 i2c 레코드의 잠긴 것은 값 필드(degc 류)
+    하나다 — quantity·connector_id 는 전선에서 사라졌다(역매핑의 몫)."""
     rec = sample_record([], record_type="i2c")
-    assert rec["type"] == "i2c"
-    assert "quantity" in rec and "value" in rec
+    assert rec["type"] == "temp_road", "종류 유도 타입 중 최장 표본"
+    assert "degc" in rec
+    assert "quantity" not in rec and "connector_id" not in rec
 
 
-def test_sample_record_locks_din_connector_id_and_state():
-    """🔴 [신규, 2026-08-19] din 은 connector_id·state 를 마스크로 못 끈다
-    (규격 §7.6)."""
+def test_sample_record_locks_din_state():
+    """계약 din 상태 레코드 — state 만 잠긴다. 타입은 사용자 문자열 상한
+    (15바이트) 표본이다."""
     rec = sample_record([], record_type="din")
-    assert rec["type"] == "din"
-    assert "connector_id" in rec and "state" in rec
+    assert len(rec["type"]) == 15
+    assert "state" in rec and "connector_id" not in rec
 
 
 def test_sample_record_defaults_to_ain_and_has_no_extra_locked_fields():
-    """옛 호출부(record_type 생략)는 예전과 똑같이 ain 만 만든다.
-
-    🔴 connector_id 는 이제 ain 의 잠긴 필드라(§7.2 개정 2026-08-21)
-       기본 표본에도 실린다 — i2c 전용 잠금(quantity)만 빠져 있으면 된다.
-    """
+    """옛 호출부(record_type 생략)는 ain 표본이다 — 타입은 사용자 문자열
+    상한(15바이트), 값 필드는 단위 이름(최장 7바이트) 하나."""
     rec = sample_record([])
-    assert rec["type"] == "ain"
-    assert "quantity" not in rec
-    assert "connector_id" in rec
+    assert len(rec["type"]) == 15
+    assert "degc" not in rec and "state" not in rec
+    assert "L/min" in rec
 
 
 def test_sample_is_not_optimistic_about_width():
     """🔴 넉넉한 값으로 잰다. 좁은 표본으로 재면 실제보다 작게 나오고,
        작게 나온 만큼이 정확히 여유가 없을 때 문제가 된다."""
-    rec = sample_record(["raw", "connector_id"])
+    rec = sample_record(["raw"])
     assert rec["raw"] >= 8_000_000        # 24비트 ADC 의 큰 쪽
-    assert rec["connector_id"] >= 9       # J9 — 커넥터 번호의 큰 쪽
+    assert rec["seq"] == 4294967295       # uint32 의 끝 — 열 자리
+
+
+def test_sample_matches_captured_lines_closely():
+    """실캡쳐(2026-08-29)와 크게 어긋나면 표본이 거짓말하는 것이다 —
+    넉넉하게(같거나 크게), 그러나 두 배씩 부풀리지는 않게."""
+    import json
+
+    from host.tests import cloud_vectors as V
+
+    sample = measure_line(sample_record(["ma", "raw"]))
+    real = len(V.FLOW1.encode("utf-8")) + 2   # 캡쳐에는 seq 가 없다
+    assert real <= sample <= real * 1.5, (sample, real)
+
+    rec = json.loads(V.GNSS)
+    sample = measure_line(sample_record(["alt"], record_type="gnss"))
+    real = len(V.GNSS.encode("utf-8")) + 2
+    assert real * 0.8 <= sample <= real * 1.5, (sample, real)
 
 
 # ----------------------------------------------------------------- 줄 길이
@@ -299,22 +317,28 @@ def test_all_fields_on_is_measurable():
 
 # ------------------------------------------------------- 한 줄 상한 (보드가 버림)
 
-def test_all_ain_fields_overflow_the_record_limit_and_the_message_says_dropped():
-    """전부 켜면 한 줄이 보드 상한을 넘고, 화면이 "통째로 버려진다"고
-    말해야 한다.
-
-    🔴 실기기에서 겪었다 (2026-08-21). ain 필드를 전부 켜자 ain 레코드가
-       **조용히 전부 사라졌다** — 펌웨어의 모든 송신부(mk_telem.c)가 상한을
-       넘는 줄을 반쪽 JSON 방지를 위해 통째로 버리는데, 화면은 대역폭만
-       경고하고 줄 상한은 말하지 않았다. 젯슨과 GUI 양쪽에서 아날로그가
-       멈춘 것으로 나타났고 원인을 GDB 로 링을 덤프해서야 찾았다.
-    """
+def test_all_ain_fields_no_longer_overflow_the_record_limit():
+    """🔴 [개정 2026-08-31] 마스크 전부 켜기로는 이제 상한을 못 넘는다 —
+    계약 전선에서 죽은 필드(unit·status·capture_counter·time_quality)가
+    빠지면서 최대 ain 줄이 상한 안으로 들어왔다. 2026-08-21 의 "전부 켜자
+    아날로그가 조용히 사라졌다" 사고 조건 자체가 없어진 것이다."""
     from host.tests.fake_board import build_ain_record, fake_store
 
     store = fake_store()
+    store.set("ain0.cloud", "pressure_paintx")   # 사용자 문자열 상한(15)
     store.set("tx.fields_ain", str(int(store.items["tx.fields_ain"].maximum)))
-    rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
-                           raw=8388608, capture_counter=123456789)
+    rec = build_ain_record(store, channel=0, seq=4294967295,
+                           t_ms=1772200855875, raw=8388608,
+                           capture_counter=123456789)
+    b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=921600)
+    assert not b.record_dropped
+
+
+def test_an_oversized_record_is_reported_dropped():
+    """버림 감지 장치 자체는 남는다 — 보드가 필드를 늘려(모르는 이름)
+    상한을 넘기면 화면이 "통째로 버려진다"고 말해야 한다. 실기기에서
+    겪은 실패 방식이다(2026-08-21 — 원인을 GDB 로 링을 덤프해서야 찾았다)."""
+    rec = sample_record([f"frobnicate_{i}" for i in range(40)])
     b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=921600)
     assert b.record_dropped
     level, msg = budget_message(b)
@@ -337,25 +361,26 @@ def test_a_modest_selection_is_not_reported_dropped():
 def test_record_limit_matches_the_firmware_drop_rule():
     """상한 값이 펌웨어의 버림 조건에서 파생된 그대로인지.
 
-    mk_telem.c 의 모든 송신부가 `char body[MK_LINE_MAX + 8]` 에 짓고
-    `len + 2u > sizeof body` 면 버린다 — 즉 JSON 은 MK_LINE_MAX + 6 까지만
-    전선에 나간다. 펌웨어 쪽 패턴이 바뀌면 이 시험이 파생을 다시 보라고
-    말한다.
+    🔴 [개정 2026-08-31] 직렬화기가 mk_cloud 하나가 됐다(HANDOFF_0831
+    결정 2). 모든 송신부가 `char body[MK_CLOUD_LINE_MAX]`(512) 에 짓고
+    finish_and_emit 이 `len + 2u > cap` 이면 버린다 — 즉 JSON 은 510
+    까지만 전선에 나간다. 펌웨어 쪽 패턴이 바뀌면 이 시험이 파생을 다시
+    보라고 말한다.
     """
     import re
     from pathlib import Path
 
-    from host.core.limits import MAX_PAYLOAD_BYTES, TELEM_RECORD_JSON_MAX
+    from host.core.limits import MK_CLOUD_LINE_MAX, TELEM_RECORD_JSON_MAX
 
-    assert TELEM_RECORD_JSON_MAX == MAX_PAYLOAD_BYTES + 6
+    assert TELEM_RECORD_JSON_MAX == MK_CLOUD_LINE_MAX - 2
 
     src = (Path(__file__).resolve().parents[2]
-           / "firmware" / "stage1" / "app" / "mk_telem.c"
+           / "firmware" / "stage1" / "app" / "mk_cloud.c"
            ).read_text(encoding="utf-8")
-    bodies = re.findall(r"char body\[MK_LINE_MAX \+ (\d+)\]", src)
-    assert bodies and all(n == "8" for n in bodies), (
-        "mk_telem.c 의 body 크기가 바뀌었다 — TELEM_RECORD_JSON_MAX 파생을 "
-        "다시 확인할 것")
-    assert "len + 2u > sizeof body" in src, (
-        "mk_telem.c 의 버림 조건이 바뀌었다 — TELEM_RECORD_JSON_MAX 파생을 "
-        "다시 확인할 것")
+    m = re.search(r"#define MK_CLOUD_LINE_MAX\s+(\d+)", src)
+    assert m and int(m.group(1)) == MK_CLOUD_LINE_MAX, (
+        "mk_cloud.c 의 MK_CLOUD_LINE_MAX 가 바뀌었다 — limits.py 를 맞출 것")
+    assert re.search(r"char body\[MK_CLOUD_LINE_MAX\]", src), (
+        "송신부 버퍼 패턴이 바뀌었다 — TELEM_RECORD_JSON_MAX 파생 확인")
+    assert "(size_t)len + 2u > cap" in src, (
+        "버림 조건이 바뀌었다 — TELEM_RECORD_JSON_MAX 파생 확인")

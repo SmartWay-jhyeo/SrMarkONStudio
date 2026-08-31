@@ -44,14 +44,15 @@ PLAN = [
     ("ain2.name",      "유압",      ""),
     ("ain2.cloud",     "pressure_paint", ""),
     ("din20.name",     "Sol Valve", "J20 옵토 입력"),
-    ("i2c12.kind",     "3",        "J12 MLX90614 적외 온도 (미장착 — 꺼 둔다)"),
-    ("i2c12.addr",     "90",       "0x5A"),
-    ("i2c12.name",     "적외온도",  ""),
-    ("i2c13.kind",     "2",        "J13 AM2320 온습도"),
-    ("i2c13.addr",     "92",       "0x5C"),
-    ("i2c13.period_ms","10",       ""),
-    ("i2c13.enabled",  "true",     ""),
-    ("i2c13.name",     "온습도",    ""),
+    # [2026-08-31] valve 레코드 발행원이 OR 합성에서 dinN.cloud 로 이동
+    # (HANDOFF_0831 검토 5). 이 줄이 없으면 새 펌웨어에서 valve 가 안 나간다.
+    ("din20.cloud",    "valve",    "젯슨 valve 레코드의 발행원"),
+    # [2026-08-31] 온습도는 J12 다 — 8/30~31 현장에서 J13→J12 로 옮겼고,
+    # 그날 주소 중복(i2c12+i2c13 둘 다 92) 사고를 정리하며 실보드 확정.
+    ("i2c12.kind",     "2",        "J12 AM2320 온습도"),
+    ("i2c12.addr",     "92",       "0x5C"),
+    ("i2c12.enabled",  "true",     ""),
+    ("i2c12.name",     "온습도",    ""),
     ("gnss.enabled",   "true",     "UM981"),
     ("gnss.echo",      "false",    "원문 에코 끔"),
     ("gnss.imu",       "true",     "UM981 RAWIMUX 10Hz → 젯슨 imu 레코드"),
@@ -59,12 +60,30 @@ PLAN = [
     ("led.count",      "3",        "상태 LED 3개 (J21~J23) — 0이면 전부 꺼진다"),
 ]
 
+def resolve_plan(snapshot_path=None):
+    """무엇으로 되세울지 고른다 — GUI 가 남긴 사본(HANDOFF_0831 결정 3)이
+    있으면 그것이 진실이고, 없을 때만 이 파일의 PLAN 으로 돌아간다.
+
+    🔴 PLAN 은 손 관리라 낡는다 — 실제로 2026-08-31 에 온습도가 J13→J12 로
+    옮겨진 것을 PLAN 이 모르고 있었다(주소 중복 사고의 재생산 위험).
+    사본은 접속·SET 때마다 GUI 가 갱신하므로 낡지 않는다.
+    """
+    from host.core.config_snapshot import DEFAULT_PATH, load_snapshot
+
+    items = load_snapshot(snapshot_path if snapshot_path else DEFAULT_PATH)
+    if items:
+        return [(k, v, "") for k, v in items.items()], "사본(data/board_config.json)"
+    return list(PLAN), "내장 PLAN (사본 없음)"
+
+
 def main(port="COM23", extra=()):
     tr = SerialTransport(port, 921600)
     svc = BoardService(tr, clock=lambda: int(time.time()*1000))
     svc.heartbeat(); time.sleep(0.3); svc.pump()
+    plan, source = resolve_plan()
+    print(f"복원 소스: {source} — {len(plan)}개 항목")
     bad = []
-    for key, val, why in list(PLAN) + list(extra):
+    for key, val, why in list(plan) + list(extra):
         ok, err = svc.set_config(key, val)
         mark = "  " if ok else "🔴"
         print(f"{mark} {key:16s} = {val:8s} {why}")

@@ -6,7 +6,7 @@
 #include <string.h>
 #include "../app/mk_statled.h"
 #include "../app/mk_cfgtable.h"
-#include "../app/mk_telem.h"
+#include "../app/mk_ads1256.h"   /* mk_ads_raw_to_ma (구 mk_telem, 2026-08-31 이사) */
 
 static int failures = 0;
 

@@ -216,6 +216,16 @@ MkCfgResult mk_cfg_set(MkConfig *cfg, const char *key, const char *raw)
         return MK_CFG_OK;
     }
 
+    /* 🔴 정책 훅 — 항목 사이의 하한·정합 (mk_config.h 의 policy 주석).
+     *    범위 검사와 같은 부류라 인터록보다 앞이다(규격 §5.2 의 순서 원칙:
+     *    값이 틀린 것과 안전상 거부는 다른 메시지). */
+    if (cfg->policy != NULL) {
+        r = cfg->policy(cfg, item, &v);
+        if (r != MK_CFG_OK) {
+            return r;
+        }
+    }
+
     /* 🔴 인터록이 읽기 전용보다 우선한다 (규격 §5.2). 둘 다 해당하는
      *    항목은 INTERLOCK 을 돌려줘야 note 에 담긴 하드웨어 사실이
      *    사유로 전달된다. READONLY 만 돌려주면 그 이유가 사라진다. */

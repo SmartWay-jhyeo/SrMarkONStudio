@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from host.core.config_snapshot import items_from_schema, save_snapshot
 from host.core.limits import DEFAULT_BAUD, LINK_BAUD_CHOICES
 from host.gui.command_queue import CommandQueue
 from host.gui.diagnostics import build_diagnostics
@@ -38,10 +39,12 @@ from host.gui.qt.stream_view import StreamView
 from host.gui.qt.topbar import TopBar
 from host.gui.qt.view import View
 from host.gui.qt.worker import WorkerThread
+from host.core.typemap import TypeMap
 from host.gui.settings_form import (
     SettingsForm,
     channel_ranges,
     channel_units,
+    cloud_duplicate_warning,
     i2c_ports,
 )
 from host.gui.qt.rail import Rail
@@ -365,6 +368,26 @@ class MainWindow(QMainWindow):
             return
         self._settings.set_form(SettingsForm(schema))
         self._apply_connector_names(schema)
+        # 🔴 보드 파라미터의 PC 사본 (HANDOFF_0831 결정 3) — 접속할 때
+        #    전체를, SET 이 수락될 때 그 키만 갱신해 남긴다. 굽기 후 복원
+        #    (tools/restore_board_config.py)·역매핑·백업의 공용 소스다.
+        self._snapshot_items = items_from_schema(schema)
+        self._save_snapshot()
+        # 🔴 타입 중복 경고 (HANDOFF_0831 결정 2 보완) — 같은 타입 문자열이
+        #    두 채널이면 역매핑이 못 가린다. 접속 직후가 알릴 자리다.
+        dup_warning = cloud_duplicate_warning(
+            TypeMap.from_schema(schema).duplicates())
+        if dup_warning:
+            self._top.set_link(dup_warning, bad=True)
+
+    def _save_snapshot(self) -> None:
+        try:
+            save_snapshot(getattr(self, "_snapshot_items", {}) or {},
+                          port=getattr(self, "_port_label", ""))
+        except OSError as exc:
+            # 사본은 편의 장치다 — 저장 실패가 수집·설정을 막으면 안 된다.
+            # 다만 조용히 삼키지도 않는다: 사람이 보는 줄에 남긴다.
+            self._top.set_link(f"설정 사본 저장 실패: {exc}", bad=True)
 
     def _apply_connector_names(self, schema) -> None:
         """카탈로그의 `*.name` 항목을 커넥터 번호 → 이름 사전으로.
@@ -603,6 +626,11 @@ class MainWindow(QMainWindow):
             key = tag.split(":", 1)[-1]
             if res.ok:
                 self._settings.on_accepted(key)
+                # 사본 갱신 (결정 3) — 수락된 값만 그 자리에서.
+                accepted = self._settings.value_of(key)
+                if accepted is not None and hasattr(self, "_snapshot_items"):
+                    self._snapshot_items[key] = accepted
+                    self._save_snapshot()
                 # 🔴 이름은 수락 즉시 스트림 트리·대시보드에 반영한다
                 #    (사용자 요청 2026-08-22 — "설정에서 바꾸면 스트림
                 #    트리에도 바로"). 다음 카탈로그 로드를 기다리면

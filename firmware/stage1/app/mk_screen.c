@@ -3,7 +3,7 @@
 #include <string.h>
 
 #include "mk_glyph.h"
-#include "mk_telem.h"      /* mk_telem_raw_to_ma — 환산식을 한 곳에만 둔다 */
+#include "mk_ads1256.h"    /* mk_ads_raw_to_ma — 환산식을 한 곳에만 둔다 */
 #include "mk_text.h"
 
 /* ── 배치 상수 ────────────────────────────────────────────────────────────
@@ -280,10 +280,10 @@ void mk_screen_collect(const MkScreenSources *src, MkScreenData *out)
             continue;
         }
         /* 🔴 규격 §7.2.1 의 환산식을 여기서 다시 쓰지 않는다.
-         *    mk_telem 이 전선으로 내보내는 값과 화면이 다르면 어느 쪽이
-         *    맞는지 정할 방법이 없다 — raw -> mA 는 mk_telem 의 것을
+         *    직렬화기(mk_cloud)가 전선으로 내보내는 값과 화면이 다르면
+         *    어느 쪽이 맞는지 정할 방법이 없다 — raw -> mA 는 공용 환산을
          *    그대로 부르고, zero·scale 도 같은 설정 항목을 읽는다. */
-        float ma = mk_telem_raw_to_ma(s.raw);
+        float ma = mk_ads_raw_to_ma(s.raw);
         float zero = 4.0f, scale = 1.0f;
         if (src->cfg != NULL) {
             char key[24];

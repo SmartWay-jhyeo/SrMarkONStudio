@@ -4,6 +4,7 @@
 
 #include "mk_ws2812.h"      /* MK_LED_COUNT — 정의는 저쪽이 들고 있다 */
 #include "mk_i2c.h"         /* MK_I2C_COUNT · 버스 표 — 정의는 저쪽이 들고 있다 */
+#include "mk_i2c_drivers.h" /* 종류의 수집 주기 하한 — 데이터시트 값은 드라이버가 */
 #include "mk_linkbaud.h"    /* 고를 수 있는 링크 속도 — 목록은 저쪽에만 있다 */
 
 /* 이 보드가 가진 것들 (데이터시트 §5).
@@ -68,24 +69,26 @@ static const char *const I2C_KIND_LABELS[] = {
  * 올지 모르는 현장 구성이라, 밸브 상태는 **디지털 입력들의 OR** 로
  * 합성한다(사용자 확정). mk_cloud.c 의 cloud_valve_state 참고.) */
 
-/* dev 1 + tx 6(마스크 4 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
- * + sol 1(디바운스) + led 3 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
+/* dev 1 + tx 9(마스크 5 + 주기 + 자릿수 + 스키마 버전 + 순번 seq)
+ * + pwr 4 + adc 2 + ain 5×7
+ * + sol 1(디바운스) + din 3×2(이름·타입) + led 3 + i2c 5×7(송신 주기 포함)
+ * + gnss 3(사용·통신속도·원시 문장 에코)
  * + link 1(호스트 링크 속도)
  * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기)
  *
  * (led{21..24}.r/g/b 수동 색 12개는 2026-08-22 에 걷어냈다 — LED 가
  *  상태 표시 전용이 됐다(app/mk_statled.h, 사용자 설계). 색을 사용자가
  *  정하는 항목이 남아 있으면 상태 색과 싸운다.) */
-#define ITEM_COUNT   (1 + 8 + 4 + 2 + MK_AIN_COUNT * 7 \
+#define ITEM_COUNT   (1 + 9 + 4 + 2 + MK_AIN_COUNT * 7 \
                       + 1 \
-                      + 3 \
-                      + MK_I2C_COUNT * 6 \
+                      + 6 \
+                      + MK_I2C_COUNT * 7 \
                       + 4 + 3 \
                       + 1 \
                       + 5)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·i2c). sol 은 고정 문자열이다. */
-#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_I2C_COUNT * 6 + 3)
+#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_I2C_COUNT * 7 + 6)
 
 static MkCfgItem s_items[ITEM_COUNT];
 
@@ -364,6 +367,16 @@ static size_t add_tx(size_t i)
     s_items[i].def.u = 100;
     i++;
 
+    /* 🔴 seq — 줄 순번(유실 검출 근거, HANDOFF_0831 결정 2). 기본 켜짐.
+     *    체크박스로 뺀 것은 사용자 결정(2026-08-31)이고, 끄면 어느 쪽
+     *    수신자도 링크 유실을 셀 수 없다는 것을 note 가 말한다. */
+    s_items[i] = (MkCfgItem){ .key = "tx.seq", .group = "tx",
+                              .vtype = MK_VT_BOOL,
+                              .label = "순번(seq)",
+                              .note = "끄면 GUI 도 젯슨도 링크 유실을 세지 못한다" };
+    s_items[i].def.u = 1;
+    i++;
+
     /* 🔴 최소가 2 다. 0 을 허용하면 4~20 mA 값이 정수로 잘려 분해능이
      *    1 mA 가 된다 — 24비트 ADC 를 쓰는 이유가 사라진다. 대역폭을
      *    아끼려면 자릿수보다 필드 마스크나 주기를 줄이는 편이 낫다. */
@@ -570,6 +583,20 @@ static size_t add_sol(size_t i)
             .key = s_keys[k], .group = "sol", .vtype = MK_VT_STR,
             .max = 23, .has_max = 1, .label = s_labels[k],
             .note = "비우면 커넥터 번호로 보인다" };
+        i++;
+
+        /* 🔴 타입 — ain 의 .cloud 와 같은 원칙 (사용자 확정 2026-08-31,
+         *    HANDOFF_0831 검토 5). 사용자가 친 문자열이 그대로 상태 변화
+         *    레코드의 type 이 된다(J20 에 "valve" 면 기존 젯슨 수신분과
+         *    동일). 빈 값 = 미발행. gnss 태깅용 밸브 상태(입력들의 OR)는
+         *    이것과 무관하게 그대로다(mk_cloud.c cloud_valve_state). */
+        k = gen("din", jack, ".cloud", jack, "타입");
+        s_items[i] = (MkCfgItem){ .key = s_keys[k], .group = "sol",
+                                  .vtype = MK_VT_STR, .max = 15, .has_max = 1,
+                                  .ascii_ident = 1,
+                                  .label = s_labels[k],
+                                  .note = "젯슨 레코드의 type — 비우면 안"
+                                          " 내보낸다. 밸브면 valve" };
         i++;
     }
     return i;
@@ -854,6 +881,18 @@ static size_t add_i2c(size_t i)
         s_items[i].def.u = 200;
         i++;
 
+        /* 🔴 송신 주기 — 수집과 분리 (HANDOFF_0831 결정 1, 사용자 결정
+         *    2026-08-31 포트별 두 손잡이). 수집은 위 `주기`(센서 하한의
+         *    지배를 받는다), 송신은 캐시 최신값을 이 주기마다 반복. */
+        k = gen("i2c", jack, ".tx_period_ms", jack, "송신 주기");
+        s_items[i] = (MkCfgItem){
+            .key = s_keys[k], .group = "i2c", .vtype = MK_VT_U16,
+            .min = 10, .max = 60000, .has_min = 1, .has_max = 1,
+            .unit = "ms", .label = s_labels[k],
+            .note = "짧게 잡으면 젯슨 링크가 포화할 수 있다 — 전송 탭 사용량 확인" };
+        s_items[i].def.u = 200;
+        i++;
+
         /* ain 의 .name 과 같다 — 사용자가 붙이는 이름. */
         k = gen("i2c", jack, ".name", jack, "이름");
         s_items[i] = (MkCfgItem){
@@ -868,6 +907,80 @@ static size_t add_i2c(size_t i)
          * 확정 — 클라우드 전용 항목을 두지 않는다.) */
     }
     return i;
+}
+
+/* 🔴 조용한 클램프 폐지 (HANDOFF_0831 검토 8, 사용자 합의 2026-08-31).
+ *
+ *    i2c 수집 주기의 하한은 펌웨어의 취향이 아니라 **센서(종류)를 따라다니는
+ *    데이터시트 값**이다(AM2320 2000ms / MLX90614 250ms / BH1750 180ms —
+ *    각 드라이버의 warmup_ms). 예전에는 mk_i2c.c 가 실효 주기 =
+ *    max(설정, 하한) 으로 말없이 덮어서 화면의 설정값이 거짓말을 했다
+ *    (설계 원칙 4 위반). 이제 입구가 말한다:
+ *
+ *      - `i2cN.period_ms` SET 이 현재 종류의 하한 미만이면 RANGE 로 거절
+ *      - `i2cN.kind` SET 은 그 종류의 하한으로 주기를 **끌어올린다**
+ *        (기본 200ms 인 채 온습도를 고르는 흔한 경우를 거절로 막으면
+ *        사용자가 순서를 맞춰야 한다 — 정렬이 맞다. 다음 LIST 에 보인다)
+ *
+ *    mk_i2c.c 의 런타임 max() 는 플래시에 남은 옛 설정(입구를 안 거친 값)을
+ *    위한 최후 방어로 남는다. */
+static MkCfgResult table_policy(MkConfig *cfg, MkCfgItem *item,
+                                const MkValue *v)
+{
+    const char *key = item->key;
+
+    /* 🔴 예약 타입명 거절 (2026-08-31, 계획 2 Task 9) — ainN.cloud /
+     *    dinN.cloud 사용자 문자열이 제어 응답 타입과 같으면 호스트의
+     *    제어/텔레메트리 판별(records.py 화이트리스트)이 오판한다.
+     *    입구에서 막는 것이 유일하게 안전한 자리다. */
+    if ((strncmp(key, "ain", 3) == 0 || strncmp(key, "din", 3) == 0)) {
+        const char *suffix = strchr(key, '.');
+        if (suffix != NULL && strcmp(suffix, ".cloud") == 0) {
+            static const char *const RESERVED[] = {
+                "id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end",
+            };
+            for (size_t r = 0; r < sizeof RESERVED / sizeof *RESERVED; r++) {
+                if (strcmp(v->s, RESERVED[r]) == 0) {
+                    return MK_CFG_RANGE;
+                }
+            }
+            return MK_CFG_OK;
+        }
+    }
+
+    if (!(key[0] == 'i' && key[1] == '2' && key[2] == 'c')) {
+        return MK_CFG_OK;
+    }
+    const char *dot = key + 3;
+    while (*dot != '\0' && *dot != '.') { dot++; }
+    if (*dot != '.') {
+        return MK_CFG_OK;
+    }
+    size_t stem = (size_t)(dot - key);
+    char sibling[MK_CFG_KEY_MAX + 1];
+    if (stem + sizeof ".period_ms" > sizeof sibling) {
+        return MK_CFG_OK;
+    }
+    memcpy(sibling, key, stem);
+
+    if (strcmp(dot, ".period_ms") == 0) {
+        memcpy(sibling + stem, ".kind", sizeof ".kind");
+        MkCfgItem *kind = mk_cfg_find(cfg, sibling);
+        uint32_t floor_ms =
+            mk_i2c_min_period_ms(kind != NULL ? (uint8_t)kind->cur.u : 0u);
+        if (v->u < floor_ms) {
+            return MK_CFG_RANGE;
+        }
+    } else if (strcmp(dot, ".kind") == 0) {
+        memcpy(sibling + stem, ".period_ms", sizeof ".period_ms");
+        MkCfgItem *per = mk_cfg_find(cfg, sibling);
+        uint32_t floor_ms = mk_i2c_min_period_ms((uint8_t)v->u);
+        if (per != NULL && per->cur.u < floor_ms) {
+            per->cur.u = floor_ms;
+            cfg->dirty = 1u;
+        }
+    }
+    return MK_CFG_OK;
 }
 
 void mk_cfgtable_init(MkConfig *cfg)
@@ -898,6 +1011,7 @@ void mk_cfgtable_init(MkConfig *cfg)
     cfg->items = s_items;
     cfg->count = i;
     cfg->dirty = 0;
+    cfg->policy = table_policy;
 }
 
 /* ---- 저장 형식 ---------------------------------------------------------- */

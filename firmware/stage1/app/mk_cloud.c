@@ -10,7 +10,7 @@
  * 걸려 레코드가 통째로 사라졌다(시험이 잡았다). 512 는 모든 필드를 다
  * 켠 gnss(~300 B)에 여유를 둔 값이고 mk_jet 링(4096)의 1/8 이다. */
 #define MK_CLOUD_LINE_MAX  512
-#include "mk_telem.h"        /* mk_telem_raw_to_ma — 환산식은 한 곳(규격 §7.2.1) */
+/* raw→mA 환산은 mk_ads_raw_to_ma (mk_ads1256.h — 규격 §7.2.1 의 유일 출처). */
 
 /* (ain 의 클라우드 타입 표는 2026-08-26 에 없앴다 — 타입 문자열은 이제
  * 사용자가 카탈로그의 ain{n}.cloud 에 직접 치고, 값 필드 이름은
@@ -177,6 +177,11 @@ static void begin_record(const MkCloud *c, MkJson *j, char *out, size_t cap,
 
     mk_json_begin(j, out, cap);
     mk_json_u32(j, "schema_ver", ver ? ver->cur.u : 1u);
+    /* 🔴 seq — 계약의 선택 필드(v1.7 개정, HANDOFF_0831 결정 2). 젯슨은
+     *    모르는 필드를 무시하고, 호스트는 이것으로 링크 유실을 센다.
+     *    tx.seq(기본 켜짐)를 끄면 빠진다 — 사용자 결정 2026-08-31. */
+    MkCfgItem *sq = mk_cfg_find(c->cfg, "tx.seq");
+    if (sq == NULL || sq->cur.u) { mk_json_u32(j, "seq", c->seq); }
     mk_json_str(j, "device_id",
                 (dev && dev->cur.s[0] != '\0') ? dev->cur.s
                 : (c->device_id ? c->device_id : ""));
@@ -187,13 +192,17 @@ static void begin_record(const MkCloud *c, MkJson *j, char *out, size_t cap,
 
 /* 조립이 끝난 줄을 내보낸다. 상한을 넘으면 통째로 버린다 — 반쪽 JSON 을
  * 내보내지 않는 본선(emit_ain_sample)과 같은 계약. 성공 1, 버림 0. */
-static int finish_and_emit(char *body, size_t cap, int len,
+static int finish_and_emit(MkCloud *c, char *body, size_t cap, int len,
                            MkCloudEmit emit, void *ctx)
 {
     if (len <= 0 || (size_t)len + 2u > cap) { return 0; }
     body[len] = '\n';
     body[len + 1] = '\0';
     emit(ctx, body, (size_t)len + 1u);
+    /* 🔴 emit 에 실제로 넘긴 줄만 번호를 소비한다. 조립 실패(위의 0 반환)는
+     *    줄이 없던 일이라 번호가 이어져야 한다. tx.seq 끔 상태에서도 올린다
+     *    — mk_cloud.h 의 seq 주석 참고. */
+    c->seq++;
     return 1;
 }
 
@@ -211,7 +220,7 @@ static int build_ain(MkCloud *c, int ch, const MkSample *s,
     /* 계약 §9·§10 — 값은 환산 실수, 소수 1자리 (계약 예시의 자릿수.
      * tx.float_digits 는 본선 방언의 설정이라 여기 적용하지 않는다).
      * 값 필드 이름은 단위 칸을 그대로 쓴다 ("lpm": 5.0) — 비면 value. */
-    float ma = mk_telem_raw_to_ma(s->raw);
+    float ma = mk_ads_raw_to_ma(s->raw);
     float zero = ain_f32(c->cfg, ch, ".zero", 4.0f);
     float scale = ain_f32(c->cfg, ch, ".scale", 1.0f);
     const char *fieldkey = ain_str(c->cfg, ch, ".unit");
@@ -231,31 +240,85 @@ static int build_ain(MkCloud *c, int ch, const MkSample *s,
     return mk_json_end(&j);
 }
 
-static int tick_ain(MkCloud *c, MkCloudEmit emit, void *ctx)
-{
-    int sent = 0;
-    for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
-        MkSample s;
-        if (!mk_ads_last(c->ads, ch, &s)) { continue; }
-        /* 🔴 같은 표본을 두 번 내지 않는다 — 발행 시점 = 수집 시점
-         *    (설계 §4.7). 획득 시각이 그 판정 기준이다. */
-        if (c->ain_primed[ch] && c->ain_sent_t[ch] == s.t_ms) { continue; }
+/* 한 틱이 낼 수 있는 ain 줄 상한 — mk_telem 의 MK_TELEM_MAX_LINES 와 같은
+ * 근거(링크 용량 대 채널 수, mk_telem.h 주석). 통일 후 이 값이 그 역할을
+ * 이어받는다. */
+#define MK_CLOUD_MAX_AIN_LINES 11
 
-        char body[MK_CLOUD_LINE_MAX];
-        int len = build_ain(c, ch, &s, body, sizeof body);
-        if (len == 0 && ain_str(c->cfg, ch, ".cloud")[0] == '\0') {
-            /* 없음 = 미발행. 표본은 소비한 것으로 친다 — 안 그러면 켜는
-             * 순간 묵은 표본이 소급 발행된다. */
-            c->ain_primed[ch] = 1u;
-            c->ain_sent_t[ch] = s.t_ms;
-            continue;
-        }
-        if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
-            sent++;
-            c->ain_primed[ch] = 1u;
-            c->ain_sent_t[ch] = s.t_ms;
+static int emit_one_ain(MkCloud *c, int ch, const MkSample *s,
+                        MkCloudEmit emit, void *ctx)
+{
+    char body[MK_CLOUD_LINE_MAX];
+    int len = build_ain(c, ch, s, body, sizeof body);
+    if (len == 0) { return 0; }      /* 빈 타입 = 미발행 (계약 §16.6) */
+    return finish_and_emit(c, body, sizeof body, len, emit, ctx);
+}
+
+/* 🔴 [개정 2026-08-31] "발행 시점 = 수집 시점"(설계 §4.7)을 폐기하고 본선
+ *    mk_telem 의 소비 골격을 상속했다 (HANDOFF_0831 결정 2·검토 1):
+ *
+ *      1) tx.period_ms 를 기다린다 — 수집과 송신의 분리.
+ *      2) 채널 표본 **큐**를 라운드로빈으로 비운다(바퀴당 채널마다 1표본,
+ *         틱 예산 MK_CLOUD_MAX_AIN_LINES). last 한 칸만 읽으면 슈퍼루프가
+ *         10ms 이상 한눈파는 사이 표본이 덮여 **어디에도 세어지지 않고**
+ *         사라진다 — 큐·drops·seq 무엇에도 안 잡히는 유실이라 가장 질이
+ *         나쁘다. 라운드로빈·기아 방지는 실기기 결함(688ce00 — 뒤 채널이
+ *         30초 굶음)의 수정분을 그대로 옮긴 것이다.
+ *      3) 이번 틱 내내 큐가 비어 있던 채널만 last 값을 반복한다 —
+ *         수집이 송신보다 느린 채널의 스트림을 주기가 채운다. t 는 획득
+ *         시각 그대로 반복된다(설계 원칙 2, i2c 의 tx_period 반복과 같은 결).
+ *
+ *    빈 타입 채널의 표본은 pop 으로 소비만 된다 — 켜는 순간 묵은 표본이
+ *    소급 발행되는 일은 큐 깊이(수 표본)만큼으로 끝난다. */
+static int tick_ain(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
+{
+    uint32_t period = 100u;
+    MkCfgItem *it = mk_cfg_find(c->cfg, "tx.period_ms");
+    if (it != NULL) { period = it->cur.u; }
+    if (period == 0u) { period = 1u; }
+    if (now_ms - c->last_ms < (int64_t)period) { return 0; }
+    c->last_ms = now_ms;
+
+    int sent = 0;
+    int budget_used = 0;
+    int drained[MK_ADS_CHANNELS];
+    for (int k = 0; k < MK_ADS_CHANNELS; k++) { drained[k] = 0; }
+
+    int start = c->ain_rr;
+    if (start < 0 || start >= MK_ADS_CHANNELS) { start = 0; }
+    int last_ch = start;
+    int progressed = 1;
+    while (budget_used < MK_CLOUD_MAX_AIN_LINES && progressed) {
+        progressed = 0;
+        for (int i = 0; i < MK_ADS_CHANNELS &&
+                        budget_used < MK_CLOUD_MAX_AIN_LINES; i++) {
+            int ch = (start + i) % MK_ADS_CHANNELS;
+            if (!mk_ads_channel_enabled(c->ads, ch)) { continue; }
+            MkQueue *q = mk_ads_queue(c->ads, ch);
+            MkSample s;
+            if (q != NULL && mk_queue_pop(q, &s)) {
+                int n = emit_one_ain(c, ch, &s, emit, ctx);
+                sent += n;
+                budget_used += n;
+                drained[ch] = 1;
+                progressed = 1;
+                last_ch = ch;
+            }
         }
     }
+
+    for (int i = 0; i < MK_ADS_CHANNELS &&
+                    budget_used < MK_CLOUD_MAX_AIN_LINES; i++) {
+        int ch = (start + i) % MK_ADS_CHANNELS;
+        if (!mk_ads_channel_enabled(c->ads, ch) || drained[ch]) { continue; }
+        MkSample s;
+        if (!mk_ads_last(c->ads, ch, &s)) { continue; }
+        int n = emit_one_ain(c, ch, &s, emit, ctx);
+        sent += n;
+        budget_used += n;
+        if (n) { last_ch = ch; }
+    }
+    c->ain_rr = (last_ch + 1) % MK_ADS_CHANNELS;
     return sent;
 }
 
@@ -341,18 +404,31 @@ static int build_i2c(MkCloud *c, unsigned port, const MkI2cOut *o,
     return 0;                        /* 계약에 없는 물리량은 미발행 */
 }
 
-static int tick_i2c(MkCloud *c, MkCloudEmit emit, void *ctx)
+static int tick_i2c(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
 {
     int sent = 0;
     if (c->i2c == NULL) { return 0; }
     for (unsigned p = 0; p < MK_I2C_COUNT; p++) {
         /* 별도 발행 스위치는 없다(사용자 확정 2026-08-22) — `사용`이 켜져
          * 값이 오고 있으면 나간다. last 는 켜진 포트만 채워진다. */
+
+        /* 🔴 수집·송신 분리 (HANDOFF_0831 결정 1, 사용자 2026-08-30) —
+         *    새 표본이 아니어도 포트별 송신 주기(i2cN.tx_period_ms)가 차면
+         *    캐시 최신값을 반복 발행한다. 온습도의 새 값은 2초에 한 번뿐이라
+         *    이 반복이 없으면 스트림이 그 속도로 묶인다. 반복 줄의 t 는
+         *    획득 시각 그대로다(설계 원칙 2) — 클라우드 dedupe(device_id,
+         *    t, type)가 같은 t 반복을 한 건으로 접는 것까지가 의도다. */
+        uint32_t txp = i2c_u32(c->cfg, p, ".tx_period_ms", 200u);
+        if (txp == 0u) { txp = 1u; }
+        int due = (now_ms - c->i2c_tx_last_ms[p]) >= (int64_t)txp;
+        int port_sent = 0;
+
         for (unsigned k = 0; k < MK_I2C_VALUES_MAX; k++) {
             MkI2cOut o;
             if (!mk_i2c_last(c->i2c, p, k, &o)) { continue; }
-            if (c->i2c_primed[p][k] && c->i2c_sent_t[p][k] == o.t_ms) {
-                continue;            /* 같은 표본은 두 번 안 낸다 (설계 §4.7) */
+            int fresh = !(c->i2c_primed[p][k] && c->i2c_sent_t[p][k] == o.t_ms);
+            if (!fresh && !due) {
+                continue;            /* 새 표본도 아니고 주기도 안 찼다 */
             }
             char body[MK_CLOUD_LINE_MAX];
             int len = build_i2c(c, p, &o, body, sizeof body);
@@ -362,12 +438,14 @@ static int tick_i2c(MkCloud *c, MkCloudEmit emit, void *ctx)
                 c->i2c_sent_t[p][k] = o.t_ms;
                 continue;
             }
-            if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+            if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
                 sent++;
+                port_sent = 1;
                 c->i2c_primed[p][k] = 1u;
                 c->i2c_sent_t[p][k] = o.t_ms;
             }
         }
+        if (port_sent) { c->i2c_tx_last_ms[p] = now_ms; }
     }
     return sent;
 }
@@ -390,6 +468,10 @@ static int build_gnss(MkCloud *c, const MkGnssFix *f, char *out, size_t cap)
     MkCfgItem *dev = mk_cfg_find(c->cfg, "dev.id");
     mk_json_begin(&j, out, cap);
     mk_json_u32(&j, "schema_ver", ver ? ver->cur.u : 1u);
+    /* seq — begin_record 를 안 타는 유일한 조립이라 여기 따로 싣는다.
+     * 규칙은 begin_record 와 같다(tx.seq 기본 켜짐). */
+    MkCfgItem *sq = mk_cfg_find(c->cfg, "tx.seq");
+    if (sq == NULL || sq->cur.u) { mk_json_u32(&j, "seq", c->seq); }
     mk_json_str(&j, "device_id",
                 (dev && dev->cur.s[0] != '\0') ? dev->cur.s
                 : (c->device_id ? c->device_id : ""));
@@ -453,7 +535,7 @@ static int tick_gnss(MkCloud *c, MkCloudEmit emit, void *ctx)
         c->gnss_sent_count = count;
         return 0;
     }
-    if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+    if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
         c->gnss_sent_count = count;
         return 1;
     }
@@ -491,45 +573,69 @@ static int tick_imu(MkCloud *c, MkCloudEmit emit, void *ctx)
     }
     int len = mk_json_end(&j);
 
-    if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+    if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
         c->imu_sent_seq = s.seq;
         return 1;
     }
     return 0;
 }
 
-/* ── valve 레코드 (계약 §5) ─────────────────────────────────────────────── */
+/* ── din 상태 레코드 (계약 §5 의 일반화) ─────────────────────────────────
+ *
+ * 🔴 [개정 2026-08-31, HANDOFF_0831 검토 5] "입력들의 OR 를 valve 하나로"
+ *    를 폐기하고 ain 과 같은 원칙으로 일반화했다: `dinN.cloud` 사용자
+ *    문자열이 그대로 record type 이 되고, 채널의 **확정 상태 변화**마다
+ *    한 줄 나간다. J20 에 "valve" 를 치면 기존 수신분과 동일하다. 빈 값 =
+ *    미발행. OR 는 gnss 등 태깅 소스(cloud_valve_state)로만 남는다. */
 
-static int tick_valve(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
+static const char *din_cloud_str(MkConfig *cfg, unsigned jack)
+{
+    char key[MK_CFG_KEY_MAX + 1];
+    size_t n = 0;
+    const char *p;
+    for (p = "din"; *p != '\0' && n + 1u < sizeof key; p++) { key[n++] = *p; }
+    if (n + 2u < sizeof key) {
+        key[n++] = (char)('0' + (jack / 10u) % 10u);
+        key[n++] = (char)('0' + jack % 10u);
+    }
+    for (p = ".cloud"; *p != '\0' && n + 1u < sizeof key; p++) { key[n++] = *p; }
+    key[n] = '\0';
+    MkCfgItem *it = mk_cfg_find(cfg, key);
+    return it != NULL ? it->cur.s : "";
+}
+
+static int tick_din(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
 {
     if (c->sol == NULL) { return 0; }
-    /* 확정된 입력이 하나도 없으면(부팅 직후·sol 미구성) 아직 말하지
-     * 않는다 — 모르는 상태를 0 이라 단정해 내보내지 않는다. */
-    int any_valid = 0;
+    int sent = 0;
     for (unsigned ch = 0; ch < MK_SOL_COUNT; ch++) {
-        if (c->sol->confirmed_valid[ch]) { any_valid = 1; break; }
+        /* 확정 전(부팅 직후·미구성)에는 말하지 않는다 — 모르는 상태를
+         * 0 이라 단정해 내보내지 않는다(설계 원칙 4). */
+        if (!c->sol->confirmed_valid[ch]) { continue; }
+        const char *type = din_cloud_str(c->cfg, 18u + ch);
+        if (type[0] == '\0') { continue; }
+        int state = c->sol->confirmed_state[ch] ? 1 : 0;
+        if (c->din_primed[ch] && (int)c->din_sent_state[ch] == state) {
+            continue;
+        }
+
+        /* 🔴 t 는 "지금"이다 — din 엣지의 정밀 획득 시각은 solctl 큐의
+         *    몫이고, 이 레코드는 상태 통지라 tick 시각이면 충분하다
+         *    (예전 valve 틱과 같은 판단 — 엣지 시각까지 실으려면 큐를
+         *    두 소비자가 나눠 먹는 설계가 필요해진다). */
+        char body[MK_CLOUD_LINE_MAX];
+        MkJson j;
+        begin_record(c, &j, body, sizeof body, type, now_ms);
+        mk_json_u32(&j, "state", (uint32_t)state);
+        int len = mk_json_end(&j);
+
+        if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
+            sent++;
+            c->din_primed[ch] = 1u;
+            c->din_sent_state[ch] = (uint8_t)state;
+        }
     }
-    if (!any_valid) { return 0; }
-
-    int state = cloud_valve_state(c);
-    if (c->valve_primed && (int)c->valve_sent_state == state) { return 0; }
-
-    /* 🔴 t 는 "지금"이다 — din 엣지의 정밀 획득 시각은 본선(규격 §7.6)이
-     *    싣는다. 계약 §5 의 valve 는 상태 통지라 tick 시각이면 충분하고,
-     *    엣지 시각을 여기서도 실으려면 solctl 의 큐를 두 소비자가 나눠
-     *    먹는 설계가 필요해진다 — A단계 범위 밖. */
-    char body[MK_CLOUD_LINE_MAX];
-    MkJson j;
-    begin_record(c, &j, body, sizeof body, "valve", now_ms);
-    mk_json_u32(&j, "state", (uint32_t)state);
-    int len = mk_json_end(&j);
-
-    if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
-        c->valve_primed = 1u;
-        c->valve_sent_state = (uint8_t)state;
-        return 1;
-    }
-    return 0;
+    return sent;
 }
 
 /* ── device_capability (계약 §16, 설계 §4.6) ─────────────────────────────
@@ -618,7 +724,7 @@ static int tick_capability(MkCloud *c, int64_t now_ms,
     mk_json_str(&j, "fw_version", c->fw_version ? c->fw_version : "");
     int len = mk_json_end(&j);
 
-    if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+    if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
         c->cap_primed = 1u;
         c->cap_sent_fp = fp;
         return 1;
@@ -670,7 +776,7 @@ int mk_cloud_tick(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
      *    알아야 뒤따르는 레코드를 해석한다 (계약 §16.1). valve 는 센서
      *    레코드보다 앞 — 같은 tick 의 태깅과 어긋나지 않게. */
     return tick_capability(c, now_ms, emit, ctx)
-         + tick_valve(c, now_ms, emit, ctx)
-         + tick_ain(c, emit, ctx) + tick_i2c(c, emit, ctx)
+         + tick_din(c, now_ms, emit, ctx)
+         + tick_ain(c, now_ms, emit, ctx) + tick_i2c(c, now_ms, emit, ctx)
          + tick_gnss(c, emit, ctx) + tick_imu(c, emit, ctx);
 }

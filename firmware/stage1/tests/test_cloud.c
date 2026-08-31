@@ -137,7 +137,9 @@ static void test_ain_pressure_paint_record(void)
     CHECK_HAS(ln, "\"bar\":150.0", "(ma-zero)*scale, 소수 1자리");
     CHECK_HAS(ln, "\"time_source\":\"device_clock\"", "timeax 없으면 device_clock");
     CHECK(strstr(ln, "\"valve\":") == NULL, "밸브 비트 꺼짐 = 태깅 없음");
-    CHECK(strstr(ln, "\"seq\":") == NULL, "계약에 seq 는 없다 — v3 방언 섞임 금지");
+    /* 🔴 [개정 2026-08-31] seq 는 v1.7 개정으로 계약의 선택 필드가 됐다
+     *    (HANDOFF_0831 결정 2 — 유실 검출을 두 링크 공통으로). 기본 켜짐. */
+    CHECK_HAS(ln, "\"seq\":", "seq 가 기본으로 실린다 (tx.seq 기본 켜짐)");
 }
 
 static void test_common_field_values_are_config(void)
@@ -227,21 +229,84 @@ static void test_moving_the_sensor_is_a_config_change(void)
     CHECK(find_line("pressure_paint") != NULL, "타입이 채널을 따라간다");
 }
 
-static void test_a_sample_is_published_once(void)
+static void test_ain_last_repeats_at_tx_period(void)
 {
+    /* 🔴 [개정 2026-08-31] "같은 표본은 두 번 안 낸다"(설계 §4.7)는 폐기
+     *    (HANDOFF_0831 결정 1·2). 수집이 송신보다 느린 채널은 큐가 비고,
+     *    그때 last 가 tx.period_ms 마다 반복된다 — 본선 mk_telem 의 검증된
+     *    규칙 그대로. 반복 줄의 t 는 획득 시각 그대로다(설계 원칙 2). */
     setup();
     set_str("ain0.cloud", "flow");
     set_str("ain0.unit", "lpm");
     drain_capability();
     set_last(0, 1000, 4026531);
 
-    CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 1, "새 표본 = 1줄");
     N = 0;
-    CHECK(mk_cloud_tick(&C, 200, sink, NULL) == 0, "같은 표본은 다시 안 낸다");
-    set_last(0, 1100, 4000000);
-    N = 0;
-    CHECK(mk_cloud_tick(&C, 300, sink, NULL) == 1, "표본이 갱신되면 또 1줄");
+    CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 1, "첫 주기에 1줄");
+    CHECK(mk_cloud_tick(&C, 150, sink, NULL) == 0, "주기 전에는 침묵");
+    CHECK(mk_cloud_tick(&C, 200, sink, NULL) == 1, "주기가 차면 last 를 반복");
+    CHECK_HAS(LINES[N - 1], "\"t\":1000", "반복 줄의 t 는 획득 시각 그대로");
     CHECK_HAS(find_line("flow"), "\"lpm\":", "유량은 lpm 필드");
+}
+
+/* ---- ain 큐 드레인 (HANDOFF_0831 검토 1 — 세어지지 않는 유실 봉쇄) ------- */
+
+static const char *find_line_with(const char *needle)
+{
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], needle)) { return LINES[k]; }
+    }
+    return NULL;
+}
+
+/* 실제 수집(mk_ads1256.c)은 큐 push 와 last 갱신을 함께 한다 — 그대로 흉내. */
+static void push_ain(int ch, int64_t t_ms, int32_t raw)
+{
+    mk_queue_push(mk_ads_queue(&ADS, ch), t_ms, raw);
+    set_last(ch, t_ms, raw);
+}
+
+static void test_ain_drains_queue_not_just_last(void)
+{
+    setup();
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    drain_capability();
+    set_u32("tx.period_ms", 10u);
+    /* 틱 없이 표본 3개 — 슈퍼루프가 한눈판 상황. last 만 읽으면 마지막
+     * 하나만 나가고 앞의 둘은 덮여 사라진다(어디에도 세어지지 않는다). */
+    push_ain(0, 1000, 850000);
+    push_ain(0, 1010, 850100);
+    push_ain(0, 1020, 850200);
+    N = 0;
+    mk_cloud_tick(&C, 2000, sink, NULL);
+    int flow_lines = 0;
+    for (int k = 0; k < N; k++) {
+        if (strstr(LINES[k], "\"type\":\"flow\"")) { flow_lines++; }
+    }
+    CHECK(flow_lines == 3, "표본 3개 = 줄 3개 (덮어쓰기 유실 없음)");
+    CHECK(find_line_with("\"t\":1000") != NULL &&
+          find_line_with("\"t\":1010") != NULL,
+          "밀렸던 표본도 자기 획득 시각을 달고 나온다");
+}
+
+static void test_ain_round_robin_no_starvation(void)
+{
+    setup();
+    set_str("ain0.cloud", "flow_a");
+    set_str("ain0.unit", "lpm");
+    set_str("ain1.cloud", "flow_b");
+    set_str("ain1.unit", "lpm");
+    drain_capability();
+    set_u32("tx.period_ms", 10u);
+    /* ch0 큐를 넘치게 채워도(깊이 8) ch1 이 같은 틱 안에 나와야 한다 —
+     * 본선에서 실기기로 잡았던 기아 결함(688ce00)의 회귀 방지다. */
+    for (int k = 0; k < 40; k++) { push_ain(0, 2000 + k, 850000 + k); }
+    push_ain(1, 2000, 900000);
+    N = 0;
+    mk_cloud_tick(&C, 3000, sink, NULL);
+    CHECK(find_line("flow_b") != NULL,
+          "앞 채널이 밀려 있어도 뒤 채널이 같은 틱에 나온다");
 }
 
 /* ---- i2c ---------------------------------------------------------------- */
@@ -355,31 +420,53 @@ static void setup_with_sol(void)
     drain_capability();
 }
 
-static void test_valve_is_the_or_of_inputs(void)
+static void test_din_cloud_string_emits_state_record(void)
 {
-    /* 🔴 좌·우 밸브가 어느 입력에서 올지 모른다(사용자 확정 2026-08-22) —
-     *    지정 대신 OR. 어느 쪽이든 열리면 1. */
+    /* 🔴 [개정 2026-08-31, HANDOFF_0831 검토 5] din 도 ain 처럼 사용자
+     *    문자열이 record type 이다. "OR 합성 valve 레코드" 는 폐기 —
+     *    J20 에 "valve" 를 치면 기존 젯슨 수신분과 동일한 레코드가 나온다.
+     *    (OR 은 gnss 등 태깅 소스로만 남는다 — 아래 태깅 시험.) */
     setup_with_sol();
-    sol_set_confirmed(0, 0);              /* 좌 닫힘 */
-    sol_set_confirmed(1, 1);              /* 우 열림 */
+    set_str("din20.cloud", "valve");
+    sol_set_confirmed(2, 1);               /* ch2 = J20 확정 ON */
+    N = 0;
     mk_cloud_tick(&C, 100, sink, NULL);
-    CHECK_HAS(find_line("valve"), "\"state\":1", "한쪽만 열려도 1");
-
-    sol_set_confirmed(1, 0);              /* 둘 다 닫힘 */
+    const char *ln = find_line("valve");
+    CHECK(ln != NULL, "din20.cloud 문자열이 type 이 된다");
+    CHECK_HAS(ln, "\"state\":1", "state=1");
     N = 0;
-    mk_cloud_tick(&C, 200, sink, NULL);
-    CHECK_HAS(find_line("valve"), "\"state\":0", "둘 다 닫혀야 0");
-
-    N = 0;
-    CHECK(mk_cloud_tick(&C, 300, sink, NULL) == 0,
+    CHECK(mk_cloud_tick(&C, 200, sink, NULL) == 0,
           "상태가 안 바뀌면 다시 안 낸다");
+    sol_set_confirmed(2, 0);
+    N = 0;
+    mk_cloud_tick(&C, 300, sink, NULL);
+    CHECK_HAS(find_line("valve"), "\"state\":0", "확정 변화마다 한 줄");
+}
+
+static void test_din_channels_are_independent(void)
+{
+    setup_with_sol();
+    set_str("din18.cloud", "valve_left");
+    set_str("din20.cloud", "valve_right");
+    sol_set_confirmed(0, 1);               /* J18 */
+    sol_set_confirmed(2, 0);               /* J20 */
+    N = 0;
+    mk_cloud_tick(&C, 100, sink, NULL);
+    CHECK_HAS(find_line("valve_left"), "\"state\":1", "J18 은 제 이름으로 1");
+    CHECK_HAS(find_line("valve_right"), "\"state\":0", "J20 은 제 이름으로 0");
 }
 
 static void test_no_confirmed_inputs_stay_silent(void)
 {
-    setup_with_sol();                      /* 아무 입력도 확정 안 됨 */
+    setup_with_sol();
+    set_str("din20.cloud", "valve");       /* 타입은 있지만 확정이 없다 */
     CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0,
           "모르는 상태를 0 이라 말하지 않는다");
+    /* 빈 타입(기본)은 확정돼도 미발행 — ain 의 "없음 = 미발행" 과 같은 규칙 */
+    setup_with_sol();
+    sol_set_confirmed(2, 1);
+    N = 0;
+    CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0, "빈 타입 = 미발행");
 }
 
 static void test_valve_mask_bit_tags_records(void)
@@ -570,6 +657,113 @@ static void test_imu_off_is_silent(void)
     CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0, "꺼져 있으면 미발행");
 }
 
+/* ---- i2c 송신 주기 (HANDOFF_0831 결정 1 — 수집·송신 분리) ---------------- */
+
+static void test_i2c_repeats_at_tx_period(void)
+{
+    /* 수집은 센서 되는 대로(온습도 2초), 송신은 캐시 최신값을 포트별
+     * 송신 주기마다 반복 — "변수 a 에 수집된 값을 계속 넣고 송신할 때는
+     * 변수 a 를 쓴다"(사용자, 2026-08-30). */
+    setup_with_i2c();
+    set_u32("i2c13.tx_period_ms", 100u);
+    N = 0;
+    mk_cloud_tick(&C, 100, sink, NULL);          /* 새 표본 → 즉시 발행 */
+    int first = N;
+    CHECK(first >= 2, "temp_air·humidity 가 즉시 나간다");
+    mk_cloud_tick(&C, 150, sink, NULL);          /* 주기 미달 */
+    CHECK(N == first, "주기 전에는 같은 표본을 반복하지 않는다");
+    mk_cloud_tick(&C, 200, sink, NULL);          /* 100ms 도달 */
+    CHECK(N > first, "주기가 차면 캐시 최신값이 반복된다");
+    CHECK_HAS(LINES[N - 1], "\"t\":1000",
+              "반복 줄의 t 는 획득 시각 그대로 (설계 원칙 2)");
+}
+
+/* ---- 시간축 (mk_telem 은퇴로 이식, 2026-08-31 — 원본 test_telem.c) ------- */
+
+static void test_t_stays_boot_ms_on_device_clock_with_timeax(void)
+{
+    /* timeax 를 붙였어도 아직 아무 GNSS 신호가 없으면(device_clock) t 를
+     * 손대지 않는다 — UTC 를 지어내지 않는다(설계 원칙 3·4). */
+    setup();
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    static MkTimeAx TX;
+    mk_timeax_init(&TX);
+    mk_cloud_attach_timeax(&C, &TX);
+    drain_capability();
+    set_last(0, 4242, 4026531);
+    mk_cloud_tick(&C, 100, sink, NULL);
+    const char *ln = find_line("flow");
+    CHECK_HAS(ln, "\"t\":4242", "device_clock 이면 t 는 부팅 ms 그대로");
+    CHECK_HAS(ln, "\"time_source\":\"device_clock\"", "등급도 그대로");
+}
+
+static void test_t_becomes_utc_once_gnss_pps_locks(void)
+{
+    setup();
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    static MkTimeAx TX;
+    mk_timeax_init(&TX);
+    mk_cloud_attach_timeax(&C, &TX);
+    drain_capability();
+
+    mk_timeax_on_pps(&TX, 1000000ULL);             /* PPS @ dev_us=1.000s */
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1772200855000LL;
+    mk_timeax_on_rmc(&TX, &rmc, 1050000ULL);       /* 짝지어져 gnss_pps */
+
+    set_last(0, 1500, 4026531);                    /* 획득: 부팅 1.5s */
+    mk_cloud_tick(&C, 100, sink, NULL);
+
+    const char *ln = find_line("flow");
+    CHECK_HAS(ln, "\"t\":1772200855500",
+              "t 는 획득 시각을 UTC 로 바꾼 값 — 송신 시각이 아니다");
+    CHECK_HAS(ln, "\"time_source\":\"gnss\"",
+              "계약 매핑 — gnss_pps 는 전선에서 gnss 다 (설계 §4.1)");
+}
+
+/* ---- seq (HANDOFF_0831 결정 2 — 유실 검출을 두 링크 공통으로) ------------ */
+
+static void test_seq_increments_per_line(void)
+{
+    setup();
+    /* 🔴 cloud 설정을 capability 비우기 **전에** 한다 — 뒤에 바꾸면 지문이
+     *    달라져 capability 가 재발행되며 번호를 하나 더 소비한다. */
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    drain_capability();                 /* capability 가 seq=0 을 쓴다 */
+    set_last(0, 1000, 4026531);
+    mk_cloud_tick(&C, 100, sink, NULL);
+    set_last(0, 1010, 4026600);
+    mk_cloud_tick(&C, 200, sink, NULL);   /* 다음 tx 주기 */
+    CHECK(N >= 2, "두 줄이 나왔다");
+    CHECK_HAS(LINES[0], "\"seq\":1", "capability 다음이라 첫 ain 줄은 seq=1");
+    CHECK_HAS(LINES[1], "\"seq\":2", "둘째 줄은 seq=2 — 줄마다 1 증가");
+}
+
+static void test_seq_checkbox_off_omits_field(void)
+{
+    /* 🔴 사용자 결정 2026-08-31 — seq 는 체크박스(tx.seq, 기본 켜짐).
+     *    끄면 필드가 빠지고, 카운터는 계속 올라 다시 켤 때 번호가 이어진다. */
+    setup();
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    drain_capability();                 /* seq=0 소비 — 지문은 이후 불변 */
+    set_u32("tx.seq", 0u);
+    set_last(0, 1000, 4026531);
+    mk_cloud_tick(&C, 100, sink, NULL);
+    CHECK(N >= 1 && strstr(LINES[0], "\"seq\"") == NULL,
+          "tx.seq 를 끄면 seq 필드가 빠진다");
+    set_u32("tx.seq", 1u);
+    set_last(0, 1010, 4026600);
+    mk_cloud_tick(&C, 200, sink, NULL);   /* 다음 tx 주기 */
+    CHECK_HAS(LINES[N - 1], "\"seq\":2",
+              "끔 동안에도 카운터는 올라 번호가 이어진다");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* 크래시 지점을 놓치지 않게 */
@@ -580,12 +774,15 @@ int main(void)
     test_ain_type_string_is_the_users();
     test_ain_empty_unit_falls_back_to_value();
     test_moving_the_sensor_is_a_config_change();
-    test_a_sample_is_published_once();
+    test_ain_last_repeats_at_tx_period();
+    test_ain_drains_queue_not_just_last();
+    test_ain_round_robin_no_starvation();
     test_i2c_values_flow_without_a_switch();
     test_dewpoint_is_computed_when_the_bit_is_on();
     test_ambient_rides_on_temp_road();
     test_ambient_off_means_no_field();
-    test_valve_is_the_or_of_inputs();
+    test_din_cloud_string_emits_state_record();
+    test_din_channels_are_independent();
     test_no_confirmed_inputs_stay_silent();
     test_valve_mask_bit_tags_records();
     test_capability_is_first_and_reflects_config();
@@ -596,6 +793,11 @@ int main(void)
     test_imu_record_from_um981();
     test_imu_temp_when_enabled();
     test_imu_off_is_silent();
+    test_t_stays_boot_ms_on_device_clock_with_timeax();
+    test_t_becomes_utc_once_gnss_pps_locks();
+    test_seq_increments_per_line();
+    test_seq_checkbox_off_omits_field();
+    test_i2c_repeats_at_tx_period();
 
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all ok\n");

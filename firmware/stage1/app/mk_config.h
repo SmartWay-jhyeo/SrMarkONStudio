@@ -123,12 +123,19 @@ typedef struct {
     const char *const *choice_labels;
 } MkCfgItem;
 
-typedef struct {
+typedef struct MkConfig {
     MkCfgItem *items;
     size_t     count;
     /* 마지막 저장 이후 값이 바뀌었는가. mk_cfg_set 이 세우고
      * mk_cfg_mark_saved 가 내린다. */
     uint8_t    dirty;
+    /* 🔴 항목 사이를 보는 정책 훅 (예: i2c 종류 → 수집 주기 하한). NULL 이면
+     *    없음. mk_cfg_set 이 coerce 뒤·수락 전에 부른다 — MK_CFG_OK 외를
+     *    돌려주면 그대로 거절 사유가 된다. 값을 정렬해야 하는 쪽(형제 항목
+     *    끌어올리기)도 여기서 한다. 카탈로그의 뜻을 아는 쪽(mk_cfgtable.c)이
+     *    설치한다 — mk_config 은 키의 의미를 모르는 채로 남는다. */
+    MkCfgResult (*policy)(struct MkConfig *cfg, MkCfgItem *item,
+                          const MkValue *v);
 } MkConfig;
 
 const char *mk_cfg_reason_text(MkCfgResult r);

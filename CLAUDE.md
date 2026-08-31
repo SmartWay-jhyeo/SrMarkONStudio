@@ -64,8 +64,11 @@ GNSS/PPS·I2C 드라이버. 자세한 것은 `HANDOFF.md` §3·§7.
 (시뮬레이터가 있던 시절에는 두 곳을 함께 고쳐야 했다. 이제 카탈로그의 출처는
 보드 하나다 — 확인도 실물 카탈로그로 한다: `markon_cli --port COM23 list`.)
 
-🔴 남아 있는 이중 정의 하나: **I2C 종류→물리량 표**가 `host/gui/screen.py` 와
-펌웨어 `mk_i2c.c` 에 각각 있고 자동 대조가 없다. 종류를 늘릴 때 둘 다 고칠 것.
+🔴 남아 있는 이중 정의 둘 — I2C **종류를 늘릴 때 셋을 함께** 고칠 것:
+① **종류→물리량 표**: `host/gui/screen.py` ↔ 펌웨어 `mk_i2c.c` (자동 대조 없음)
+② **종류→클라우드 타입 표**(2026-08-31 신설): `host/core/typemap.py` 의
+KIND_CLOUD ↔ 펌웨어 `mk_cloud.c` 의 I2C_KIND_TYPES. typemap↔screen 은
+`test_typemap` 이 대조하지만 펌웨어와의 대조는 없다.
 
 ### 🔴 `docs/`는 무시 대상이지 불필요한 파일이 아니다
 

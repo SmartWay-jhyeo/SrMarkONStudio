@@ -44,7 +44,7 @@ test_cfgwire: test_cfgwire.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_js
 test_crc: test_crc.c ../app/mk_crc.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test_sol: test_sol.c ../app/mk_solctl.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c
+test_sol: test_sol.c ../app/mk_solctl.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh1750.c ../app/mk_i2c_am2320.c ../app/mk_i2c_mlx90614.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 test_cfgtable: test_cfgtable.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh1750.c ../app/mk_i2c_am2320.c ../app/mk_i2c_mlx90614.c
@@ -56,7 +56,7 @@ test_i2c: test_i2c.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh175
 test_lcd: test_lcd.c ../app/mk_lcd.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh1750.c ../app/mk_i2c_am2320.c ../app/mk_i2c_mlx90614.c ../app/mk_ws2812.c ../app/mk_solctl.c ../app/mk_queue.c
 	$(CC) $(CFLAGS) -o $@ $^
 
-test_screen: test_screen.c ../app/mk_screen.c ../app/mk_glyph.c ../app/mk_font5x7.c ../app/mk_text.c ../app/mk_lcd.c ../app/mk_telem.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c ../app/mk_ads1256.c ../app/mk_queue.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh1750.c ../app/mk_i2c_am2320.c ../app/mk_i2c_mlx90614.c ../app/mk_ws2812.c ../app/mk_solctl.c ../app/mk_timeax.c ../app/mk_gnss.c ../app/mk_railctl.c
+test_screen: test_screen.c ../app/mk_screen.c ../app/mk_glyph.c ../app/mk_font5x7.c ../app/mk_text.c ../app/mk_lcd.c ../app/mk_cfgtable.c ../app/mk_cfgwire.c ../app/mk_config.c ../app/mk_json.c ../app/mk_ads1256.c ../app/mk_queue.c ../app/mk_i2c.c ../app/mk_i2c_drivers.c ../app/mk_i2c_bh1750.c ../app/mk_i2c_am2320.c ../app/mk_i2c_mlx90614.c ../app/mk_ws2812.c ../app/mk_solctl.c ../app/mk_timeax.c ../app/mk_gnss.c ../app/mk_railctl.c
 	$(CC) $(CFLAGS) -o $@ $^
 
 clean:

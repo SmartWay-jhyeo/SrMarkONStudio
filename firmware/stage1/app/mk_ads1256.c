@@ -433,3 +433,28 @@ int mk_ads_last(const MkAds *a, int ch, MkSample *out)
     *out = a->ch[ch].last;
     return 1;
 }
+
+/* ── raw → mA (규격 §7.2.1 의 환산 — 유일 출처) ─────────────────────────
+ *
+ * [이사 2026-08-31] mk_telem 은퇴(HANDOFF_0831 결정 2)로 여기로 왔다 —
+ * raw 의 주인이 이 모듈이다. 소비자: mk_cloud(전선)·mk_screen(LCD)·
+ * mk_statled(단선 판정). */
+
+#define ADS_FULL_SCALE   8388607.0f      /* 2^23 - 1 (데이터시트 §5.3) */
+#define VREF_V           2.5f
+/* 🔴 만재 입력은 VREF 가 아니라 **2·VREF** 다 (PGA=1).
+ *
+ *      ADS1256.pdf p.11: "full-scale input range is ±2VREF (for PGA = 1)"
+ *      ADS1256.pdf p.23: LSB = 2VREF/(PGA(2^23 − 1))
+ *
+ *    여기를 VREF 로 두면 모든 값이 정확히 절반으로 나온다. 실기기에서 4 mA
+ *    신호가 1.99 mA 로 보였다 [실증 2026-08-17] — 배수가 딱 2 라 눈치채기
+ *    어렵고, 센서나 배선을 먼저 의심하게 된다. */
+#define ADS_FULL_SCALE_V (2.0f * VREF_V)
+#define SHUNT_OHMS       120.0f
+
+float mk_ads_raw_to_ma(int32_t raw)
+{
+    float volts = ((float)raw / ADS_FULL_SCALE) * ADS_FULL_SCALE_V;
+    return volts / SHUNT_OHMS * 1000.0f;
+}

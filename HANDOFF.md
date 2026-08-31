@@ -16,7 +16,8 @@ PC 없이도 읽을 수 있다 — J25 LCD 가 센서값을, **WS2812 3개가 �
 
 | | 요약 | 상세 |
 |---|---|---|
-| 젯슨 링크 = Cloud 계약 | USART2(J29)가 v1.7 계약을 말한다. 타입은 포트별 사용자 선택, 밸브는 디지털 입력 OR, IMU(UM981 RAWIMUX)는 독립 레코드·독립 마스크 | §7.4a |
+| 🔴 본선 형식 통일 (2026-08-31, **미굽기 — 굽기 준비 완료**) | USB 본선도 젯슨과 같은 Cloud 계약 레코드를 받는다 — 직렬화기 한 벌(mk_cloud, mk_telem 은퇴), 링크별 게이트. seq(tx.seq)·i2c 포트별 송신 주기·din 사용자 타입·$GNSSRAW. **호스트(계획 2)도 완료** — GUI 는 정규화 어댑터로 옛(v3)·새 형식을 동시에 읽으므로 굽기 전에도 동작한다. 굽기 절차: 사용자에게 알림 → 빌드(make, 이 PC 에는 make 없음 — CI/수동) → 굽기(체크리스트: J17 배터리 분리·COM23 리더 종료) → `tools/restore_board_config.py`(data/board_config.json 사본 우선) → GUI 로 확인 | `HANDOFF_0831.md` · `docs/superpowers/plans/2026-08-31-usb-cloud-unification-fw.md`·`-host.md` |
+| 젯슨 링크 = Cloud 계약 | USART2(J29)가 v1.7 계약을 말한다. 타입은 포트별 사용자 선택, ~~밸브는 디지털 입력 OR~~(→ 2026-08-31 dinN.cloud 사용자 문자열, OR 는 태깅 전용), IMU(UM981 RAWIMUX)는 독립 레코드·독립 마스크 | §7.4a |
 | IWDG 워치독 5초 | 메인 루프가 서면 칩이 스스로 리셋·복구. PC 납치 실험으로 발화 실증 | CLAUDE.md §4 |
 | 호스트 침묵 게이트 | HB 없으면 COM23 텔레메트리 침묵(부팅 포함) — F103 굳음의 근본 예방. 규격 §7.1.3 | §7.5 |
 | 상태 LED 3개 | LED1 시스템 / LED2 측위 품질 / LED3 센서 건강. 수동 색 항목은 카탈로그에서 제거 | §7.4c |

@@ -7,8 +7,11 @@
  *    (설계: docs/superpowers/specs/2026-08-21-cloud-schema-jet-link-design.md,
  *     사용자 결정 2026-08-21).
  *
- * 🔴 mk_telem 의 병렬 소비자다. 같은 수집원(MkAds·MkI2c·MkSolCtl·MkGnss)을
- *    읽기만 하고, 본선(USART3) 출력에는 한 바이트도 관여하지 않는다.
+ * 🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] **유일 직렬화기**다 — 같은
+ *    줄이 젯슨(USART2)과 본선(USART3) 두 링크로 나간다(main.c 의
+ *    emit_records: 젯슨 항상, USB 는 침묵 게이트 뒤). mk_telem(규격 v3
+ *    본선 직렬화기)은 은퇴했고 이 모듈이 그 소비 골격(큐 드레인·주기)을
+ *    상속했다.
  *
  * 🔴 "이 채널의 센서가 클라우드에서 뭐라 불리는가"는 설정이 정한다
  *    (ain{n}.cloud 열거). 센서를 딴 커넥터로 옮기면 설정만 옮기면 된다 —
@@ -46,16 +49,27 @@ typedef struct MkCloud {
     MkTimeAx *timeax;                 /* NULL 이면 device_clock 고정 */
     const char *device_id;
     const char *fw_version;
-    /* 마지막으로 발행한 표본의 획득 시각 — 같은 표본을 두 번 내보내지
-     * 않기 위한 기억이다(설계 §4.7). */
-    int64_t  ain_sent_t[MK_ADS_CHANNELS];
-    uint8_t  ain_primed[MK_ADS_CHANNELS];
+    /* 줄 순번 — 유실 검출의 근거 (HANDOFF_0831 결정 2). 발행에 성공한
+     * 줄마다 1 오른다. tx.seq(체크박스, 기본 켜짐)를 꺼도 계속 올라,
+     * 다시 켰을 때 번호가 이어진다 — 끔 구간이 유실로 보이지 않게 하는
+     * 것이 아니라, 켬 구간끼리의 연속성을 지키는 것이 목적이다. */
+    uint32_t seq;
+    /* ain 송신 골격 — 본선 mk_telem 에서 상속 (HANDOFF_0831 검토 1).
+     * last_ms 는 tx.period_ms 게이트의 기준, ain_rr 은 큐 드레인
+     * 라운드로빈의 시작 채널(기아 방지, 688ce00). */
+    int64_t  last_ms;
+    int      ain_rr;
+    /* 마지막으로 발행한 표본의 획득 시각 — i2c 의 "새 표본" 판정. */
     int64_t  i2c_sent_t[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
     uint8_t  i2c_primed[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
-    /* 마지막으로 발행한 밸브 상태 — 확정 상태의 **변화**에만 valve
-     * 레코드를 낸다(설계 §4.5). */
-    uint8_t  valve_sent_state;
-    uint8_t  valve_primed;
+    /* 포트별 마지막 발행 시각 — i2cN.tx_period_ms(수집·송신 분리, HANDOFF_0831
+     * 결정 1)의 기준점. 슬롯이 아니라 포트 단위다: 온도·습도는 같은 수집에서
+     * 나오므로 함께 반복된다. */
+    int64_t  i2c_tx_last_ms[MK_I2C_COUNT];
+    /* 마지막으로 발행한 din 확정 상태 — 채널별 **변화**에만 레코드를 낸다
+     * (dinN.cloud 사용자 문자열이 type, HANDOFF_0831 검토 5). */
+    uint8_t  din_sent_state[MK_SOL_COUNT];
+    uint8_t  din_primed[MK_SOL_COUNT];
     uint32_t gnss_sent_count;         /* 마지막으로 발행한 fix_count */
     uint32_t imu_sent_seq;            /* 마지막으로 발행한 imu 표본 seq */
     /* device_capability — 부팅 후 1회 + 관련 설정이 바뀐 tick 에 재발행

@@ -15,12 +15,16 @@
    특히 **실기기를 흉내 내지 않는다** — GNSS 데모 좌표, I2C 사인파, 화면
    회복 계수기 같은 것은 여기 없고 앞으로도 없다.
 
-🔴 **카탈로그는 얼린 스냅샷이다** (`catalog_snapshot.jsonl`). 시뮬레이터를
-   지우기 직전의 `$CFG,LIST` 출력을 한 번 떠 둔 것이고, **펌웨어를 따라가지
-   않는다.** 그게 요점이다 — 없애려던 비용이 "두 곳을 맞추는 것"이었으므로
-   스텁은 처음부터 대조 상대가 아니어야 한다. 시험이 확인하는 것은 *보드가
-   무엇을 갖고 있나*가 아니라 *호스트가 카탈로그 한 뭉치를 받았을 때 어떻게
-   구는가* 다.
+🔴 **카탈로그는 얼린 스냅샷이다** (`catalog_snapshot.jsonl`). **펌웨어를
+   실시간으로 따라가지 않는다.** 그게 요점이다 — 없애려던 비용이 "두 곳을
+   맞추는 것"이었으므로 스텁은 처음부터 대조 상대가 아니어야 한다. 시험이
+   확인하는 것은 *보드가 무엇을 갖고 있나*가 아니라 *호스트가 카탈로그 한
+   뭉치를 받았을 때 어떻게 구는가* 다.
+
+   다시 뜨는 법 (형식 개편처럼 카탈로그 자체가 크게 바뀔 때만):
+     cd firmware/stage1/tests && .\\test_cfgtable.exe --catalog
+   출력을 BOM 없는 UTF-8 로 이 옆의 catalog_snapshot.jsonl 에 저장한다
+   (2026-08-31 에 Cloud 통일 항목 10개를 이 절차로 반영했다).
 """
 from __future__ import annotations
 
@@ -293,39 +297,42 @@ def build_ain_record(store: FakeStore, *, channel: int, seq: int, t_ms: int,
                      raw: int, capture_counter: int,
                      time_source: str = "device_clock",
                      time_quality: int = 0) -> dict:
-    """마스크에 따라 필드를 골라 담은 `ain` 레코드 (규격 §7.1·§7.2)."""
+    """Cloud 계약 모양의 아날로그 레코드 (규격 §7.1 개정 2026-08-31).
+
+    🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] v3 `type:"ain"` 이 아니라
+       펌웨어 mk_cloud.c build_ain 과 같은 계약 레코드다: type 은 사용자
+       문자열(`ainN.cloud` — 비면 미발행), 값 필드의 이름은 단위 문자열,
+       seq 는 tx.seq 체크박스를 따른다. capture_counter·time_quality 인자는
+       옛 시험 호출부와의 호환으로만 남았고 전선에는 안 실린다.
+    """
+    del capture_counter, time_quality      # 계약 전선에 없다
     mask = store.field_mask("ain")
     digits = int(store.get("tx.float_digits"))
 
     def on(name: str) -> bool:
         return _field_on(mask, name, "ain")
 
-    rec: dict = {"schema_ver": SCHEMA_VER, "seq": seq, "t": t_ms,
-                 "type": "ain"}
-    # 🔴 connector_id 는 마스크로 못 끈다(규격 §7.2 개정 2026-08-21) —
-    #    펌웨어 build_record 와 같은 자리.
-    rec["connector_id"] = channel + CONNECTOR_OFFSET
-    if on("raw"):
-        rec["raw"] = int(raw)               # 원본 — 반올림하지 않는다
+    cloud_type = str(store.get(f"ain{channel}.cloud") or "").strip()
+    if not cloud_type:
+        return {}                          # 빈 값 = 미발행 (계약 §16.6)
+
+    rec: dict = {"schema_ver": 1}
+    if str(store.get("tx.seq")).lower() in ("true", "1"):
+        rec["seq"] = seq
+    rec["device_id"] = str(store.get("dev.id"))
+    rec["t"] = t_ms
+    rec["type"] = cloud_type
+    rec["time_source"] = time_source
     ma = raw_to_ma(raw)
-    if on("ma"):
-        rec["ma"] = round(ma, digits)
     if on("value"):
         zero = float(store.get(f"ain{channel}.zero"))
         scale = float(store.get(f"ain{channel}.scale"))
-        rec["value"] = round((ma - zero) * scale, digits)
-    if on("unit"):
-        rec["unit"] = store.get(f"ain{channel}.unit")
-    if on("status"):
-        rec["status"] = 0
-    if on("device_id"):
-        rec["device_id"] = store.get("dev.id")
-    # 🔴 time_source 는 마스크로 못 끈다 (규격 §7.1.2).
-    rec["time_source"] = time_source
-    if on("time_quality"):
-        rec["time_quality"] = time_quality
-    if on("capture_counter"):
-        rec["capture_counter"] = capture_counter
+        unit = str(store.get(f"ain{channel}.unit") or "") or "value"
+        rec[unit] = round((ma - zero) * scale, digits)
+    if on("ma"):
+        rec["ma"] = round(ma, digits)
+    if on("raw"):
+        rec["raw"] = int(raw)               # 원본 — 반올림하지 않는다
     return rec
 
 
@@ -355,6 +362,13 @@ class FakeBoard:
     def __init__(self, store: FakeStore | None = None, *, fw: str = "0.1.0",
                  board_rev: str = "2.0"):
         self.store = store if store is not None else fake_store()
+        # 🔴 [개정 2026-08-31] 계약에서 타입은 사용자 문자열이고 빈 값은
+        #    미발행이다 — 카탈로그 기본(빈 문자열) 그대로면 스텁이 한 줄도
+        #    안 낸다. 현장 배선처럼 채널 0 하나를 켜 둔다(설정이지 기능이
+        #    아니다 — 스텁 비대화 금지 원칙 그대로).
+        if store is None and self.store.get("ain0.cloud") in ("", None):
+            self.store.set("ain0.cloud", "flow")
+            self.store.set("ain0.unit", "lpm")
         self.fw = fw
         self.board_rev = board_rev
 
@@ -592,10 +606,14 @@ class FakeBoard:
             if sample is None:
                 continue                    # 수집 전 — 지어내지 않는다
             t_ms, raw = sample
+            rec = build_ain_record(
+                self.store, channel=ch, seq=self._seq + 1, t_ms=t_ms,
+                raw=raw, capture_counter=t_ms * 1000)
+            if not rec:
+                continue                    # ainN.cloud 비어 있음 = 미발행
+            # 🔴 발행된 줄만 번호를 소비한다 — 펌웨어 finish_and_emit 규칙.
             self._seq += 1
-            lines.append(render(build_ain_record(
-                self.store, channel=ch, seq=self._seq, t_ms=t_ms, raw=raw,
-                capture_counter=t_ms * 1000)))
+            lines.append(render(rec))
         return lines
 
     # ------------------------------------------------------------------ 직렬화
