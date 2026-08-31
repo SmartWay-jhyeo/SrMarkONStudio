@@ -385,6 +385,19 @@ static void test_i2c_period_floor_follows_kind(void)
           "조도 하한 미만은 거절");
 }
 
+static void test_cloud_type_rejects_reserved_control_names(void)
+{
+    /* 사용자 문자열이 제어 응답 타입(id/stat/cfg_*)과 같으면 호스트의
+     * 제어/텔레메트리 판별이 오판한다 — 입구에서 거절한다 (계획 2 Task 9). */
+    setup();
+    CHECK(mk_cfg_set(&CFG, "ain0.cloud", "stat") == MK_CFG_RANGE,
+          "제어 응답 타입과 같은 이름은 거절");
+    CHECK(mk_cfg_set(&CFG, "din20.cloud", "cfg_item") == MK_CFG_RANGE,
+          "din 도 같다");
+    CHECK(mk_cfg_set(&CFG, "ain0.cloud", "flow1") == MK_CFG_OK,
+          "보통 이름은 통과");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "--catalog") == 0) {
@@ -408,6 +421,7 @@ int main(int argc, char **argv)
     test_bus_table_matches_the_catalog();
     test_pack_unpack_round_trips();
     test_i2c_period_floor_follows_kind();
+    test_cloud_type_rejects_reserved_control_names();
     printf(failures ? "FAILED (%d)\n" : "PASSED\n", failures);
     return failures ? 1 : 0;
 }

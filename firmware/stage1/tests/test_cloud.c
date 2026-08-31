@@ -678,6 +678,53 @@ static void test_i2c_repeats_at_tx_period(void)
               "반복 줄의 t 는 획득 시각 그대로 (설계 원칙 2)");
 }
 
+/* ---- 시간축 (mk_telem 은퇴로 이식, 2026-08-31 — 원본 test_telem.c) ------- */
+
+static void test_t_stays_boot_ms_on_device_clock_with_timeax(void)
+{
+    /* timeax 를 붙였어도 아직 아무 GNSS 신호가 없으면(device_clock) t 를
+     * 손대지 않는다 — UTC 를 지어내지 않는다(설계 원칙 3·4). */
+    setup();
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    static MkTimeAx TX;
+    mk_timeax_init(&TX);
+    mk_cloud_attach_timeax(&C, &TX);
+    drain_capability();
+    set_last(0, 4242, 4026531);
+    mk_cloud_tick(&C, 100, sink, NULL);
+    const char *ln = find_line("flow");
+    CHECK_HAS(ln, "\"t\":4242", "device_clock 이면 t 는 부팅 ms 그대로");
+    CHECK_HAS(ln, "\"time_source\":\"device_clock\"", "등급도 그대로");
+}
+
+static void test_t_becomes_utc_once_gnss_pps_locks(void)
+{
+    setup();
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    static MkTimeAx TX;
+    mk_timeax_init(&TX);
+    mk_cloud_attach_timeax(&C, &TX);
+    drain_capability();
+
+    mk_timeax_on_pps(&TX, 1000000ULL);             /* PPS @ dev_us=1.000s */
+    MkGnssRmc rmc;
+    memset(&rmc, 0, sizeof rmc);
+    rmc.valid = 1;
+    rmc.epoch_ms = 1772200855000LL;
+    mk_timeax_on_rmc(&TX, &rmc, 1050000ULL);       /* 짝지어져 gnss_pps */
+
+    set_last(0, 1500, 4026531);                    /* 획득: 부팅 1.5s */
+    mk_cloud_tick(&C, 100, sink, NULL);
+
+    const char *ln = find_line("flow");
+    CHECK_HAS(ln, "\"t\":1772200855500",
+              "t 는 획득 시각을 UTC 로 바꾼 값 — 송신 시각이 아니다");
+    CHECK_HAS(ln, "\"time_source\":\"gnss\"",
+              "계약 매핑 — gnss_pps 는 전선에서 gnss 다 (설계 §4.1)");
+}
+
 /* ---- seq (HANDOFF_0831 결정 2 — 유실 검출을 두 링크 공통으로) ------------ */
 
 static void test_seq_increments_per_line(void)
@@ -746,6 +793,8 @@ int main(void)
     test_imu_record_from_um981();
     test_imu_temp_when_enabled();
     test_imu_off_is_silent();
+    test_t_stays_boot_ms_on_device_clock_with_timeax();
+    test_t_becomes_utc_once_gnss_pps_locks();
     test_seq_increments_per_line();
     test_seq_checkbox_off_omits_field();
     test_i2c_repeats_at_tx_period();

@@ -265,4 +265,9 @@ uint32_t   mk_ads_timeouts(const MkAds *a, int ch);
  * mk_telem 이 "아직 값이 없는 채널은 보내지 않는다"를 판단하는 근거다. */
 int mk_ads_last(const MkAds *a, int ch, MkSample *out);
 
+/* 원시 코드 → 루프 전류(mA). 규격 §7.2.1 환산의 유일 출처 — 전선(mk_cloud)·
+ * 화면(mk_screen)·LED 판정(mk_statled)이 전부 이것을 쓴다. 갈라지면 화면과
+ * 전선이 다른 mA 를 말한다. (예전 자리: mk_telem — 은퇴하며 이사 2026-08-31.) */
+float mk_ads_raw_to_ma(int32_t raw);
+
 #endif /* MK_ADS1256_H */

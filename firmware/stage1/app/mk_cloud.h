@@ -7,8 +7,11 @@
  *    (설계: docs/superpowers/specs/2026-08-21-cloud-schema-jet-link-design.md,
  *     사용자 결정 2026-08-21).
  *
- * 🔴 mk_telem 의 병렬 소비자다. 같은 수집원(MkAds·MkI2c·MkSolCtl·MkGnss)을
- *    읽기만 하고, 본선(USART3) 출력에는 한 바이트도 관여하지 않는다.
+ * 🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] **유일 직렬화기**다 — 같은
+ *    줄이 젯슨(USART2)과 본선(USART3) 두 링크로 나간다(main.c 의
+ *    emit_records: 젯슨 항상, USB 는 침묵 게이트 뒤). mk_telem(규격 v3
+ *    본선 직렬화기)은 은퇴했고 이 모듈이 그 소비 골격(큐 드레인·주기)을
+ *    상속했다.
  *
  * 🔴 "이 채널의 센서가 클라우드에서 뭐라 불리는가"는 설정이 정한다
  *    (ain{n}.cloud 열거). 센서를 딴 커넥터로 옮기면 설정만 옮기면 된다 —

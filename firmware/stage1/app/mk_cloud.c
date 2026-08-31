@@ -10,7 +10,7 @@
  * 걸려 레코드가 통째로 사라졌다(시험이 잡았다). 512 는 모든 필드를 다
  * 켠 gnss(~300 B)에 여유를 둔 값이고 mk_jet 링(4096)의 1/8 이다. */
 #define MK_CLOUD_LINE_MAX  512
-#include "mk_telem.h"        /* mk_telem_raw_to_ma — 환산식은 한 곳(규격 §7.2.1) */
+/* raw→mA 환산은 mk_ads_raw_to_ma (mk_ads1256.h — 규격 §7.2.1 의 유일 출처). */
 
 /* (ain 의 클라우드 타입 표는 2026-08-26 에 없앴다 — 타입 문자열은 이제
  * 사용자가 카탈로그의 ain{n}.cloud 에 직접 치고, 값 필드 이름은
@@ -220,7 +220,7 @@ static int build_ain(MkCloud *c, int ch, const MkSample *s,
     /* 계약 §9·§10 — 값은 환산 실수, 소수 1자리 (계약 예시의 자릿수.
      * tx.float_digits 는 본선 방언의 설정이라 여기 적용하지 않는다).
      * 값 필드 이름은 단위 칸을 그대로 쓴다 ("lpm": 5.0) — 비면 value. */
-    float ma = mk_telem_raw_to_ma(s->raw);
+    float ma = mk_ads_raw_to_ma(s->raw);
     float zero = ain_f32(c->cfg, ch, ".zero", 4.0f);
     float scale = ain_f32(c->cfg, ch, ".scale", 1.0f);
     const char *fieldkey = ain_str(c->cfg, ch, ".unit");

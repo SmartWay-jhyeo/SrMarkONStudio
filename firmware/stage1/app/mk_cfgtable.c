@@ -928,6 +928,26 @@ static MkCfgResult table_policy(MkConfig *cfg, MkCfgItem *item,
                                 const MkValue *v)
 {
     const char *key = item->key;
+
+    /* 🔴 예약 타입명 거절 (2026-08-31, 계획 2 Task 9) — ainN.cloud /
+     *    dinN.cloud 사용자 문자열이 제어 응답 타입과 같으면 호스트의
+     *    제어/텔레메트리 판별(records.py 화이트리스트)이 오판한다.
+     *    입구에서 막는 것이 유일하게 안전한 자리다. */
+    if ((strncmp(key, "ain", 3) == 0 || strncmp(key, "din", 3) == 0)) {
+        const char *suffix = strchr(key, '.');
+        if (suffix != NULL && strcmp(suffix, ".cloud") == 0) {
+            static const char *const RESERVED[] = {
+                "id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end",
+            };
+            for (size_t r = 0; r < sizeof RESERVED / sizeof *RESERVED; r++) {
+                if (strcmp(v->s, RESERVED[r]) == 0) {
+                    return MK_CFG_RANGE;
+                }
+            }
+            return MK_CFG_OK;
+        }
+    }
+
     if (!(key[0] == 'i' && key[1] == '2' && key[2] == 'c')) {
         return MK_CFG_OK;
     }

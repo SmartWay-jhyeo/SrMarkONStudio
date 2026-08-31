@@ -235,9 +235,11 @@ MEASURED_LINE_BYTES = 135
 
 
 def _telem_max_lines() -> int:
-    src = _code(FW / "app" / "mk_telem.h")
-    m = re.search(r"#define\s+MK_TELEM_MAX_LINES\s+(\d+)", src)
-    assert m is not None, "MK_TELEM_MAX_LINES 를 못 찾았다"
+    # [개정 2026-08-31] 직렬화기가 mk_cloud 하나가 됐다 — 틱당 ain 줄
+    # 상한도 그쪽 상수다(HANDOFF_0831 결정 2, 옛 MK_TELEM_MAX_LINES 후계).
+    src = _code(FW / "app" / "mk_cloud.c")
+    m = re.search(r"#define\s+MK_CLOUD_MAX_AIN_LINES\s+(\d+)", src)
+    assert m is not None, "MK_CLOUD_MAX_AIN_LINES 를 못 찾았다"
     return int(m.group(1))
 
 

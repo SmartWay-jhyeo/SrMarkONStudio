@@ -3,7 +3,7 @@
 #include <string.h>
 
 #include "mk_queue.h"
-#include "mk_telem.h"    /* mk_telem_raw_to_ma — mA 환산의 유일 출처 */
+#include "mk_ads1256.h"  /* mk_ads_raw_to_ma — mA 환산의 유일 출처 */
 
 /* ── 색상 ────────────────────────────────────────────────────────────────
  * 🔴 노랑과 주황을 확실히 가른다. WS2812 에서 (255,255,0)과 (255,80,0)은
@@ -146,7 +146,7 @@ static MkRgb led_sensors(MkStatLed *s, int64_t now_ms)
             fault = 1;                              /* 값 두절 */
             continue;
         }
-        if (mk_telem_raw_to_ma(last.raw) < MK_STATLED_BREAK_MA) {
+        if (mk_ads_raw_to_ma(last.raw) < MK_STATLED_BREAK_MA) {
             warn = 1;                               /* 단선 의심 */
         }
     }

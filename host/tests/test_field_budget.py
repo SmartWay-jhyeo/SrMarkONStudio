@@ -338,7 +338,7 @@ def test_an_oversized_record_is_reported_dropped():
     """버림 감지 장치 자체는 남는다 — 보드가 필드를 늘려(모르는 이름)
     상한을 넘기면 화면이 "통째로 버려진다"고 말해야 한다. 실기기에서
     겪은 실패 방식이다(2026-08-21 — 원인을 GDB 로 링을 덤프해서야 찾았다)."""
-    rec = sample_record([f"frobnicate_{i}" for i in range(20)])
+    rec = sample_record([f"frobnicate_{i}" for i in range(40)])
     b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=921600)
     assert b.record_dropped
     level, msg = budget_message(b)
@@ -361,25 +361,26 @@ def test_a_modest_selection_is_not_reported_dropped():
 def test_record_limit_matches_the_firmware_drop_rule():
     """상한 값이 펌웨어의 버림 조건에서 파생된 그대로인지.
 
-    mk_telem.c 의 모든 송신부가 `char body[MK_LINE_MAX + 8]` 에 짓고
-    `len + 2u > sizeof body` 면 버린다 — 즉 JSON 은 MK_LINE_MAX + 6 까지만
-    전선에 나간다. 펌웨어 쪽 패턴이 바뀌면 이 시험이 파생을 다시 보라고
-    말한다.
+    🔴 [개정 2026-08-31] 직렬화기가 mk_cloud 하나가 됐다(HANDOFF_0831
+    결정 2). 모든 송신부가 `char body[MK_CLOUD_LINE_MAX]`(512) 에 짓고
+    finish_and_emit 이 `len + 2u > cap` 이면 버린다 — 즉 JSON 은 510
+    까지만 전선에 나간다. 펌웨어 쪽 패턴이 바뀌면 이 시험이 파생을 다시
+    보라고 말한다.
     """
     import re
     from pathlib import Path
 
-    from host.core.limits import MAX_PAYLOAD_BYTES, TELEM_RECORD_JSON_MAX
+    from host.core.limits import MK_CLOUD_LINE_MAX, TELEM_RECORD_JSON_MAX
 
-    assert TELEM_RECORD_JSON_MAX == MAX_PAYLOAD_BYTES + 6
+    assert TELEM_RECORD_JSON_MAX == MK_CLOUD_LINE_MAX - 2
 
     src = (Path(__file__).resolve().parents[2]
-           / "firmware" / "stage1" / "app" / "mk_telem.c"
+           / "firmware" / "stage1" / "app" / "mk_cloud.c"
            ).read_text(encoding="utf-8")
-    bodies = re.findall(r"char body\[MK_LINE_MAX \+ (\d+)\]", src)
-    assert bodies and all(n == "8" for n in bodies), (
-        "mk_telem.c 의 body 크기가 바뀌었다 — TELEM_RECORD_JSON_MAX 파생을 "
-        "다시 확인할 것")
-    assert "len + 2u > sizeof body" in src, (
-        "mk_telem.c 의 버림 조건이 바뀌었다 — TELEM_RECORD_JSON_MAX 파생을 "
-        "다시 확인할 것")
+    m = re.search(r"#define MK_CLOUD_LINE_MAX\s+(\d+)", src)
+    assert m and int(m.group(1)) == MK_CLOUD_LINE_MAX, (
+        "mk_cloud.c 의 MK_CLOUD_LINE_MAX 가 바뀌었다 — limits.py 를 맞출 것")
+    assert re.search(r"char body\[MK_CLOUD_LINE_MAX\]", src), (
+        "송신부 버퍼 패턴이 바뀌었다 — TELEM_RECORD_JSON_MAX 파생 확인")
+    assert "(size_t)len + 2u > cap" in src, (
+        "버림 조건이 바뀌었다 — TELEM_RECORD_JSON_MAX 파생 확인")
