@@ -43,6 +43,7 @@ C_SRC = \
   app/mk_railctl.c \
   app/mk_telem.c \
   app/mk_cloud.c \
+  app/mk_gnssecho.c \
   app/mk_imu.c \
   app/mk_ws2812.c \
   app/mk_statled.c \
