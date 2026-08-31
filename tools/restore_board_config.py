@@ -28,14 +28,17 @@ PLAN = [
     ("ain0.scale",     "3.75",     ""),
     ("ain0.unit",      "lpm",      "젯슨 레코드의 값 필드 이름이 된다"),
     ("ain0.name",      "유량1",     "화면 표시용"),
-    ("ain0.cloud",     "flow",     "젯슨 type — 사용자가 GUI 에서 flow_front 등으로 바꾼다"),
+    # 🔴 [2026-08-31] flow/flow 중복 금지 — 같은 문자열 두 채널이면 역매핑이
+    #    못 갈라 J4 레코드가 J3 에 붙는다(실사고: J4 카드가 비었다). 젯슨
+    #    캡쳐(2026-08-29)의 실제 이름 flow1/flow2 를 쓴다.
+    ("ain0.cloud",     "flow1",    "젯슨 type — 채널마다 유일해야 한다"),
     ("ain1.enabled",   "true",     "J4 유량2"),
     ("ain1.period_ms", "10",       ""),
     ("ain1.zero",      "4.0",      ""),
     ("ain1.scale",     "3.75",     ""),
     ("ain1.unit",      "lpm",      ""),
     ("ain1.name",      "유량2",     ""),
-    ("ain1.cloud",     "flow",     ""),
+    ("ain1.cloud",     "flow2",    ""),
     ("ain2.enabled",   "true",     "J5 유압"),
     ("ain2.period_ms", "10",       ""),
     ("ain2.zero",      "3.992",    ""),
