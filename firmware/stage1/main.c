@@ -25,7 +25,7 @@
 #include "bsp/mk_ads_io.h"
 #include "bsp/mk_time.h"
 #include "app/mk_railctl.h"
-#include "app/mk_telem.h"
+#include "app/mk_gnssecho.h"
 #include "app/mk_ws2812.h"
 #include "app/mk_solctl.h"
 #include "app/mk_i2c.h"
@@ -122,22 +122,30 @@ static void emit(void *ctx, const char *line, size_t len)
     mk_uart_write(line, len);
 }
 
-/* mk_telem 이 줄을 내보낼 때 부른다 — 초당 수백 줄인 쪽이다.
- *
- * 🔴 예약 몫을 남기고 넣는다. 위 emit 과 이것을 가르는 것이 예약의 전부다. */
-static void emit_telem(void *ctx, const char *line, size_t len)
-{
-    (void)ctx;
-    mk_uart_write_bulk(line, len);
-}
+/* 🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] 침묵 게이트의 새 자리.
+ *    예전에는 mk_telem 안에 있었다(host_alive) — 직렬화기가 하나가 되면서
+ *    게이트는 **USB 쪽 배선**으로 옮겨 왔다. 판정은 그대로 HB 신선도다
+ *    (규격 §7.1.3 — 케이블은 감지할 수 없고, 아무도 안 읽는 홍수가
+ *    F103 브리지를 굳게 했던 사고의 재발 방지). 슈퍼루프가 매 바퀴
+ *    갱신한다. */
+static int s_host_alive = 0;
 
-/* 젯슨(J29) 링크 — Cloud 계약을 말하는 mk_cloud 의 출구.
- * (2026-08-21 까지는 여기가 본선 텔레메트리의 바이트 미러였다 — 결선
- * 검증용이었고, 이제 mk_cloud 가 대체했다.) */
-static void emit_cloud(void *ctx, const char *line, size_t len)
+/* 통일 직렬화기(mk_cloud)의 출구 — 같은 줄이 두 링크로 나간다.
+ * 젯슨(J29)은 항상, USB(본선)는 침묵 게이트 뒤. 초당 수백 줄인 쪽이라
+ * USB 는 예약 몫을 남기는 bulk 로 넣는다(위 emit 과의 구분이 예약의 전부). */
+static void emit_records(void *ctx, const char *line, size_t len)
 {
     (void)ctx;
     mk_jet_write(line, len);
+    if (s_host_alive) { mk_uart_write_bulk(line, len); }
+}
+
+/* $GNSSRAW 진단 줄 — USB 전용 (app/mk_gnssecho.h). 젯슨은 `$` 줄을
+ * 버리지만, 애초에 그쪽 대역을 안 쓰는 편이 맞다. */
+static void emit_echo_usb(void *ctx, const char *line, size_t len)
+{
+    (void)ctx;
+    if (s_host_alive) { mk_uart_write_bulk(line, len); }
 }
 
 /* mk_hostlink 가 카탈로그를 **이어서** 내보낼 때 부른다.
@@ -157,7 +165,6 @@ static int emit_stream(void *ctx, const char *line, size_t len)
 static MkConfig s_cfg;
 static MkAds    s_ads;
 static MkRailCtl s_rails;
-static MkTelem   s_telem;
 static MkSolCtl  s_sol;
 static MkI2c     s_i2c;
 static MkGnss    s_gnss;
@@ -223,8 +230,8 @@ static void apply_link_baud(void *ctx, uint32_t baud)
  *    여기 있던 두 번째 항은 "134 ms 텔레메트리 — mk_uart_write 가
  *    HAL_UART_Transmit(블로킹)이다" 였고, 그것이 합의 대부분이었다.
  *    송신이 링버퍼+DMA 로 바뀌면서 그 항이 통째로 사라졌다
- *    (app/mk_txring.h, bsp/mk_uart.c). 이제 mk_telem_tick 은 줄을 만들어
- *    링에 memcpy 하고 끝난다 — 마이크로초 단위다.
+ *    (app/mk_txring.h, bsp/mk_uart.c). 이제 직렬화기(현재 mk_cloud_tick)는
+ *    줄을 만들어 링에 memcpy 하고 끝난다 — 마이크로초 단위다.
  *
  *    그래서 최악 정지가 194 ms 에서 87 ms 로 줄었고, 하한은 2배를 둬도
  *    18 칸이다. 그런데 **값은 64 로 유지한다.** 이유가 바뀌었기 때문이다:
@@ -299,8 +306,8 @@ static void sync_rails(MkRailCtl *rc, MkConfig *cfg, int64_t now_ms)
  *    시작될 수 있다. 값이 실제로 바뀌는 일은 드물지만(설정 변경 때뿐),
  *    드문 만큼 재현이 안 되는 결함이 된다.
  *
- *    읽기 쪽(mk_telem 의 큐 배출)은 이미 mk_queue 자신이 같은 방식으로
- *    보호한다(app/mk_queue.h 의 [I3]). */
+ *    읽기 쪽(직렬화기의 큐 배출 — 현재 mk_cloud)은 이미 mk_queue 자신이
+ *    같은 방식으로 보호한다(app/mk_queue.h 의 [I3]). */
 static void sync_channels(MkAds *ads, MkConfig *cfg, int64_t now_ms)
 {
     /* 🔴 칩 전체 설정(증폭률·데이터율)을 밀어 넣는다.
@@ -591,17 +598,10 @@ int main(void)
         mk_ads_attach_queue(&s_ads, ch, s_samples[ch], SAMPLES_PER_CHANNEL);
     }
     mk_hostlink_attach_ads(&link, &s_ads);
-    /* 🔴 수집 사슬의 마지막 조각. 이것이 없으면 큐가 차고
-     *    drops 만 오르며 호스트는 한 줄도 못 받는다 —
-     *    실기기에서 4초를 들어도 0건이었다. */
-    mk_telem_init(&s_telem, &s_cfg, &s_ads, fields, n_fields,
-                  DEVICE_ID);
-    mk_telem_attach_i2c(&s_telem, &s_i2c);
-    mk_telem_attach_sol(&s_telem, &s_sol);
-
-    /* 🔴 젯슨(J29) 링크의 직렬화기 — mk_telem 의 병렬 소비자다. 같은
-     *    수집원을 읽기만 하고 본선 출력에는 관여하지 않는다(app/mk_cloud.h,
-     *    설계 2026-08-21). */
+    /* 🔴 수집 사슬의 마지막 조각 — **유일 직렬화기** mk_cloud (개정
+     *    2026-08-31, HANDOFF_0831 결정 2. mk_telem 은 은퇴했다). 이것이
+     *    없으면 큐가 차고 drops 만 오르며 어느 호스트도 한 줄도 못 받는다.
+     *    같은 줄이 USB·젯슨 두 링크로 나간다(emit_records). */
     mk_cloud_init(&s_cloud, &s_cfg, &s_ads, DEVICE_ID, FW_VERSION);
     mk_cloud_attach_i2c(&s_cloud, &s_i2c);
     mk_cloud_attach_sol(&s_cloud, &s_sol);
@@ -624,7 +624,6 @@ int main(void)
     }
     mk_gnss_init(&s_gnss);
     mk_timeax_init(&s_timeax);
-    mk_telem_attach_timeax(&s_telem, &s_timeax);
     mk_cloud_attach_gnss(&s_cloud, &s_gnss);
     mk_cloud_attach_timeax(&s_cloud, &s_timeax);
 
@@ -637,7 +636,6 @@ int main(void)
     /* 🔴 $GNSS(규격 §4.1) 와 원시 문장 에코(규격 §7.7) — 둘 다 UART6 가
      *    이미 열려 있어야 뜻이 있으므로 mk_gnss_io_init() 뒤에 놓는다. */
     mk_hostlink_attach_gnss(&link, mk_gnss_io_write, NULL);
-    mk_telem_attach_gnss(&s_telem, &s_gnss);
     mk_gnssctl_init(&s_gnssctl);
     mk_hostlink_attach_gnssctl(&link, &s_gnssctl);
     /* 🔴 RTCM 하행(젯슨→위성 모듈) — 젯슨 수신 바이트의 유일한 도착지다
@@ -716,8 +714,9 @@ int main(void)
         /* 🔴 디지털 입력도 매 바퀴 민다 — ISR 이 큐에 쌓아 둔 엣지를
          *    비우고 디바운스를 진행한다. `sol.debounce_ms` 를 여기서
          *    직접 읽으므로(mk_solctl_tick 내부) 설정이 바뀐 것을 알아챌
-         *    다른 통로가 필요 없다. mk_telem_tick() 이 그 뒤에 확정된
-         *    레코드를 mk_solctl_take() 로 꺼내 din 으로 내보낸다. */
+         *    다른 통로가 필요 없다. 확정 상태는 mk_cloud_tick() 이 읽어
+         *    dinN.cloud 타입의 상태 레코드로 내보낸다(2026-08-31 개정 —
+         *    엣지 큐는 아래 드레인 자리 참고). */
         mk_solctl_tick(&s_sol, &s_cfg, now);
         sync_leds(&s_cfg, now);
 
@@ -825,12 +824,19 @@ int main(void)
          *    — 케이블은 감지할 수 없고(CLAUDE.md §4) HB 가 곧 "저쪽에서
          *    사람이 보고 있다"이다. 아무도 안 읽는 홍수가 F103(BMP)을
          *    굳게 한 것이 이 게이트의 이유다(HANDOFF §5). */
-        mk_telem_set_host_alive(
-            &s_telem, mk_hostlink_mode(&link, now) == MK_MODE_CONFIG);
-        mk_telem_tick(&s_telem, now, emit_telem, NULL);
-        /* 🔴 젯슨(J29) 링크 — 규격 v3 가 아니라 Cloud 계약(v1.7.0)을 말한다
-         *    (app/mk_cloud.h). 2026-08-21 부터 미러가 아니다. */
-        mk_cloud_tick(&s_cloud, now, emit_cloud, NULL);
+        /* 🔴 [개정 2026-08-31] 유일 직렬화기 — Cloud 계약(v1.7)의 같은 줄이
+         *    두 링크로 나간다(emit_records: 젯슨 항상, USB 는 침묵 게이트).
+         *    게이트 판정은 mk_telem 시절 그대로 HB 신선도다(규격 §7.1.3). */
+        s_host_alive = (mk_hostlink_mode(&link, now) == MK_MODE_CONFIG);
+        mk_cloud_tick(&s_cloud, now, emit_records, NULL);
+        /* $GNSSRAW 진단 에코 — USB 전용, gnss.echo 스위치(기본 꺼짐). */
+        mk_gnssecho_tick(&s_gnss, &s_cfg, emit_echo_usb, NULL);
+        /* 🔴 v3 본선이 소비하던 이벤트 큐 — mk_telem 은퇴로 주인이 없어졌다.
+         *    안 비우면 차서 $STAT 카운터만 오른다. din 확정 상태와 gnss
+         *    last-fix 는 큐와 별개 경로로 mk_cloud 가 읽는다. B단계에서
+         *    엣지 정밀 시각이 필요해지면 이 자리가 그 소비자의 자리다. */
+        { MkSolOut o; while (mk_solctl_take(&s_sol, &o)) {} }
+        { MkGnssFix f; while (mk_gnss_take_fix(&s_gnss, &f)) {} }
 
         /* 살아 있음 표시. 모드에 따라 주기를 바꿔 눈으로 구분한다.
          *   RUN    2초에 한 번 (느리게)
