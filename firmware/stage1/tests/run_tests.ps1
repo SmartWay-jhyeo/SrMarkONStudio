@@ -33,7 +33,7 @@ $suites = @(
     @{ exe = "test_imu.exe";      src = "test_imu.c ..\app\mk_imu.c" },
     @{ exe = "test_ws2812.exe";   src = "test_ws2812.c ..\app\mk_ws2812.c" },
     @{ exe = "test_statled.exe";  src = "test_statled.c ..\app\mk_statled.c ..\app\mk_telem.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ads1256.c ..\app\mk_queue.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c ..\app\mk_solctl.c ..\app\mk_timeax.c ..\app\mk_gnss.c" },
-    @{ exe = "test_sol.exe";      src = "test_sol.c ..\app\mk_solctl.c ..\app\mk_queue.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c" },
+    @{ exe = "test_sol.exe";      src = "test_sol.c ..\app\mk_solctl.c ..\app\mk_queue.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c" },
     @{ exe = "test_i2c.exe";      src = "test_i2c.c ..\app\mk_i2c.c ..\app\mk_i2c_drivers.c ..\app\mk_i2c_bh1750.c ..\app\mk_i2c_am2320.c ..\app\mk_i2c_mlx90614.c ..\app\mk_cfgtable.c ..\app\mk_cfgwire.c ..\app\mk_config.c ..\app\mk_json.c ..\app\mk_ws2812.c ..\app\mk_solctl.c ..\app\mk_queue.c" },
     @{ exe = "test_gnss.exe";     src = "test_gnss.c ..\app\mk_gnss.c" },
     @{ exe = "test_gnssctl.exe";  src = "test_gnssctl.c ..\app\mk_gnssctl.c" },

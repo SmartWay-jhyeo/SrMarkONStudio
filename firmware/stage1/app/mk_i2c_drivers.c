@@ -19,3 +19,9 @@ const MkI2cDriver *mk_i2c_driver_for(uint8_t kind)
     }
     return NULL;                 /* 부르는 쪽이 status=3 으로 말한다 */
 }
+
+uint32_t mk_i2c_min_period_ms(uint8_t kind)
+{
+    const MkI2cDriver *d = mk_i2c_driver_for(kind);
+    return d != NULL ? d->warmup_ms : 0u;
+}

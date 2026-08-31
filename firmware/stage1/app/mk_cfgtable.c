@@ -4,6 +4,7 @@
 
 #include "mk_ws2812.h"      /* MK_LED_COUNT — 정의는 저쪽이 들고 있다 */
 #include "mk_i2c.h"         /* MK_I2C_COUNT · 버스 표 — 정의는 저쪽이 들고 있다 */
+#include "mk_i2c_drivers.h" /* 종류의 수집 주기 하한 — 데이터시트 값은 드라이버가 */
 #include "mk_linkbaud.h"    /* 고를 수 있는 링크 속도 — 목록은 저쪽에만 있다 */
 
 /* 이 보드가 가진 것들 (데이터시트 §5).
@@ -894,6 +895,60 @@ static size_t add_i2c(size_t i)
     return i;
 }
 
+/* 🔴 조용한 클램프 폐지 (HANDOFF_0831 검토 8, 사용자 합의 2026-08-31).
+ *
+ *    i2c 수집 주기의 하한은 펌웨어의 취향이 아니라 **센서(종류)를 따라다니는
+ *    데이터시트 값**이다(AM2320 2000ms / MLX90614 250ms / BH1750 180ms —
+ *    각 드라이버의 warmup_ms). 예전에는 mk_i2c.c 가 실효 주기 =
+ *    max(설정, 하한) 으로 말없이 덮어서 화면의 설정값이 거짓말을 했다
+ *    (설계 원칙 4 위반). 이제 입구가 말한다:
+ *
+ *      - `i2cN.period_ms` SET 이 현재 종류의 하한 미만이면 RANGE 로 거절
+ *      - `i2cN.kind` SET 은 그 종류의 하한으로 주기를 **끌어올린다**
+ *        (기본 200ms 인 채 온습도를 고르는 흔한 경우를 거절로 막으면
+ *        사용자가 순서를 맞춰야 한다 — 정렬이 맞다. 다음 LIST 에 보인다)
+ *
+ *    mk_i2c.c 의 런타임 max() 는 플래시에 남은 옛 설정(입구를 안 거친 값)을
+ *    위한 최후 방어로 남는다. */
+static MkCfgResult table_policy(MkConfig *cfg, MkCfgItem *item,
+                                const MkValue *v)
+{
+    const char *key = item->key;
+    if (!(key[0] == 'i' && key[1] == '2' && key[2] == 'c')) {
+        return MK_CFG_OK;
+    }
+    const char *dot = key + 3;
+    while (*dot != '\0' && *dot != '.') { dot++; }
+    if (*dot != '.') {
+        return MK_CFG_OK;
+    }
+    size_t stem = (size_t)(dot - key);
+    char sibling[MK_CFG_KEY_MAX + 1];
+    if (stem + sizeof ".period_ms" > sizeof sibling) {
+        return MK_CFG_OK;
+    }
+    memcpy(sibling, key, stem);
+
+    if (strcmp(dot, ".period_ms") == 0) {
+        memcpy(sibling + stem, ".kind", sizeof ".kind");
+        MkCfgItem *kind = mk_cfg_find(cfg, sibling);
+        uint32_t floor_ms =
+            mk_i2c_min_period_ms(kind != NULL ? (uint8_t)kind->cur.u : 0u);
+        if (v->u < floor_ms) {
+            return MK_CFG_RANGE;
+        }
+    } else if (strcmp(dot, ".kind") == 0) {
+        memcpy(sibling + stem, ".period_ms", sizeof ".period_ms");
+        MkCfgItem *per = mk_cfg_find(cfg, sibling);
+        uint32_t floor_ms = mk_i2c_min_period_ms((uint8_t)v->u);
+        if (per != NULL && per->cur.u < floor_ms) {
+            per->cur.u = floor_ms;
+            cfg->dirty = 1u;
+        }
+    }
+    return MK_CFG_OK;
+}
+
 void mk_cfgtable_init(MkConfig *cfg)
 {
     /* 🔴 그룹마다 함수 하나. 예전에는 254 줄짜리 한 덩어리였고, 항목을
@@ -922,6 +977,7 @@ void mk_cfgtable_init(MkConfig *cfg)
     cfg->items = s_items;
     cfg->count = i;
     cfg->dirty = 0;
+    cfg->policy = table_policy;
 }
 
 /* ---- 저장 형식 ---------------------------------------------------------- */
