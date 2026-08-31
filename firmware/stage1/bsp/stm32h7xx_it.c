@@ -37,6 +37,11 @@ void USART3_IRQHandler(void)
     mk_uart_isr();
 }
 
+void USART2_IRQHandler(void)   /* 젯슨 링크 수신 — RTCM 보정만 나른다 */
+{
+    mk_jet_uart_isr();
+}
+
 /* 🔴 아래 셋이 없으면 startup 의 weak Default_Handler 로 빠진다. 그것은
  *    무한루프라, DRDY 가 처음 떨어지거나 DMA 가 처음 끝나는 순간 보드가
  *    통째로 선다. 컴파일도 링크도 통과하므로 굽기 전에는 드러나지 않는다.
@@ -122,6 +127,13 @@ void DMA2_Stream0_IRQHandler(void)   /* USART3 TX — 호스트 링크 */
 void DMA2_Stream1_IRQHandler(void)   /* USART2 TX — 젯슨 미러 */
 {
     mk_jet_dma_isr();
+}
+
+/* 🔴 GNSS 송신(USART6 TX — 초기화 명령 + RTCM 보정). 같은 이유 — 없으면
+ *    첫 조각만 나가고 보정 경로가 통째로 선다. */
+void DMA2_Stream2_IRQHandler(void)   /* USART6 TX — GNSS 모듈로 */
+{
+    mk_gnss_io_dma_isr();
 }
 
 /* 🔴 SPI4 와 같은 이유로 SPI2 자신의 인터럽트도 필요하다 — H7 은 전송

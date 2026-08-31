@@ -7,9 +7,13 @@
 /* 구조는 bsp/mk_uart.c 의 송신 절반을 그대로 옮긴 것이다 — 링버퍼 + DMA,
  * 놀고 있으면 걸고 완료 인터럽트가 다음 조각을 잇는다. 다른 점 셋:
  *
- *   1. 수신이 없다. 젯슨 쪽 명령은 다음 단계다 — PA3(USART2_RX)는 아직
- *      열지도 않는다(입력 기본 상태로 둔다. 반대편 젯슨 TX 가 능동
- *      구동하므로 떠 있지 않다).
+ *   1. 수신은 RTCM 통과 전용이다 [B단계 부분 개시 2026-08-28]. PA3
+ *      (USART2_RX)를 열되, 이 층은 바이트 링만 채우고 해석하지 않는다 —
+ *      꺼내 먹이는 곳은 main 의 배선이고, 도착지는 app/mk_rtcm 하나뿐이다.
+ *      🔴 이 링크에는 인증도 줄 프레이밍도 없으므로 여기서 명령을 받으면
+ *      안 된다(사용자 결정, 좁은 보안 경계). mk_hostlink 로 잇는 순간
+ *      host/tests/test_firmware_safety.py 가 막는다. 젯슨 쪽 명령(시각
+ *      요청 등)은 여전히 다음 단계다.
  *   2. 예약 몫이 없다. 이 링크에는 명령 응답이 없어 급이 하나뿐이다.
  *   3. baud 변경이 없다. MK_JET_BAUD 고정 — 결선 검증 단계다.
  */
@@ -23,6 +27,13 @@
  *    아무 일도 아니고, 획득 시각이 밀리는 것은 설계 위반이다(원칙 2). */
 #define MK_JET_DMA_PRIO   7u
 
+/* 🔴 수신 링 4096. 근거: 실보정 유입은 0.5~3 KB/s(1초 묶음)인데 도착은
+ *    선속도(921600 ≈ 92 KB/s) 버스트로 온다. 슈퍼루프가 최악 60 ms(I2C
+ *    블로킹, main.c) 동안 못 꺼내도 44 ms 선속도분을 삼킬 수 있는 크기다.
+ *    넘치면 overrun 으로 세고 버린다 — 보정은 다음 초에 다시 온다(Q1 의
+ *    실증 크기와 동일). CPU 인터럽트가 채우므로 D2 일 필요는 없다. */
+#define MK_JET_RX_RING_SIZE  4096u
+
 static UART_HandleTypeDef s_uart;
 static DMA_HandleTypeDef  s_hdma_tx;
 /* 🔴 DMA 가 읽을 곳이므로 D2(0x3000_0000)에 둔다 — DTCM 에 잡히면 전송이
@@ -30,6 +41,12 @@ static DMA_HandleTypeDef  s_hdma_tx;
 static uint8_t MK_DMA_BUF s_tx_buf[MK_JET_RING_SIZE];
 static MkTxRing           s_tx;
 static volatile uint16_t  s_tx_inflight;
+
+/* 수신 링 — mk_gnss_io.c 의 바이트 링과 같은 구조(머리는 ISR, 꼬리는 루프). */
+static volatile uint8_t   s_rx[MK_JET_RX_RING_SIZE];
+static volatile uint16_t  s_rx_head;
+static volatile uint16_t  s_rx_tail;
+static volatile uint32_t  s_rx_overruns;
 
 static uint32_t s_hb_last_ms;
 static uint8_t  s_hb_level;
@@ -98,6 +115,12 @@ void mk_jet_init(void)
     g.Alternate = GPIO_AF7_USART2;
     HAL_GPIO_Init(GPIOA, &g);
 
+    /* PA3 = USART2_RX (같은 표, AF7). J29 핀3 JET_RX — 젯슨 TX 가 능동
+     * 구동하므로 풀 없이 둔다. 이 선으로 RTCM 보정이 내려온다. */
+    g.Pin       = GPIO_PIN_3;
+    g.Alternate = GPIO_AF7_USART2;
+    HAL_GPIO_Init(GPIOA, &g);
+
     /* PA1 = JET_HB. 넷리스트 확인 — J29.6 에 직결, 중간 부품 없음.
      * 젯슨 쪽(핀7)은 입력이므로 푸시풀로 몰아도 되는 유일한 방향이다. */
     g.Pin       = GPIO_PIN_1;
@@ -137,7 +160,7 @@ void mk_jet_init(void)
     s_uart.Init.WordLength             = UART_WORDLENGTH_8B;
     s_uart.Init.StopBits               = UART_STOPBITS_1;
     s_uart.Init.Parity                 = UART_PARITY_NONE;
-    s_uart.Init.Mode                   = UART_MODE_TX;   /* 수신은 다음 단계 */
+    s_uart.Init.Mode                   = UART_MODE_TX_RX;   /* RX = RTCM 통과 전용 */
     s_uart.Init.HwFlowCtl              = UART_HWCONTROL_NONE;
     s_uart.Init.OverSampling           = UART_OVERSAMPLING_16;
     s_uart.Init.OneBitSampling         = UART_ONE_BIT_SAMPLE_DISABLE;
@@ -151,6 +174,57 @@ void mk_jet_init(void)
 
     HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, MK_JET_DMA_PRIO, 0);
     HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
+
+    /* ---- 수신 (RTCM 통과 전용) ----------------------------------------- */
+    s_rx_head = 0;
+    s_rx_tail = 0;
+    s_rx_overruns = 0;
+
+    /* RXNE 를 직접 켠다 — mk_gnss_io.c 와 같은 이유(HAL_UART_Receive_IT 는
+     * 정해진 개수에서 멈추는데 RTCM 프레임 길이는 프레임마다 다르다). */
+    __HAL_UART_ENABLE_IT(&s_uart, UART_IT_RXNE);
+    HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);   /* USART3/USART6 수신과 같은 급 */
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+}
+
+/* ---- USART2 수신 ISR — 바이트를 링에 넣기만 한다 --------------------------- */
+
+void mk_jet_uart_isr(void)
+{
+    uint32_t isr = s_uart.Instance->ISR;
+
+    if (isr & USART_ISR_RXNE_RXFNE) {
+        uint8_t b = (uint8_t)s_uart.Instance->RDR;
+        uint16_t next = (uint16_t)((s_rx_head + 1u) % MK_JET_RX_RING_SIZE);
+        if (next == s_rx_tail) {
+            s_rx_overruns++;      /* 링이 찼다 — 새 바이트를 버린다(수신 링 공통 정책) */
+        } else {
+            s_rx[s_rx_head] = b;
+            s_rx_head = next;
+        }
+    }
+
+    if (isr & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE | USART_ISR_PE)) {
+        /* 🔴 ORE 를 안 지우면 수신이 영영 멈춘다 — 두 선행 프로젝트가 모두
+         *    밟은 함정(재무장 전 플래그 클리어). */
+        s_uart.Instance->ICR = USART_ICR_ORECF | USART_ICR_FECF |
+                               USART_ICR_NECF  | USART_ICR_PECF;
+    }
+}
+
+int mk_jet_read_byte(uint8_t *out)
+{
+    if (s_rx_tail == s_rx_head) {
+        return 0;
+    }
+    *out = s_rx[s_rx_tail];
+    s_rx_tail = (uint16_t)((s_rx_tail + 1u) % MK_JET_RX_RING_SIZE);
+    return 1;
+}
+
+uint32_t mk_jet_rx_overruns(void)
+{
+    return s_rx_overruns;
 }
 
 void mk_jet_write(const char *data, size_t len)

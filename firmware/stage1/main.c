@@ -52,6 +52,7 @@
 #include "app/mk_statled.h"
 #include "app/mk_cloud.h"
 #include "app/mk_imu.h"
+#include "app/mk_rtcm.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -161,6 +162,7 @@ static MkSolCtl  s_sol;
 static MkI2c     s_i2c;
 static MkGnss    s_gnss;
 static MkGnssCtl s_gnssctl;
+static MkRtcm    s_rtcm;
 static MkTimeAx  s_timeax;
 static MkLcd     s_lcd;
 static MkCloud   s_cloud;
@@ -638,6 +640,11 @@ int main(void)
     mk_telem_attach_gnss(&s_telem, &s_gnss);
     mk_gnssctl_init(&s_gnssctl);
     mk_hostlink_attach_gnssctl(&link, &s_gnssctl);
+    /* 🔴 RTCM 하행(젯슨→위성 모듈) — 젯슨 수신 바이트의 유일한 도착지다
+     *    (bsp/mk_jet.h 의 경계). sink 가 gnssctl 명령과 같은 문이라 보정과
+     *    명령이 한 줄로 서고, push 가 전부-아니면-거절이라 서로 섞이지
+     *    않는다. */
+    mk_rtcm_init(&s_rtcm, mk_gnss_io_write, NULL);
 
     /* 🔴 화면 내용. **모든 출처가 선 뒤에** 붙인다 — mk_screen 은 포인터만
      *    들고 매 갱신 주기에 그때의 값을 읽으므로, 아직 초기화 안 된
@@ -784,6 +791,20 @@ int main(void)
             mk_timeax_on_gga(&s_timeax, &gga);
         }
         mk_timeax_tick(&s_timeax, gnss_now_us);
+
+        /* 🔴 젯슨이 내려보낸 RTCM 보정 — 라우터가 프레임 경계와 CRC 를
+         *    확인해 위성 모듈로 통째 중계한다(app/mk_rtcm.h). 도착지는
+         *    여기 하나다 — host/tests/test_firmware_safety.py 가 지킨다.
+         *    gnssctl 직전에 두어 모듈로 나가는 두 물길(보정·명령)의
+         *    순서점을 한 곳에 모은다. 한 바퀴 최악 비용: 링 4096바이트
+         *    파싱+CRC ≈ 1.3ms — I2C 블로킹 60ms 옆에서 무시 가능하다. */
+        {
+            uint8_t jet_byte;
+            while (mk_jet_read_byte(&jet_byte)) {
+                mk_rtcm_feed(&s_rtcm, jet_byte, now);
+            }
+            mk_rtcm_set_link_overruns(&s_rtcm, mk_jet_rx_overruns());
+        }
 
         /* 🔴 켤 때 초기화 명령(규격 §4.1.1) — gnss.enabled 가 켜지면
          *    LOG 명령을 대신 보내고, 문장을 받으면 멈춘다. 못 찾으면

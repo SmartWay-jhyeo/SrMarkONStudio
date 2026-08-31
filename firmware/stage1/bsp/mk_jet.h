@@ -1,19 +1,28 @@
-/* Jetson 링크 — USART2 텔레메트리 미러 + PA1 하트비트 출력.
+/* Jetson 링크 — USART2 텔레메트리 미러 + RTCM 하행 수신 + PA1 하트비트 출력.
  *
  * 경로: H723 PA2(USART2_TX) → J29 핀2 → Jetson 40핀 헤더 핀10 (UART RX)
+ *       H723 PA3(USART2_RX) ← J29 핀3 ← Jetson 40핀 헤더 핀8  (UART TX)
  *       H723 PA1(GPIO 출력) → J29 핀6 → Jetson 40핀 헤더 핀7  (GPIO 입력)
- *       [결선 2026-08-21, HANDOFF.md §7.4]
+ *       [결선 2026-08-21, HANDOFF.md §7.4 / RX 개통 2026-08-28]
  *
  * 근거: STM32H723ZGT6.pdf (DS13313 Rev 1), p.72, Table 8 —
  *       PA2 AF7 = USART2_TX, PA3 AF7 = USART2_RX.
  *       넷리스트 STM32_v2.0_current.net — JET_TX = J29.2 ↔ U5.36(PA2),
- *       JET_HB = J29.6 ↔ U5.35(PA1), 중간 부품 없음.
+ *       JET_HB = J29.6 ↔ U5.35(PA1), 중간 부품 없음. JET_RX = J29.3
+ *       (데이터시트 §5.11 핀표, 방향 "Jetson → H723").
  *
  * 🔴 이 링크가 나르는 것은 **Cloud 계약**(app/mk_cloud.h)이다 [2026-08-21
  *    개정]. 결선 검증 때는 본선 텔레메트리의 바이트 미러였는데, 사용자
  *    결정("이 규약을 따르는 게 좋겠어")으로 mk_cloud 직렬화기가 대체했다.
  *    이 파일은 전송(링+DMA)만 안다 — 무엇을 나르는지는 main.c 배선이
- *    정한다. 젯슨 쪽 수신·명령은 다음 단계(B)다.
+ *    정한다.
+ *
+ * 🔴 수신(PA3)은 **RTCM 통과 전용**이다 [B단계 부분 개시 2026-08-28,
+ *    사용자 결정]. 이 층은 바이트 링만 내주고, 소비자는 app/mk_rtcm
+ *    하나다 — 이 링크에는 인증도 줄 프레이밍도 없으므로 명령을 실으면
+ *    안 된다. 젯슨발 명령(시각 요청 등)은 여전히 다음 단계고, 그때는
+ *    프레이밍·인증 설계가 먼저다. host/tests/test_firmware_safety.py 가
+ *    이 경계를 상시 검사한다.
  *
  * 🔴 best-effort 다. 이 링이 차면 줄을 통째로 버리고 센다. 본선(USART3)의
  *    링과는 완전히 독립이라, 젯슨 쪽이 밀려도 호스트 링크와 수집에는
@@ -57,5 +66,16 @@ uint32_t mk_jet_tx_dropped_bytes(void);
 
 /* 송신 DMA(DMA2 Stream1) 완료 인터럽트에서 부른다. */
 void mk_jet_dma_isr(void);
+
+/* ---- 수신 (RTCM 통과 전용) -------------------------------------------------
+ * 젯슨이 내려보낸 바이트를 하나 꺼낸다. 1 = 꺼냈다, 0 = 비었다.
+ * 슈퍼루프가 매 바퀴 비울 때까지 돌리고, 꺼낸 바이트는 mk_rtcm 에만 먹인다. */
+int mk_jet_read_byte(uint8_t *out);
+
+/* 수신 링이 차서 버린 바이트 수 — $STAT 로 올라간다(rtcm_overrun). */
+uint32_t mk_jet_rx_overruns(void);
+
+/* USART2 인터럽트에서 부른다 (bsp/stm32h7xx_it.c). */
+void mk_jet_uart_isr(void);
 
 #endif /* MK_JET_H */

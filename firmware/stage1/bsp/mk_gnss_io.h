@@ -67,11 +67,18 @@ uint64_t mk_gnss_io_now_us(void);
  * 필요 없다). 줄바꿈을 붙이지 않는다 — 그것은 부르는 쪽(app/mk_hostlink.c
  * 의 on_gnss, app/mk_gnssctl.c)이 한다. 성공하면 1, 실패하면 0.
  *
+ * 🔴 [개정 2026-08-28] 블로킹이 아니라 링+DMA 다. RTCM 보정(최대 1029바이트
+ *    프레임)이 이 문으로 나가게 되면서 블로킹(1KB ≈ 90ms 정지)은 수집
+ *    예산을 깨게 됐다 — 원칙 2. 계약: 전부 들어가면 1, 자리가 없으면 한
+ *    바이트도 넣지 않고 0. 즉시 돌아온다. 부르는 쪽은 전부 슈퍼루프
+ *    문맥이어야 한다(mk_txring 의 단일 생산자 전제).
+ *
  * 🔴 SWAP 이 이미 mk_gnss_io_init() 에서 걸려 있다(이 파일 상단 주석) —
- *    PC7 이 전기적으로 TX(MCU→모듈)이므로 HAL_UART_Transmit 이 그대로
- *    나간다. 짧은 명령(23바이트 이하 + CRLF)이라 블로킹으로 충분하다 —
- *    mk_uart_write()(호스트 링크)와 같은 판단. */
+ *    PC7 이 전기적으로 TX(MCU→모듈)다. */
 int mk_gnss_io_write(void *ctx, const char *data, size_t len);
+
+/* 송신 DMA(DMA2 Stream2) 완료 인터럽트에서 부른다(stm32h7xx_it.c). */
+void mk_gnss_io_dma_isr(void);
 
 /* USART6 인터럽트에서 부른다(stm32h7xx_it.c). */
 void mk_gnss_io_uart_isr(void);

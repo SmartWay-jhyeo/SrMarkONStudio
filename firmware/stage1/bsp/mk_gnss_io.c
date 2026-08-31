@@ -3,7 +3,9 @@
 #include "stm32h7xx_hal.h"
 
 #include "mk_clock.h"
+#include "mk_dma_mem.h"
 #include "../app/mk_timeax.h"
+#include "../app/mk_txring.h"
 
 /* ---- USART6 (GNSS NMEA) ---------------------------------------------------
  *
@@ -12,15 +14,83 @@
  * (mk_gnss_feed), 이 층에서 다시 줄로 모을 필요가 없다. */
 #define MK_GNSS_RX_RING_SIZE  256u
 
+/* 🔴 송신 링 4096 [개정 2026-08-28 — RTCM 하행]. 예전엔 블로킹 송신이었다
+ *    (짧은 초기화 명령뿐이라 충분했다). RTCM 보정이 이 문으로 나가면서
+ *    바뀌었다: 최악 프레임 1029바이트를 115200 에서 블로킹으로 보내면
+ *    ~90ms 슈퍼루프 정지 — 수집 큐 예산(main.c)이 깨진다(원칙 2 위반).
+ *    구조는 mk_jet.c 의 송신 절반과 동일(mk_txring + DMA). 크기는 젯슨
+ *    수신 링(4096)과 같게 — 한 바퀴에 그쪽 백로그가 통째로 넘어와도
+ *    프레임을 잃지 않는 크기다. 115200 기준 356ms 분량. */
+#define MK_GNSS_TX_RING_SIZE  4096u
+
+/* 본선·젯슨 송신(7)과 같은 급 — 수집(6)보다 낮다(mk_jet.c 와 같은 판단). */
+#define MK_GNSS_TX_DMA_PRIO   7u
+
 static UART_HandleTypeDef s_uart;
 static volatile uint8_t   s_rx[MK_GNSS_RX_RING_SIZE];
 static volatile uint16_t  s_head;
 static volatile uint16_t  s_tail;
 static volatile uint32_t  s_overruns;
 
+static DMA_HandleTypeDef  s_hdma_tx;
+/* 🔴 DMA 가 읽으므로 D2 에 둔다 — DTCM 이면 조용히 안 나간다(mk_dma_mem.h). */
+static uint8_t MK_DMA_BUF s_tx_buf[MK_GNSS_TX_RING_SIZE];
+static MkTxRing           s_tx;
+static volatile uint16_t  s_tx_inflight;
+
 /* ---- TIM8 CH3 (PPS 입력 캡처) ---------------------------------------------- */
 
 static TIM_HandleTypeDef s_tim;
+
+/* ---- 송신 (명령 + RTCM 보정) ------------------------------------------------
+ *
+ * mk_jet.c 의 tx_kick/tx_complete/tx_error 와 같은 구조 — "놀고 있나" 확인과
+ * 걸기를 PRIMASK 한 창에 넣어 완료 인터럽트와의 경합을 없앤다. */
+
+static void tx_kick(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (s_tx_inflight == 0u) {
+        const uint8_t *p = NULL;
+        size_t n = mk_txring_chunk(&s_tx, &p);
+        if (n > 0u) {
+            if (n > 0xFFFFu) {
+                n = 0xFFFFu;          /* NDTR 은 16비트다 */
+            }
+            s_tx_inflight = (uint16_t)n;
+            __DSB();                  /* 링 내용이 메모리에 닿은 뒤에 건다 */
+            if (HAL_DMA_Start_IT(&s_hdma_tx, (uint32_t)(uintptr_t)p,
+                                 (uint32_t)(uintptr_t)&s_uart.Instance->TDR,
+                                 (uint32_t)n) != HAL_OK) {
+                /* 못 걸었으면 링은 그대로 — 다음 write 때 다시 건다.
+                 * RTCM 은 초마다, 명령은 재시도로 다음 기회가 온다. */
+                s_tx_inflight = 0u;
+            }
+        }
+    }
+
+    __set_PRIMASK(primask);
+}
+
+static void tx_complete(DMA_HandleTypeDef *h)
+{
+    (void)h;
+    mk_txring_consume(&s_tx, s_tx_inflight);
+    s_tx_inflight = 0u;
+    tx_kick();
+}
+
+/* 오류에서 멈추지 않는다 — 옮기던 조각은 이미 깨졌다. 버리고 다음으로
+ * 간다(본선·젯슨 링크와 같은 정책. 모듈은 자체 CRC 로 깨진 것을 거른다). */
+static void tx_error(DMA_HandleTypeDef *h)
+{
+    (void)h;
+    mk_txring_consume(&s_tx, s_tx_inflight);
+    s_tx_inflight = 0u;
+    tx_kick();
+}
 
 /* 🔴 1 MHz(1us 분해능)를 만든다. ARR=0xFFFF → 주기 65536us (65.536ms).
  *
@@ -74,6 +144,37 @@ void mk_gnss_io_init(uint32_t baud)
     s_uart.AdvancedInit.Swap           = UART_ADVFEATURE_SWAP_ENABLE;
     HAL_UART_Init(&s_uart);
 
+    /* ---- 송신 DMA ------------------------------------------------------
+     *
+     * DMA2 Stream2 — 본선(Stream0)·젯슨(Stream1) 다음의 빈 자리. DMA1 은
+     * Stream0~3 이 SPI4·WS2812·LCD 로 차 있다(겹치면 수집이 깨진다). */
+    __HAL_RCC_DMA2_CLK_ENABLE();
+    __HAL_RCC_D2SRAM1_CLK_ENABLE();   /* 링 저장소가 D2 에 있다 */
+
+    mk_txring_init(&s_tx, s_tx_buf, (uint16_t)MK_GNSS_TX_RING_SIZE);
+    s_tx_inflight = 0u;
+
+    s_hdma_tx.Instance                 = DMA2_Stream2;
+    s_hdma_tx.Init.Request             = DMA_REQUEST_USART6_TX;
+    s_hdma_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
+    s_hdma_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
+    s_hdma_tx.Init.MemInc              = DMA_MINC_ENABLE;
+    s_hdma_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    s_hdma_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+    s_hdma_tx.Init.Mode                = DMA_NORMAL;
+    s_hdma_tx.Init.Priority            = DMA_PRIORITY_LOW;   /* 수집이 먼저다 */
+    s_hdma_tx.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
+    HAL_DMA_Init(&s_hdma_tx);
+    s_hdma_tx.XferCpltCallback  = tx_complete;
+    s_hdma_tx.XferErrorCallback = tx_error;
+
+    /* 🔴 DMAT 는 HAL_UART_Init() 뒤에 켠다 — Init 이 CR3 를 통째로 쓴다
+     *    (본선에서 실제로 밟은 함정, bsp/mk_uart.c 의 uart_configure). */
+    s_uart.Instance->CR3 |= USART_CR3_DMAT;
+
+    HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, MK_GNSS_TX_DMA_PRIO, 0);
+    HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+
     s_head = 0;
     s_tail = 0;
     s_overruns = 0;
@@ -126,9 +227,24 @@ int mk_gnss_io_write(void *ctx, const char *data, size_t len)
     if (data == NULL || len == 0u) {
         return 0;
     }
-    HAL_StatusTypeDef st = HAL_UART_Transmit(&s_uart, (const uint8_t *)data,
-                                             (uint16_t)len, 100u);
-    return st == HAL_OK ? 1 : 0;
+    /* 🔴 [개정 2026-08-28] 블로킹(HAL_UART_Transmit 100ms) → 링+DMA.
+     *    이유는 파일 상단 MK_GNSS_TX_RING_SIZE 주석. 계약은 그대로다 —
+     *    전부 들어가면 1, 자리가 없으면 **한 바이트도 안 넣고** 0
+     *    (mk_txring_push 의 전부-아니면-거절). 반쪽 명령·반쪽 RTCM
+     *    프레임이 모듈로 나가는 일이 없다. 예약 몫은 없다: 명령(≤25B)은
+     *    gnssctl 이 재시도하고 RTCM 은 초마다 다시 온다.
+     *    부르는 쪽 전원이 슈퍼루프 문맥이라(명령·$GNSS 통과·RTCM 배수)
+     *    생산자는 하나다 — mk_txring 의 SPSC 전제가 성립한다. */
+    if (!mk_txring_push(&s_tx, data, len, 0u)) {
+        return 0;
+    }
+    tx_kick();
+    return 1;
+}
+
+void mk_gnss_io_dma_isr(void)
+{
+    HAL_DMA_IRQHandler(&s_hdma_tx);
 }
 
 /* ---- USART6 ISR ------------------------------------------------------------ */

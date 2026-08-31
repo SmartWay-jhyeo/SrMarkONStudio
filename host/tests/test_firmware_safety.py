@@ -401,13 +401,15 @@ def test_i2c_owner_does_not_touch_the_sol_or_led_pins():
 #:
 #:    PA1 = JET_HB (J29 핀6, 보드→젯슨 하트비트 — 사용자 설계 2026-08-21)
 #:    PA2 = JET_TX (J29 핀2, USART2_TX — DS13313 Rev 1 p.72 Table 8)
+#:    PA3 = JET_RX (J29 핀3, USART2_RX — RTCM 하행, B단계 부분 개시 2026-08-28)
 #:
-#:    둘 다 커넥터에 직결이다. GPIOA 를 여는 파일이 넷(sol·WS2812·I2C·jet)
+#:    셋 다 커넥터에 직결이다. GPIOA 를 여는 파일이 넷(sol·WS2812·I2C·jet)
 #:    이 됐으므로, sol 과 같은 방식으로 핀 번호까지 묶는다.
 JET_OWNER = "mk_jet.c"
 JET_PINS = {
     "GPIO_PIN_1": "PA1 = JET_HB (J29 핀6)",
     "GPIO_PIN_2": "PA2 = JET_TX (J29 핀2)",
+    "GPIO_PIN_3": "PA3 = JET_RX (J29 핀3)",
 }
 
 
@@ -441,18 +443,51 @@ def test_jet_owner_does_not_touch_the_sol_or_led_pins():
         )
 
 
-def test_jet_owner_uses_usart2_and_does_not_command_the_reset_direction():
-    """mk_jet.c 가 USART2(AF7)를 쓰는지 — 그리고 수신을 켜 두지 않았는지.
+def test_jet_rx_feeds_only_the_rtcm_router():
+    """젯슨 수신(PA3)이 RTCM 라우터에만 이어지는지 — 명령 경로가 아닌지.
 
-    🔴 수신(PA3)은 다음 단계다. RXNE 인터럽트가 여기 생기면 그 단계가
-       시작된 것이므로, 이 검사의 금지 목록에서 빼면서 젯슨 명령 경로를
-       설계하고 넣어야 한다 — 지금 몰래 켜지는 것을 막는다.
+    🔴 [개정 2026-08-28] 예전 검사는 "RXNE 금지"로 무단 개통을 막았다.
+       RTCM 통과 경로가 설계되면서 수신은 개통됐지만, 경계는 그대로다:
+       이 링크에는 인증도 줄 프레이밍도 없으므로 **명령을 실으면 안 된다**
+       (사용자 결정, 좁은 보안 경계). 세 가지를 문자열 수준에서 강제한다 —
+
+       1. 전송층(mk_jet.c)은 바이트만 안다: 파서(mk_rtcm)도 명령 계층
+          (mk_hostlink)도 모른다. 배선은 main.c 의 몫이다.
+       2. main.c 에서 젯슨 수신 바이트의 도착지는 mk_rtcm_feed 하나다.
+       3. 젯슨 수신이 mk_hostlink_feed 로 가는 코드는 어디에도 없다.
     """
-    code = _strip_comments((FW / "bsp" / JET_OWNER).read_text(encoding="utf-8"))
-    assert "USART2" in code and "GPIO_AF7_USART2" in code
-    assert "UART_IT_RXNE" not in code, (
-        f"{JET_OWNER} 가 수신 인터럽트를 켠다 — 젯슨 명령 경로는 아직 "
-        f"설계되지 않았다"
+    jet = _strip_comments((FW / "bsp" / JET_OWNER).read_text(encoding="utf-8"))
+    assert "USART2" in jet and "GPIO_AF7_USART2" in jet
+    assert "UART_IT_RXNE" in jet, (
+        f"{JET_OWNER} 의 수신 인터럽트가 사라졌다 — RTCM 하행이 죽는다"
+    )
+    for banned in ("mk_rtcm", "mk_hostlink", "mk_framing"):
+        assert banned not in jet, (
+            f"{JET_OWNER} 이 {banned} 를 안다 — 전송층은 바이트만 알아야 "
+            f"하고, 배선은 main.c 가 한다"
+        )
+
+    main_code = _strip_comments((FW / "main.c").read_text(encoding="utf-8"))
+    reads = re.findall(r"mk_jet_read_byte\s*\(\s*&(\w+)\s*\)", main_code)
+    assert len(reads) == 1, (
+        f"main.c 의 mk_jet_read_byte 호출이 {len(reads)}곳이다 — 젯슨 수신을 "
+        f"비우는 곳은 한 곳이어야 경계를 검사할 수 있다"
+    )
+    var = reads[0]
+    drain = re.search(
+        rf"while\s*\(\s*mk_jet_read_byte\s*\(\s*&{var}\s*\)\s*\)\s*"
+        rf"\{{[^}}]*mk_rtcm_feed\s*\(",
+        main_code,
+    )
+    assert drain is not None, (
+        "main.c 의 젯슨 수신 배수 루프가 mk_rtcm_feed 로 이어지지 않는다 — "
+        "수신 바이트의 도착지는 RTCM 라우터 하나여야 한다"
+    )
+    assert not re.search(
+        rf"mk_hostlink_feed\s*\(\s*[^,]*,\s*{var}\b", main_code
+    ), (
+        "젯슨 수신 바이트가 mk_hostlink_feed 로 들어간다 — 이 링크에 명령을 "
+        "실으면 안 된다(인증·프레이밍 없음)"
     )
 
 
