@@ -240,31 +240,85 @@ static int build_ain(MkCloud *c, int ch, const MkSample *s,
     return mk_json_end(&j);
 }
 
-static int tick_ain(MkCloud *c, MkCloudEmit emit, void *ctx)
-{
-    int sent = 0;
-    for (int ch = 0; ch < MK_ADS_CHANNELS; ch++) {
-        MkSample s;
-        if (!mk_ads_last(c->ads, ch, &s)) { continue; }
-        /* 🔴 같은 표본을 두 번 내지 않는다 — 발행 시점 = 수집 시점
-         *    (설계 §4.7). 획득 시각이 그 판정 기준이다. */
-        if (c->ain_primed[ch] && c->ain_sent_t[ch] == s.t_ms) { continue; }
+/* 한 틱이 낼 수 있는 ain 줄 상한 — mk_telem 의 MK_TELEM_MAX_LINES 와 같은
+ * 근거(링크 용량 대 채널 수, mk_telem.h 주석). 통일 후 이 값이 그 역할을
+ * 이어받는다. */
+#define MK_CLOUD_MAX_AIN_LINES 11
 
-        char body[MK_CLOUD_LINE_MAX];
-        int len = build_ain(c, ch, &s, body, sizeof body);
-        if (len == 0 && ain_str(c->cfg, ch, ".cloud")[0] == '\0') {
-            /* 없음 = 미발행. 표본은 소비한 것으로 친다 — 안 그러면 켜는
-             * 순간 묵은 표본이 소급 발행된다. */
-            c->ain_primed[ch] = 1u;
-            c->ain_sent_t[ch] = s.t_ms;
-            continue;
-        }
-        if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
-            sent++;
-            c->ain_primed[ch] = 1u;
-            c->ain_sent_t[ch] = s.t_ms;
+static int emit_one_ain(MkCloud *c, int ch, const MkSample *s,
+                        MkCloudEmit emit, void *ctx)
+{
+    char body[MK_CLOUD_LINE_MAX];
+    int len = build_ain(c, ch, s, body, sizeof body);
+    if (len == 0) { return 0; }      /* 빈 타입 = 미발행 (계약 §16.6) */
+    return finish_and_emit(c, body, sizeof body, len, emit, ctx);
+}
+
+/* 🔴 [개정 2026-08-31] "발행 시점 = 수집 시점"(설계 §4.7)을 폐기하고 본선
+ *    mk_telem 의 소비 골격을 상속했다 (HANDOFF_0831 결정 2·검토 1):
+ *
+ *      1) tx.period_ms 를 기다린다 — 수집과 송신의 분리.
+ *      2) 채널 표본 **큐**를 라운드로빈으로 비운다(바퀴당 채널마다 1표본,
+ *         틱 예산 MK_CLOUD_MAX_AIN_LINES). last 한 칸만 읽으면 슈퍼루프가
+ *         10ms 이상 한눈파는 사이 표본이 덮여 **어디에도 세어지지 않고**
+ *         사라진다 — 큐·drops·seq 무엇에도 안 잡히는 유실이라 가장 질이
+ *         나쁘다. 라운드로빈·기아 방지는 실기기 결함(688ce00 — 뒤 채널이
+ *         30초 굶음)의 수정분을 그대로 옮긴 것이다.
+ *      3) 이번 틱 내내 큐가 비어 있던 채널만 last 값을 반복한다 —
+ *         수집이 송신보다 느린 채널의 스트림을 주기가 채운다. t 는 획득
+ *         시각 그대로 반복된다(설계 원칙 2, i2c 의 tx_period 반복과 같은 결).
+ *
+ *    빈 타입 채널의 표본은 pop 으로 소비만 된다 — 켜는 순간 묵은 표본이
+ *    소급 발행되는 일은 큐 깊이(수 표본)만큼으로 끝난다. */
+static int tick_ain(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
+{
+    uint32_t period = 100u;
+    MkCfgItem *it = mk_cfg_find(c->cfg, "tx.period_ms");
+    if (it != NULL) { period = it->cur.u; }
+    if (period == 0u) { period = 1u; }
+    if (now_ms - c->last_ms < (int64_t)period) { return 0; }
+    c->last_ms = now_ms;
+
+    int sent = 0;
+    int budget_used = 0;
+    int drained[MK_ADS_CHANNELS];
+    for (int k = 0; k < MK_ADS_CHANNELS; k++) { drained[k] = 0; }
+
+    int start = c->ain_rr;
+    if (start < 0 || start >= MK_ADS_CHANNELS) { start = 0; }
+    int last_ch = start;
+    int progressed = 1;
+    while (budget_used < MK_CLOUD_MAX_AIN_LINES && progressed) {
+        progressed = 0;
+        for (int i = 0; i < MK_ADS_CHANNELS &&
+                        budget_used < MK_CLOUD_MAX_AIN_LINES; i++) {
+            int ch = (start + i) % MK_ADS_CHANNELS;
+            if (!mk_ads_channel_enabled(c->ads, ch)) { continue; }
+            MkQueue *q = mk_ads_queue(c->ads, ch);
+            MkSample s;
+            if (q != NULL && mk_queue_pop(q, &s)) {
+                int n = emit_one_ain(c, ch, &s, emit, ctx);
+                sent += n;
+                budget_used += n;
+                drained[ch] = 1;
+                progressed = 1;
+                last_ch = ch;
+            }
         }
     }
+
+    for (int i = 0; i < MK_ADS_CHANNELS &&
+                    budget_used < MK_CLOUD_MAX_AIN_LINES; i++) {
+        int ch = (start + i) % MK_ADS_CHANNELS;
+        if (!mk_ads_channel_enabled(c->ads, ch) || drained[ch]) { continue; }
+        MkSample s;
+        if (!mk_ads_last(c->ads, ch, &s)) { continue; }
+        int n = emit_one_ain(c, ch, &s, emit, ctx);
+        sent += n;
+        budget_used += n;
+        if (n) { last_ch = ch; }
+    }
+    c->ain_rr = (last_ch + 1) % MK_ADS_CHANNELS;
     return sent;
 }
 
@@ -699,6 +753,6 @@ int mk_cloud_tick(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
      *    레코드보다 앞 — 같은 tick 의 태깅과 어긋나지 않게. */
     return tick_capability(c, now_ms, emit, ctx)
          + tick_valve(c, now_ms, emit, ctx)
-         + tick_ain(c, emit, ctx) + tick_i2c(c, now_ms, emit, ctx)
+         + tick_ain(c, now_ms, emit, ctx) + tick_i2c(c, now_ms, emit, ctx)
          + tick_gnss(c, emit, ctx) + tick_imu(c, emit, ctx);
 }
