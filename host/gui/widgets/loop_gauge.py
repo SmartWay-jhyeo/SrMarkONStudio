@@ -25,8 +25,33 @@ import math
 from dataclasses import dataclass
 
 #: 살아 있는 0 점. 이 아래는 측정값이 아니다.
-LOOP_MIN_MA = 4.0
-LOOP_MAX_MA = 20.0
+#:
+#: 🔴 여기서 정의하지 않고 `host.core.scaling` 에서 가져온다. 물리량 환산도
+#:    같은 두 끝점을 쓰는데(규격 §7.2.1), 두 곳에 적어 두면 언젠가 한쪽만
+#:    바뀌고 그때 게이지와 환산이 다른 눈금을 말한다.
+from host.core.scaling import LOOP_MAX_MA, LOOP_MIN_MA  # noqa: E402,F401
+
+#: 피크 홀드가 최고값을 붙들어 두는 표본 수. 100 ms 주기에서 1.8 초다.
+#:
+#: 🔴 계기가 오래 전에 정한 값을 빌려 온다 — 피크 프로그램 미터(PPM)는
+#:    10 ms 에 올라가 약 1.8 초 동안 최고값을 유지한다. 100 ms 마다 값이
+#:    바뀌는 화면에서 순간 최대값은 사람 눈에 그냥 안 보이기 때문이다.
+PEAK_HOLD_SAMPLES = 18
+
+
+def peak_hold(trace, window: int = PEAK_HOLD_SAMPLES) -> float | None:
+    """최근 구간의 최고값. 없으면 `None`.
+
+    🔴 **붙들어 두되 놓아준다.** 창을 벗어난 값은 잊는다 — 안 그러면
+       표식이 곧 최대치에 붙어 버리고 그때부터 아무 정보도 아니다.
+       창 밖으로 밀려나는 것이 곧 감쇠다.
+
+    🔴 NaN·inf 를 걸러 낸다. NaN 은 비교를 전부 통과해 조용히 최대값
+       자리를 차지한다 — `read_loop` 가 막아 둔 것과 같은 함정이다.
+    """
+    recent = [v for v in list(trace)[-window:]
+              if isinstance(v, (int, float)) and math.isfinite(v)]
+    return max(recent) if recent else None
 
 
 @dataclass(frozen=True)

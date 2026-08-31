@@ -132,3 +132,66 @@ def test_build_line_still_accepts_normal_payloads():
     assert build_command("CFG", "SET", "ain0.unit", "degC").startswith(
         "$CFG,SET,ain0.unit,degC*"
     )
+
+
+# --------------------------------------- $GNSS 원문 꼬리(raw tail, 규격 §4.1)
+#
+# 🔴 실기기 근거: UM981 에 PPS 를 켜려면
+#    "CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0" 전체(47자)가
+#    필요하다. 줄여서 "CONFIG PPS ENABLE3"·"CONFIG PPS ENABLE2 GPS" 를
+#    실제로 보내 봤더니 모듈이 둘 다
+#    "PARSING FAILD FIELD OUT OF RANGE, Too less field!" 로 거부했다 —
+#    파라미터 전부가 한 덩어리로 와야 한다. 그런데 옛 MAX_ARG_BYTES(23)
+#    로는 이 명령을 보낼 수 없었다.
+
+_GNSS_PPS_CMD = "CONFIG PPS ENABLE2 GPS POSITIVE 500000 1000 0 0"
+
+
+def test_build_command_gnss_accepts_the_real_pps_command():
+    line = build_command("GNSS", _GNSS_PPS_CMD)
+    assert line.startswith(f"$GNSS,{_GNSS_PPS_CMD}*")
+
+
+def test_build_command_gnss_rejects_over_96_bytes():
+    from host.core import limits
+
+    with pytest.raises(MalformedLineError):
+        build_command("GNSS", "A" * (limits.MAX_GNSS_TEXT_BYTES + 1))
+
+
+def test_build_command_gnss_accepts_exactly_96_bytes():
+    from host.core import limits
+
+    line = build_command("GNSS", "A" * limits.MAX_GNSS_TEXT_BYTES)
+    assert line.startswith(f"$GNSS,{'A' * limits.MAX_GNSS_TEXT_BYTES}*")
+
+
+def test_build_command_other_verbs_still_capped_at_23():
+    """되돌림 검사 반대 방향 — $GNSS 가 아닌 명령의 인자 한도는 그대로다."""
+    from host.core import limits
+
+    build_command("CFG", "SET", "dev.id", "x" * limits.MAX_ARG_BYTES)
+    with pytest.raises(MalformedLineError):
+        build_command("CFG", "SET", "dev.id", "x" * (limits.MAX_ARG_BYTES + 1))
+
+
+def test_parse_line_gnss_does_not_split_on_comma():
+    """🔴 $GNSS 는 일반 인자 쪼개기(쉼표 분할)를 거치지 않는다 — 쉼표가
+    있어도 원문 그대로 args[0] 하나에 담긴다."""
+    cmd = parse_line(build_line("GNSS,LOG,GPRMC ONTIME 1"))
+    assert cmd == Command(verb="GNSS", args=("LOG,GPRMC ONTIME 1",))
+
+
+def test_parse_line_gnss_preserves_spaces_verbatim():
+    cmd = parse_line(build_line(f"GNSS,{_GNSS_PPS_CMD}"))
+    assert cmd == Command(verb="GNSS", args=(_GNSS_PPS_CMD,))
+
+
+def test_parse_line_gnss_empty_text_yields_no_args():
+    cmd = parse_line(build_line("GNSS"))
+    assert cmd == Command(verb="GNSS", args=())
+
+
+def test_gnss_roundtrip_through_build_and_parse():
+    cmd = parse_line(build_command("GNSS", _GNSS_PPS_CMD))
+    assert cmd.args == (_GNSS_PPS_CMD,)

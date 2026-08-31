@@ -1,0 +1,189 @@
+/* I2C 센서 포트 J10~J15 — HAL 비의존.
+ *
+ * 🔴 짝 커넥터는 같은 버스다 (넷리스트 확인 2026-08-18):
+ *
+ *      I2C3  SCL=PA8(100)  SDA=PC9(99)    J10 · J11
+ *      I2C5  SCL=PC11(112) SDA=PC10(111)  J12 · J13
+ *      I2C1  SCL=PB8(139)  SDA=PB9(140)   J14 · J15
+ *
+ *    같은 주소를 짝에 함께 꽂으면 충돌한다. 펌웨어가 막을 수 없다 —
+ *    주소는 사용자가 설정으로 넣는다.
+ *
+ * 🔴 개수와 버스 표를 여기 두는 이유는 mk_cfgtable 이 이것을 쓰기
+ *    때문이다. 두 곳에 적으면 카탈로그가 말하는 버스와 실제로 두드리는
+ *    버스가 갈린다 (MK_LED_COUNT·MK_SOL_COUNT 와 같은 규칙).
+ */
+#ifndef MK_I2C_H
+#define MK_I2C_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "mk_config.h"     /* MkConfig · mk_cfg_find — mk_i2c_tick 이 설정을 읽는다 */
+
+#define MK_I2C_COUNT   6
+
+/* 🔴 카탈로그의 choices 와 같은 값이어야 한다 (mk_cfgtable 의
+ *    I2C_KIND_CHOICES, 시뮬레이터의 I2C_KINDS). 종류는 칩 모델이 아니라
+ *    무엇을 재는가다 — 사용자 확정 2026-08-17. */
+typedef enum {
+    MK_I2C_KIND_NONE       = 0,
+    MK_I2C_KIND_LUX        = 1,
+    MK_I2C_KIND_HUMID      = 2,
+    MK_I2C_KIND_IR_TEMP    = 3,
+    MK_I2C_KIND_WATER_TEMP = 4
+} MkI2cKind;
+
+/* 포트 0~5 → 버스 번호 (1 · 3 · 5). 범위 밖이면 0. */
+uint8_t  mk_i2c_bus_of(unsigned port);
+
+/* 포트 0~5 → 커넥터 번호 (10~15). 범위 밖이면 0. */
+unsigned mk_i2c_connector_of(unsigned port);
+
+/* ---- 버스 ---------------------------------------------------------------- */
+
+/* 한 번의 전송. ntx>0 && nrx>0 이면 repeated start 로 잇는다.
+ *
+ * 🔴 반환값이 곧 규격 §7.5 의 status 다:
+ *      0 = OK · -1 = 응답 없음(NACK/타임아웃) · -2 = 버스 오류
+ *    상태 판정을 이 한 곳으로 모아, 드라이버마다 다르게 세지 않는다. */
+typedef int (*MkI2cXfer)(void *ctx, uint8_t bus, uint8_t addr,
+                         const uint8_t *tx, size_t ntx,
+                         uint8_t *rx, size_t nrx);
+
+/* 🔴 [AM2320] `ntx==0 && nrx==0` 은 이제 "주소만 두드린다" 다 — HAL 의
+ *    HAL_I2C_IsDeviceReady() 가 정확히 그것이다(시도 1회, 짧은 타임아웃).
+ *    예전에는 "할 일이 없다"며 버스를 안 건드리고 조용히 0 을 돌려줬는데,
+ *    그래서는 AM2320 의 깨우기(주소만 보내고 데이터는 안 보내는 전송,
+ *    NACK 이 정상)를 표현할 수 없었다. 반환값 규칙(0/-1/-2)은 그대로다. */
+typedef struct {
+    MkI2cXfer xfer;
+    void     *ctx;
+    /* 🔴 [AM2320] 마이크로초 바쁜 대기. AM2320 은 깨우기 뒤(>=800us,
+     *    데이터시트 p.17)와 명령 전송 뒤(>=1.5ms, 같은 쪽)에 실제로
+     *    기다려야 하는 칩이다 — mk_ads1256.c 의 t6·t11 대기와 같은
+     *    이유로, 이 층이 HAL 을 몰라도 되게 콜백으로 뺀다
+     *    (MkAdsIo.delay_us 와 같은 모양).
+     *
+     *    필드를 맨 끝에 둔 이유: 기존 위치(positional) 초기화
+     *    `{ xfer, ctx }` 가 이 필드를 안 채워도(C 가 나머지를 0 으로
+     *    채운다) 그대로 컴파일된다 — BH1750·MLX90614 처럼 딜레이가
+     *    필요 없는 드라이버의 호출부를 손대지 않아도 된다.
+     *    NULL 이어도 된다 — 그러면 그 드라이버는 못 쓴다(호출하면
+     *    죽는다). 실제 보드용은 bsp/mk_i2c_io.c 가 항상 채운다. */
+    void (*delay_us)(void *ctx, uint32_t us);
+} MkI2cIo;
+
+/* ---- 드라이버 ------------------------------------------------------------ */
+
+typedef struct {
+    const char *quantity;        /* 규격 §7.5.1 어휘 */
+    float       value;
+} MkI2cValue;
+
+/* 🔴 값이 둘인 종류는 온습도뿐이다 (규격 §7.5.1). 그래서 2 다. */
+#define MK_I2C_VALUES_MAX  2
+
+/* 🔴 종류 → 양 목록 (규격 §7.5.1 표). 드라이버 유무와 무관하게 항상 있다 —
+ *    양은 종류가 정하지 드라이버가 정하지 않는다. 실패(status 1·2)·
+ *    미지원(status 3) 레코드도 quantity 를 실어야 한다 — 없으면
+ *    host/gui/screen.py 가 그 레코드를 통째로 버린다(`if not quantity:
+ *    continue`), 화면은 마지막 값을 붙든 채로 멈추고 "지원 안 함" 도
+ *    영영 안 뜬다 (검토 지적 C1, 2026-08-18).
+ *
+ *    out[MK_I2C_VALUES_MAX] 를 채우고 채운 개수를 돌려준다. 모르는
+ *    종류(카탈로그에 없는 값 포함 MK_I2C_KIND_NONE)는 0.
+ *
+ *    호스트의 화면 표(host/gui/screen.py 의 I2C_KIND_QUANTITIES)와 같은
+ *    표여야 한다 — crosscheck_i2c_quantities.py 가 대조한다. */
+int mk_i2c_kind_quantities(uint8_t kind, const char *out[MK_I2C_VALUES_MAX]);
+
+typedef struct {
+    uint8_t  kind;               /* MkI2cKind */
+    uint8_t  default_addr;       /* 설정의 addr 이 0(미지정)일 때 */
+    uint16_t warmup_ms;          /* 시작 명령 후 첫 값까지 */
+    int (*start)(const MkI2cIo *io, uint8_t bus, uint8_t addr);
+    int (*read )(const MkI2cIo *io, uint8_t bus, uint8_t addr,
+                 MkI2cValue out[MK_I2C_VALUES_MAX], int *n_out);
+} MkI2cDriver;
+
+/* ---- 상태기계 ------------------------------------------------------------ */
+
+typedef enum {
+    MK_I2C_OFF = 0,
+    MK_I2C_START,
+    MK_I2C_WARMUP,
+    MK_I2C_READY,
+    /* 지원 안 하는 종류(드라이버 없음 — 절대 회복 안 됨, 종류를 바꿔야
+     * 벗어난다) · 시작 실패(드라이버는 있는데 응답이 없음 — period_ms
+     * 마다 재시도한다, C2). 둘 다 같은 상태를 쓰는 이유는 "버스에
+     * 아무것도 없다" 는 사실이 같고 화면에 보이는 status(3 vs 1/2)만
+     * 다르기 때문이다. */
+    MK_I2C_FAULT
+} MkI2cState;
+
+typedef struct {
+    unsigned    connector_id;
+    const char *quantity;
+    float       value;
+    int         have_value;      /* 0 이면 JSON 에 null 을 넣는다 */
+    uint16_t    status;
+    int64_t     t_ms;
+} MkI2cOut;
+
+typedef struct {
+    MkI2cState state;
+    uint8_t    kind;             /* 지금 물려 있는 종류 (바뀌면 되돌린다) */
+    uint8_t    addr;             /* 지금 쓰는 주소 */
+    int64_t    step_ms;          /* 마지막 상태 전이 시각 */
+    int64_t    last_read_ms;
+} MkI2cPort;
+
+typedef struct MkI2c {
+    MkI2cIo   io;
+    MkI2cPort port[MK_I2C_COUNT];
+    unsigned  next_port;         /* 라운드로빈 출발점 */
+
+    /* 🔴 포트·양(quantity)별 마지막 값 — 수집과 송신을 떼어 놓는 자리다
+     *    (사용자 설계, 2026-08-19). store_last() 가 값을 만들 때마다(성공도
+     *    실패·미지원도) 여기를 덮어쓴다. mk_telem 은 이 자리만 tx.period_ms
+     *    마다 읽는다 — 배출용 큐는 없다. 한 바퀴 안에서 포트 여럿이 동시에
+     *    값을 내도(FAULT 는 버스를 안 건드려 순회가 안 멈춘다) 포트·슬롯마다
+     *    자리가 고정이라 서로 덮어쓰지 않는다 — 큐가 아니라 표이기 때문에
+     *    "넘친다"는 개념 자체가 없다(예전엔 out[] 이라는 배출 큐가 있어
+     *    여섯 포트가 겹치면 자리가 모자랄 수 있었다 — 2026-08-19 에 걷어냈다).
+     *
+     *    슬롯 번호는 mk_i2c_kind_quantities() 가 매기는 순서와 같다(온습도
+     *    라면 0=temp, 1=humidity). 포트의 kind·addr 이 바뀌거나 꺼지면
+     *    이 슬롯을 비운다 — 옛 종류가 내던 값을 새 종류인 척 계속 내보내지
+     *    않기 위해서다.
+     *
+     *    🔴 [정정, 2026-08-19] ain 쪽은 "큐 우선, last 는 큐가 빌 때만"으로
+     *    되돌아갔다(mk_ads1256.h 의 MkAdsChannel.last 주석) — 큐를 쓰는
+     *    목적이 "수집 우선, 송신 지연 흡수"였기 때문이다. 여기 큐를 다시
+     *    두지 않는 이유는 게으름이 아니라 구조다: mk_i2c_tick() 이 한
+     *    바퀴에 포트를 하나만 나아가게 하고, 같은 포트·슬롯이 다음 값을
+     *    내려면 그 포트가 WARMUP·eff_period 를 다시 거쳐야 해서(모든
+     *    드라이버가 180ms~2s), 같은 슬롯에 "아직 안 보낸 표본 둘"이 동시에
+     *    쌓일 여지가 없다 — last 하나가 항상 "큐 안에 0개 또는 1개" 상태와
+     *    같다. 즉 이 자리는 ain 의 큐-우선 원칙이 퇴화한(값이 하나뿐인)
+     *    형태이지, 다른 원칙을 쓰는 것이 아니다. 근거는
+     *    mk_telem.c 의 i2c 배출부 주석에도 있다. */
+    MkI2cOut  last[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
+    uint8_t   last_valid[MK_I2C_COUNT][MK_I2C_VALUES_MAX];
+} MkI2c;
+
+void mk_i2c_init(MkI2c *i, const MkI2cIo *io);
+
+/* 한 바퀴에 포트 **하나**만 나아간다. 매 루프 불러도 된다. 배출할 것을
+ * 따로 비우지 않아도 된다 — 한 포트가 낸 값은 last[][] 의 제 슬롯에
+ * 바로 쌓이고, 다음 바퀴가 다른 포트를 건드려도 그 슬롯을 건드리지 않는다. */
+void mk_i2c_tick(MkI2c *i, MkConfig *cfg, int64_t now_ms);
+
+/* 포트·슬롯의 마지막 값을 읽는다. 1 이면 out 을 채웠다(한 번이라도 값을
+ * 받았다 — 성공이든 실패·미지원이든), 0 이면 아직 없다. mk_telem 이
+ * tx.period_ms 마다 이것으로 레코드를 만든다(수집·송신 분리, 사용자
+ * 설계 2026-08-19). slot 은 mk_i2c_kind_quantities() 의 순서와 같다. */
+int mk_i2c_last(const MkI2c *i, unsigned port, unsigned slot, MkI2cOut *out);
+
+#endif /* MK_I2C_H */

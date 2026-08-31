@@ -6,20 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 0. 이 저장소의 현재 상태
 
-**계획 1(프로토콜·시뮬레이터·CLI) 완료, 계획 3(GUI) 기반 모듈 완료.** 원격 저장소는 없다 — 로컬 전용.
+**계획 1(프로토콜·시뮬레이터·CLI) 완료, 계획 2(펌웨어) 1단계 진행 중, 계획 3(GUI) 완료.**
+원격 저장소는 없다 — 로컬 전용.
+
+**지금 상태와 다음 작업은 `HANDOFF.md`를 본다.** 이 파일은 규칙이고 그쪽이 현황이다.
 
 ```
 MarkON_Studio/
-├─ CLAUDE.md  .gitignore  pyproject.toml
+├─ CLAUDE.md  HANDOFF.md  .gitignore  pyproject.toml
 ├─ protocol/specification.md   ← 펌웨어·호스트 공통 계약 (v3)
+├─ firmware/stage1/            ← H723 펌웨어. app/(HAL 비의존) + bsp/
 ├─ host/
-│  ├─ core/      framing · records · config_schema · errors
+│  ├─ core/      framing · records · config_schema · scaling · errors
 │  ├─ service/   board_service (연결·명령응답·유실집계)
-│  ├─ gui/       theme · command_queue · widgets/{status_chip, loop_gauge}
-│  └─ tests/     209개 시험 — 보드도 디스플레이도 불필요
-├─ tools/
-│  ├─ simulator/ config_store · telemetry · device_sim · capacity · serial_server
-│  └─ cli/       markon_cli
+│  ├─ gui/       screen · settings_form · field_budget · theme · qt/*
+│  └─ tests/     879개 시험 + fake_board 스텁 — 보드도 디스플레이도 불필요
+├─ tools/cli/     markon_cli
 └─ docs/         ← 🔴 git 추적 제외. 로컬에만 있다
    ├─ STM32_V2_CONTROL_DAQ_DEVELOPMENT_PLAN.md   개발 계획
    ├─ superpowers/specs/   설계 스펙
@@ -28,15 +30,16 @@ MarkON_Studio/
    └─ datasheet/           대상 하드웨어 근거 문서
 ```
 
-**보드 없이 전체가 돈다:**
+**시험은 보드 없이 돈다, 실행은 보드가 필요하다:**
 ```bash
-python -m pytest -q                                  # 209 passed
-python -m tools.cli.markon_cli list                  # 설정 카탈로그 45항목
-python -m tools.cli.markon_cli monitor --seconds 3   # 텔레메트리 + 유실 통계
-python -m tools.cli.markon_cli --port COM7 list      # 실물 보드 (펌웨어 완성 후)
+python -m pytest -q                                  # 879 passed (보드 불필요)
+python -m tools.cli.markon_cli --port COM23 list     # 실물 보드 — --port 필수
 ```
 
-`--port`만 바꾸면 시뮬레이터와 실물이 교체된다. 호스트 코드는 그대로다.
+🔴 **시뮬레이터는 없다** (2026-08-20 사용자 결정으로 통째로 삭제). 보드가 상시
+연결되면서 유지 비용이 값을 넘었다. `--port sim` 은 거절된다. 호스트 시험은
+`host/tests/fake_board.py`(최소 스텁, ~560줄) + `catalog_snapshot.jsonl` 로 돈다 —
+🔴 **스텁에 기능을 다시 키우지 마라.** 그게 시뮬레이터가 됐던 경위다.
 
 ### `host/gui/` 의 원칙 — Qt 를 import 하지 않는 층이 있다
 
@@ -46,7 +49,23 @@ python -m tools.cli.markon_cli --port COM7 list      # 실물 보드 (펌웨어 
 
 Qt 위젯은 이 함수들을 **호출만** 한다. 새 화면을 만들 때 이 경계를 지킨다.
 
-**남은 것**: 계획 2(H723 펌웨어) 미착수. 계획 3 의 Task 5~9(워커·화면들) 미착수.
+**남은 것**: 텔레메트리 송신(펌웨어), sol·led·i2c 를 실제 핀으로 내보내는 코드,
+GNSS/PPS·I2C 드라이버. 자세한 것은 `HANDOFF.md` §3·§7.
+
+### 🔴 설정 항목은 **보드에만** 넣는다
+
+화면은 `$CFG,LIST` 카탈로그만 보고 그려진다. 항목을 늘릴 때 고치는 곳은
+**펌웨어(`firmware/stage1/app/mk_cfgtable.c`) 하나뿐**이고, 호스트 코드는
+건드리지 않는다.
+
+실제로 그랬다 — 디지털 출력·LED·I2C 41항목을 넣었더니 GUI 는 그룹 이름표만
+추가하고 탭 셋을 저절로 그렸다.
+
+(시뮬레이터가 있던 시절에는 두 곳을 함께 고쳐야 했다. 이제 카탈로그의 출처는
+보드 하나다 — 확인도 실물 카탈로그로 한다: `markon_cli --port COM23 list`.)
+
+🔴 남아 있는 이중 정의 하나: **I2C 종류→물리량 표**가 `host/gui/screen.py` 와
+펌웨어 `mk_i2c.c` 에 각각 있고 자동 대조가 없다. 종류를 늘릴 때 둘 다 고칠 것.
 
 ### 🔴 `docs/`는 무시 대상이지 불필요한 파일이 아니다
 
@@ -56,7 +75,25 @@ Qt 위젯은 이 함수들을 **호출만** 한다. 새 화면을 만들 때 이
 - 버전관리 밖이라 **되돌릴 수 없다.** 문서를 고칠 때는 상위 저장소(`D:\STM32_PCB_Board`, §1)에 원본이 있는지 먼저 확인한다.
 - 문서를 고쳐야 할 상황이면 그 사실을 사용자에게 알린다. 커밋으로 남지 않으므로 변경 이력은 문서 안의 개정 이력 표가 전부다.
 
-작업 시작 전 **두 문서를 모두 읽는다.** 데이터시트가 "무엇이 있는가"(사실), 계획서가 "무엇을 만드는가"(목표)다. 충돌하면 **데이터시트가 우선**이다(§7 참조).
+작업 시작 전 **두 문서를 모두 읽는다.** 데이터시트가 "무엇이 있는가", 계획서가 "무엇을 만드는가"다.
+
+### 🔴 이 보드의 데이터시트는 2차 자료다 — KiCad 원본이 진실이다
+
+**사용자 확정 (2026-08-13).** 부품 제조사 데이터시트(STM32H723, ADS1256, RM0468 등)는
+믿어도 되지만, **`docs/datasheet/STM32_v2.0_DATASHEET.md`는 사용자가 자기 보드를 보고
+직접 쓴 문서라 틀릴 수 있다.**
+
+하드웨어 사실이 걸린 판단은 `D:\STM32_PCB_Board`의 **KiCad 원본과 넷리스트로 직접
+확인**한다. 넷리스트 파싱 예시는 이 파일의 이력에 남아 있고, 경로는 §1.1에 있다.
+
+**실제로 틀린 것이 확인된 사례**: 데이터시트 §7.5는 "BMP가 만드는 시리얼 포트로는
+H723과 통신할 수 없다(F103 USART1 = PB6/PB7 미연결)"고 단정한다. 그런데 실기기에서
+**COM23으로 H723의 NDJSON이 그대로 나온다.** 넷리스트를 보면 하드웨어 경로는
+처음부터 있었고(`VCP_TX` = H723 PB10 ↔ F103 PA3, `VCP_RX` = H723 PB11 ↔ F103 PA2),
+이 보드의 BMP 펌웨어가 이미 USART2로 매핑돼 있는 것으로 보인다.
+
+→ **BMP 재빌드 없이 USB 한 가닥으로 H723과 통신된다.** 계획서에 선행 조건으로
+적어둔 BMP 재빌드는 필요 없다.
 
 ## 1. 참조 저장소 (여기 없는 원본이 있는 곳)
 
@@ -118,7 +155,7 @@ Drivers/          CubeMX HAL
 
 - **`time_sync`(Q2)** — `int64_t epoch_ms` + 4단계 폴백(gnss / gnss_nmea / host_clock / device_clock). 계획서 §7.2의 6단계 등급으로 확장할 기반이지만, **PPS를 `HAL_GetTick()`으로 잡아 분해능이 1ms다.** 계획서 §7.3이 요구하는 타이머 Input Capture + 오버플로 확장 카운터로 **반드시 교체**해야 한다. 그대로 이식하면 안 된다.
 - **`adc_manager`(Q2)는 ADS1256이 아니다.** STM32 내장 ADC1 3채널 DMA(Flow/Pressure×2)다. MarkON Studio의 7채널 ADS1256에는 쓸 수 없다 — §1.1의 `ads1256.c`를 볼 것.
-- **`sol_valve_mgr`·`markonsync_mgr`(Q2)** — EXTI 엣지 캡처 + 링큐 + 디바운스 패턴. 계획서의 GPIO 이벤트 타임스탬프에 그대로 쓸 만하다. 단 **옵토 극성이 서로 반대**다(Sol은 HIGH=ON, MarkOnSync는 PC817이라 LOW=ON). v2.0 보드의 J18~J20은 **출력**으로 확정됐으므로(데이터시트 §5.7) 방향을 그대로 가정하지 말 것.
+- **`sol_valve_mgr`·`markonsync_mgr`(Q2)** — EXTI 엣지 캡처 + 링큐 + 디바운스 패턴. 계획서의 GPIO 이벤트 타임스탬프에 그대로 쓸 만하다. 단 **옵토 극성이 서로 반대**다(Sol은 HIGH=ON, MarkOnSync는 PC817이라 LOW=ON). 🔴 v2.0 보드의 J18~J20은 **입력**이다(2026-08-18 사용자 확정, 2026-08-19 J20 실증 — 데이터시트 §5.7 의 "출력" 단정이 틀렸다). MarkOnSync 처럼 로우 액티브로 읽는다.
 - **`sensor_queue.h`** — 채널별 독립 링큐. 계획서 §9의 원형이다.
 - **`JetsonCode/`(양쪽)** — Python 호스트 측 선행 구현(`uart_receiver` `spool_manager` `file_writer` `batch_builder` `mqtt_publisher` `ntrip_forwarder`). 계획서 §12의 Board Service 설계 시 참고.
 
@@ -204,8 +241,50 @@ GNSS NMEA(UTC) + PPS(초 경계) → 공통 시간축
 - **J10/J11, J12/J13, J14/J15는 각각 같은 I2C 버스**다. 주소가 같은 센서를 짝 커넥터에 꽂으면 충돌한다.
 - **WS2812 체인은 J21부터 순서대로** 채워야 뒤쪽이 산다.
 - **GDB로 H723을 구울 때 `set remote memory-write-packet-size 256` + `fixed` 필수.** 없으면 512B 청크 경계에서 데이터가 손상되는데 `compare-sections`·`dump`로는 못 잡는다. 실제 동작으로 확인할 것.
+- 🔴 **되읽기(`dump`)도 흔들린다** [실증 2026-08-17]. 같은 gdb 세션 안에서 같은 플래시를 세 번 읽었더니 **세 번이 다 달랐다**(16·12·4 바이트). 값은 `00` ↔ `ff` 로 통째로 튄다. `set remote memory-read-packet-size 256` + `fixed` 를 걸면 줄지만 없어지지 않고, SWD 클럭을 782 kHz 까지 낮춰도 그대로다.
+
+  → **한 번 읽고 "몇 바이트가 다르다"고 판정하면 안 된다.** 멀쩡히 구워진 판을 두고 재시도를 되풀이하게 된다 — 실제로 20번 넘게 그랬다. `tools/flash_verified.py` 가 세 번 읽어 다수결을 내고, 흔들린 자리 수를 함께 알린다. 그 수가 크면 다시 굽지 말고 링크를 볼 것.
+- 🔴 **gdb의 `restore` 로는 플래시를 굽지 못한다** [실증 2026-08-17]. 평범한 메모리 쓰기라 **조용히 아무 일도 일어나지 않는다** — 6번을 "구우고도" 예전 내용이 그대로였다. 플래시 경로를 타는 것은 `load` 뿐이고 오브젝트 파일을 요구한다. raw 백업은 `tools/restore_verified.py` 로 되돌린다(0x08000000 에 놓은 ELF 로 감싼다).
 - **BMP 펌웨어는 `bmp_f103_v2/`만 쓴다.** MiniSTM32용 바이너리를 구우면 USB가 아예 열거되지 않는다.
 - **BMP가 만드는 두 번째 COM 포트로는 H723과 통신할 수 없다**(PB6/PB7 미연결). H723 디버그 VCP는 USART3(PB10/PB11)이다.
+- 🔴 **H723은 USB 연결을 감지할 수 없다** [넷리스트 확인 2026-08-14]. `VBUS` 네트에 U5(H723)도 U6(F103)도 없다 — J2(USB-C), C61/C62/C84, R83, U11(VIN), U7뿐이고 R83은 LED9로 간다(사람 눈에 보이는 표시등). 분압으로 GPIO에 오는 경로도 없다.
+
+  그래서 CONFIG/RUN은 케이블이 아니라 **`$HB` 하트비트**로 판정한다(규격 §6.2). 그게 오히려 맞다 — USB만 꽂고 GUI를 안 켠 상태, 충전기에 꽂은 상태, GUI가 죽은 상태에서 USB 감지는 전부 CONFIG를 잘못 연다. 하트비트는 "케이블이 꽂혔나"가 아니라 **"저쪽에서 사람이 보고 있나"**를 알려주고, 24V를 켜고 끄는 설정을 여는 열쇠로는 후자가 맞다.
+- 🔴 **이 보드는 USB로 전원을 받지 않는다** [실증 2026-08-14]. USB를 뽑았다 꽂아도 보드가 리셋되지 않는다 — GDB로 `uwTick`을 읽어 확인했다(재연결 전후로 가동 시간이 이어졌다).
+
+  그래서 **F103(BMP)의 UART 브리지가 멈추면 USB 재연결로는 안 풀린다.** F103도 전원을 유지해 리셋되지 않기 때문이다. 실제로 겪었다 — H723은 완전히 정상이었는데(`mk_uart_write` 중단점 도달, `USART3 ISR`에 TC·TXE 세워짐 = 전송 완료, `BRR=69`, `AFRH=0x7700`) COM23에 한 바이트도 안 왔다. baud를 9600~921600으로 바꿔 CDC 재설정을 유도해도 안 됐고, **보드 전원을 완전히 끊었다 넣으니 즉시 살아났다.**
+
+  → 시리얼이 조용한데 H723이 정상이면 USB가 아니라 **보드 전원**을 껐다 켠다.
+
+- 🔴 **전원을 껐다 켤 때는 20초쯤 기다린다** [실증 2026-08-19]. 굽기가 `Error writing data to flash`로 막혔을 때, 짧게 껐다 켜는 것으로는 **안 풀렸다** — 그 상태에서 SWD 클럭을 2M/1M/500k로 낮춰도, `psize`를 x64~x8로 바꿔도, `connect_rst`를 꺼도, 예전에 성공했던 더 작은 바이너리를 구워도 전부 실패했다. `monitor erase_mass`조차 중간에 멈췄다. 플래시는 잠겨 있지 않았고(RDP Level 0, `FLASH_SR1=0`) 전압도 3.39V로 정상이었다. **전원을 빼고 20초 두었다 넣으니 첫 시도에 구워졌다.**
+
+  → 굽기가 막히면 설정을 바꿔 가며 재시도하지 말고 **전원을 빼고 기다린다.** 짧은 재투입은 F103이 방전되지 않아 같은 상태가 이어진다.
+
+- 🔴 **GDB로 들여다보면 보드가 리셋된다** [실증 2026-08-19]. `monitor connect_rst enable`은 **프로브에 남는다.** 굽기 스크립트가 한 번 켜 두면, 그 뒤에 변수 하나 읽으려고 `attach`만 해도 nRST가 걸려 보드가 재부팅한다.
+
+  → 증상은 "화면이 갑자기 안 나온다"·"센서가 안 읽힌다"로 나타난다. 재부팅하면서 **RAM에만 있던 설정이 전부 기본값으로 돌아가기 때문**이다(`lcd.enabled` 기본은 꺼짐). 원인이 펌웨어처럼 보이지만 아니다. 실행 중인 보드를 진단할 때는 `monitor connect_rst disable`을 먼저 보내거나, 아예 GDB를 붙이지 않는다.
+
+- 🔴 **펌웨어에 IWDG(독립 워치독, 5초)가 있다** [실증 2026-08-22 — PC를 무한루프로 납치하자 ~5초에 리셋·자가복구]. 메인 루프가 5초 서면 칩이 스스로 리셋하고 **RAM에만 있던 설정은 사라진다**(`$CFG,SAVE` 규칙 그대로). GDB로 코어를 세워도 DBGMCU 얼림 비트(APB4FZ1 bit18, 펌웨어가 세움) 덕에 리셋되지 않는다 — 단 이 비트는 디버거 세션이 끝나면 되돌아가며, halt 중에 비트를 손으로 꺼도 그 halt에서는 발화하지 않았다(래치로 추정, 같은 날 관측). 한 번 켜면 끌 수 없다(RM0468).
+- 🔴 **24V 레일이 켜져 있으면 실행 중인 보드에 SWD가 안 붙는다** [실증 2026-08-22, A-B-A]. `swdp_scan`이 `SWD invalid ACK`/`parity error`로 실패한다 — 부스트 컨버터 스위칭 노이즈로 보인다. `pwr.24v`를 RAM에서 끄면(`$CFG,SET pwr.24v false`, SAVE 안 함) 즉시 붙고, 다시 켜면 다시 깨진다. **굽기는 영향 없다** — 리셋을 걸면 PD8~10이 풀려 레일이 다 꺼지기 때문이고, "리셋 중엔 타깃 전압 3.3V, 실행 중엔 3.0V"로 갈리는 것도 같은 이유다. 실행 중 진단이 필요하면 24V를 잠깐 끄고 붙은 뒤 되켠다(수집 중이면 4~20mA 채널이 그동안 0mA로 보인다 — 사용자에게 먼저 알릴 것).
+- 🔴 **배터리(J17)가 물려 있으면 SWD 스캔이 깨진다** [실증 2026-08-22]. 충전기 U4(TPS5430)는 ENA 미연결 = 항상 ON이라 배터리가 물리면 메인 전원이 있는 한 계속 충전 전류를 스위칭한다 — 리셋 중이든 레일이 꺼졌든 못 끈다. 이 노이즈로 `swdp_scan`이 `invalid ACK`/`parity error`로 실패하고, **전원 20초 차단으로도 안 풀린다**(껐다 켜면 충전이 다시 시작되므로). 굽기·SWD 진단 전에 **J17을 뽑는다.**
+- 🔴 **F103이 USB(CDC) 일을 하는 동안 SWD 쓰기가 구멍난다** [실증 2026-08-22]. F103은 USB 브리지와 SWD 마스터를 겸직한다. 굽는 중에 COM23 쪽에 일이 있으면(H723이 텔레메트리를 붓는 중이거나, PC 프로그램이 포트를 폴링 중이거나) `load`가 "Error writing data to flash"로 죽고, 플래시에 수백 개의 FF 구멍이 흩어진다 — mass erase 후 재시도해도 같다. 칩을 지워 조용하게 만들고 COM23을 여는 프로그램을 전부 끄자 첫 시도에 구워졌다. → **굽기 전에 GUI 등 COM23 리더를 닫는다.** 침묵 게이트(규격 §7.1.3) 이후로는 부팅 직후 홍수가 없어 이 조건이 거의 사라졌다.
+- 🔴 **`$CFG,SET`은 RAM만 바꾼다.** `$CFG,SAVE`를 보내야 플래시에 남는다. 굽기는 설정 영역까지 지우므로, 구운 뒤에는 `tools/restore_board_config.py`로 되세우고 저장한다. 이것을 빠뜨리면 리셋·전원 재투입마다 기본값으로 돌아간다.
+- 🔴 **굽기가 막히면 `monitor connect_rst enable`** [실증 2026-08-14]. 깨진 펌웨어가 붙기도 전에 실행되면 `attach` 자체가 실패한다(`Attaching to Remote target failed: FF`). 리셋을 건 채로 접속하면 코드가 돌지 않아 언제나 붙는다.
+
+  그리고 **`load` 앞에 `monitor reset`을 넣지 않는다.** `attach`는 코어를 멈춘 채 붙는데 거기서 리셋하면 다시 달리기 시작하고, 깨진 판이면 그것이 곧 HardFault다 — 죽은 펌웨어가 다음 굽기를 계속 막는다.
+- 🔴 **F103 브리지가 굳으면 J28 핀5↔핀6(GND) 점퍼로 F103만 리셋된다** [실증 2026-08-22 — COM 포트 소멸·복귀로 확인]. 전원 20초 차단보다 먼저 시도할 것. 단 이것으로 안 풀리면 원인이 F103이 아니다 — 위의 배터리 노이즈·CDC 겸직 항목을 먼저 의심한다(2026-08-22에 실제로 그 둘이었다).
+- 🔴 **호스트 침묵 게이트(규격 §7.1.3, 2026-08-22)**: 보드는 호스트 `$HB`가 신선할 때(3초)만 COM23 텔레메트리를 낸다. **부팅 직후는 침묵**이고, GUI·CLI가 붙으면 1초 안에 흐르기 시작한다. "보드가 조용하다" = 고장이 아니라 HB를 안 보내고 있을 가능성부터 본다. 젯슨 링크(USART2)는 게이트 밖 — 항상 나간다.
+- 🔴 **시리얼 포트를 DTR/RTS를 세운 채 열면 보드가 멈춘다** [실증 2026-08-14]. .NET `System.IO.Ports.SerialPort`는 열 때 둘 다 기본으로 세우므로 **읽기만 할 때도 쓰지 않는다.** pyserial을 쓰되 `s.dtr = False; s.rts = False`를 **열기 전에** 설정한다 — `serial.Serial("COM23", ...)` 한 줄 생성자는 열면서 세우므로 안 된다.
+
+  멈췄을 때는 굽지 말고 GDB로 리셋한다. BMP는 살아 있다:
+  ```
+  target extended-remote \\.\COM24
+  monitor swdp_scan
+  attach 1
+  monitor reset
+  detach
+  ```
+  실제로 이렇게 되살렸다. `seq`가 처음부터 다시 올라가는 것으로 재부팅을 확인한다.
 
 ## 5. 근거 기반 작업 — 추정 금지 (BLOCKING)
 

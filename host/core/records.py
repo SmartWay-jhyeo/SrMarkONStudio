@@ -19,6 +19,13 @@ COMMAND_RESPONSE_TYPES = frozenset(
     {"id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end"}
 )
 
+#: `time_source`가 실을 수 있는 값(규격 §7.1.2, Phase 3 GNSS/PPS 시간축).
+#:
+#: 🔴 지어내지 않는다 — 계획서 §7.2는 6단계를 말하지만 지금 보드가 실제로
+#: 낼 수 있는 것은 이 셋뿐이다. 새 등급이 생기면 여기와 규격 §7.1.2를
+#: 함께 고친다.
+TIME_SOURCES = frozenset({"gnss_pps", "gnss_nmea", "device_clock"})
+
 #: seq 는 uint32
 SEQ_MODULO = 1 << 32
 
@@ -110,6 +117,17 @@ def is_telemetry(rec: dict) -> bool:
     점프로 보여 유실 통계가 망가진다. 호출측은 observe() 앞에 이걸 건다.
     """
     return rec.get("type") not in COMMAND_RESPONSE_TYPES
+
+
+def is_utc_time(rec: dict) -> bool:
+    """이 레코드의 `t`를 UTC epoch_ms로 저장해도 되는가 (규격 §7.1.2).
+
+    🔴 `device_clock`(또는 필드 마스크로 꺼져 있어 `time_source`가 아예
+    없는 경우)일 때 `t`는 부팅 후 경과 ms일 뿐이다 — 그 상태에서 시각으로
+    저장하면 재부팅마다 시간축이 리셋된다. 이 판정을 호출마다 다시 짜지
+    않도록 여기 한 곳에 둔다.
+    """
+    return rec.get("time_source") in (TIME_SOURCES - {"device_clock"})
 
 
 class SeqTracker:

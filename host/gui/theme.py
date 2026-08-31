@@ -1,4 +1,4 @@
-"""색·글꼴·간격 토큰과 Qt 스타일시트.
+"""색·글꼴·간격 토큰. **Qt 를 모른다.**
 
 🔴 **색은 여기서만 정의한다.** 화면 코드에 색 리터럴을 쓰지 않는다.
 한 곳에 모여 있어야 흰 바탕에서의 대비를 한 번에 검사할 수 있다.
@@ -6,6 +6,11 @@
 방향: 차가운 오프화이트의 계기 패널. 따뜻한 크림색은 편집 디자인의
 기본값이고 전자 계기와 무관하다. 그림자를 쓰지 않고 경계선과 여백으로
 층을 나눈다.
+
+🔴 Qt 스타일시트는 `host/gui/qt/style.py` 로 옮겼다. 한 파일에 두었더니
+   217 줄짜리 f-string 하나가 파일의 3분의 2를 먹었고, 색 하나를 확인하려면
+   그 덩어리를 지나야 했다. 토큰은 Qt 없이 시험되는 층이고 스타일시트는
+   Qt 의 문법이라, 애초에 다른 것이다.
 """
 
 
@@ -16,11 +21,30 @@ class Color:
     SURFACE = "#FFFFFF"
     #: 경계선. 그림자 대신 이것으로 층을 나눈다.
     LINE = "#E2E6E9"
+    #: 카드 안쪽의 한 겹 더 들어간 면 (게이지 트랙 등)
+    WELL = "#EEF1F3"
 
     #: 본문. 순검정이 아니다 — 흰 바탕에서 대비가 과해 눈이 피로하다.
     INK = "#1C2024"
     #: 보조 라벨
     INK_DIM = "#5F6A73"
+    #: 아주 흐린 보조 — 눈금 숫자처럼 있어야 하지만 읽을 일이 드문 것
+    INK_FAINT = "#98A2AA"
+
+    # ── 어두운 면 ─────────────────────────────────────────────
+    # 🔴 화면에 **무게중심**이 필요하다. 전부 흰 바탕에 얇은 선이면 눈이
+    #    앉을 데가 없고, 어디부터 읽어야 할지 알 수 없다. 정체성 바와
+    #    좌측 레일을 어둡게 깔아 나머지를 그 위에 얹는다.
+    #
+    #    순검정이 아니라 청록이 도는 먹빛이다 — 계기 패널의 실크스크린
+    #    색이고, 아래의 신호 초록과 같은 계열이라 화면이 하나로 묶인다.
+    SHELL = "#16202A"
+    #: 어두운 면 위의 글자
+    SHELL_INK = "#E8EDF0"
+    #: 어두운 면 위의 보조 글자
+    SHELL_DIM = "#8A9AA6"
+    #: 어두운 면 안의 구획선
+    SHELL_LINE = "#2A3945"
 
     # ── 상태색 ────────────────────────────────────────────────
     # 스펙 §8.3. 흰 바탕에서 읽히는 톤으로 조정했다.
@@ -76,57 +100,3 @@ def contrast_ratio(fg: str, bg: str) -> float:
     """WCAG 대비율. 상태색이 흰 바탕에서 읽히는지 검사하는 데 쓴다."""
     l1, l2 = sorted((_relative_luminance(fg), _relative_luminance(bg)), reverse=True)
     return (l1 + 0.05) / (l2 + 0.05)
-
-
-def stylesheet() -> str:
-    """앱 전역 Qt 스타일시트."""
-    return f"""
-QWidget {{
-    background: {Color.GROUND};
-    color: {Color.INK};
-    font-family: {Font.UI};
-    font-size: {Font.SIZE_MD}pt;
-}}
-QFrame#card {{
-    background: {Color.SURFACE};
-    border: 1px solid {Color.LINE};
-    border-radius: 6px;
-}}
-QLabel#h1 {{
-    font-size: {Font.SIZE_XL}pt;
-    font-weight: 600;
-}}
-QLabel#dim {{
-    color: {Color.INK_DIM};
-    font-size: {Font.SIZE_SM}pt;
-}}
-QLabel#value {{
-    font-family: {Font.MONO};
-    font-size: {Font.SIZE_LG}pt;
-}}
-QPushButton {{
-    background: {Color.SURFACE};
-    border: 1px solid {Color.LINE};
-    border-radius: 4px;
-    padding: {Space.SM}px {Space.MD}px;
-}}
-QPushButton:hover {{
-    border-color: {Color.PROBING};
-}}
-QPushButton:focus {{
-    outline: none;
-    border: 2px solid {Color.PROBING};
-}}
-QPushButton:disabled {{
-    color: {Color.UNKNOWN};
-}}
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    background: {Color.SURFACE};
-    border: 1px solid {Color.LINE};
-    border-radius: 4px;
-    padding: {Space.XS}px {Space.SM}px;
-}}
-QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
-    border: 2px solid {Color.PROBING};
-}}
-"""

@@ -211,8 +211,41 @@ def test_is_telemetry_distinguishes_command_responses():
     from host.core.records import is_telemetry
 
     assert is_telemetry({"type": "ain"}) is True
+    assert is_telemetry({"type": "i2c"}) is True
+    assert is_telemetry({"type": "din"}) is True   # 규격 §7.6 — 엣지도 seq 를 탄다
     for t in ("id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end"):
         assert is_telemetry({"type": t}) is False, t
+
+
+def test_din_record_parses_like_any_other_telemetry():
+    """🔴 `din` 은 새 타입이지만 파싱 경로는 새로 만들지 않는다 — `parse_record`
+    는 `type` 을 가리지 않고 공통 필드만 본다(규격 §7.1)."""
+    line = ('{"schema_ver":3,"seq":7,"t":1000,"type":"din",'
+            '"connector_id":18,"state":1}')
+    rec = parse_record(line)
+    assert rec["type"] == "din"
+    assert rec["connector_id"] == 18
+    assert rec["state"] == 1
+
+
+def test_time_sources_are_the_three_reachable_grades():
+    """규격 §7.1.2 — 지어내지 않는다. 실제로 도달 가능한 셋뿐이다."""
+    from host.core.records import TIME_SOURCES
+
+    assert TIME_SOURCES == {"gnss_pps", "gnss_nmea", "device_clock"}
+
+
+def test_is_utc_time_true_only_when_gnss_locked():
+    """`device_clock`일 때 `t`는 부팅 후 경과 ms이지 UTC가 아니다(규격
+    §7.1.2) — 그 상태에서 시각으로 저장하면 안 된다는 것을 코드로 못박는다."""
+    from host.core.records import is_utc_time
+
+    assert is_utc_time({"time_source": "gnss_pps"}) is True
+    assert is_utc_time({"time_source": "gnss_nmea"}) is True
+    assert is_utc_time({"time_source": "device_clock"}) is False
+    # 🔴 필드 마스크로 꺼져 있으면(레코드에 아예 없으면) 믿을 근거가 없다
+    #    — 없는 것을 device_clock 으로 지어내지 않고 그냥 False.
+    assert is_utc_time({}) is False
 
 
 def test_seq_tracker_is_not_polluted_by_command_responses():

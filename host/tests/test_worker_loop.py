@@ -1,0 +1,474 @@
+import pytest
+
+from host.core.errors import ProtocolError
+from host.gui.command_queue import CommandQueue
+from host.gui.worker_loop import WorkerLoop
+
+
+class FakeService:
+    """BoardService 의 최소 대역. 무엇이 불렸는지 기록한다."""
+
+    def __init__(self):
+        self.sent = []
+        self.heartbeats = 0
+        self.records = []
+        self.mode = "RUN"
+        self.last_payload = None
+        self._reply = ("OK", None)      # (status, reason)
+        self._raise = None
+
+    def heartbeat(self):
+        self.heartbeats += 1
+
+    def set_reply(self, status, reason=None, payload=None):
+        self._reply = (status, reason)
+        self.last_payload = payload
+
+    def set_error(self, exc):
+        self._raise = exc
+
+    def send(self, verb, *args):
+        self.sent.append((verb, *args))
+        if self._raise is not None:
+            raise self._raise
+        from host.core.framing import Command
+
+        status, reason = self._reply
+        rest = (status,) if reason is None else (status, reason)
+        return Command(verb="SACK", args=(verb, *rest))
+
+    def pump(self):
+        pass
+
+
+#: 🔴 `_rig()` 헬퍼가 있었으나 지웠다.
+#:
+#:    `CommandQueue()` 를 두 번 만들어 시험이 명령을 넣는 큐와 워커가
+#:    꺼내 쓰는 큐가 서로 다른 결함이 있었는데, **아무 시험도 그것을 쓰지
+#:    않고 있었다.** 고치려다 호출자가 하나도 없다는 것을 알았다.
+#:
+#:    죽은 헬퍼는 남겨 두면 언젠가 누가 쓴다. 그때 그 결함이 되살아난다.
+
+
+def test_heartbeat_is_sent_on_the_first_step():
+    svc, q = FakeService(), CommandQueue()
+    w = WorkerLoop(svc, q)
+    r = w.step(0.0)
+    assert r.heartbeat_sent is True
+    assert svc.heartbeats == 1
+
+
+def test_heartbeat_is_not_resent_before_the_interval():
+    svc, q = FakeService(), CommandQueue()
+    w = WorkerLoop(svc, q, hb_interval_s=1.0)
+    w.step(0.0)
+    assert w.step(0.5).heartbeat_sent is False
+    assert svc.heartbeats == 1
+
+
+def test_heartbeat_resumes_after_the_interval():
+    """🔴 멈추면 보드가 3초 뒤 RUN 으로 떨어지고 설정 변경이 거부된다."""
+    svc, q = FakeService(), CommandQueue()
+    w = WorkerLoop(svc, q, hb_interval_s=1.0)
+    w.step(0.0)
+    w.step(1.0)
+    assert svc.heartbeats == 2
+
+
+def test_queued_commands_are_sent():
+    svc, q = FakeService(), CommandQueue()
+    w = WorkerLoop(svc, q)
+    q.submit("CFG", "SET", "tx.period_ms", "250")
+    w.step(0.0)
+    assert svc.sent == [("CFG", "SET", "tx.period_ms", "250")]
+
+
+def test_success_comes_back_as_a_result():
+    svc, q = FakeService(), CommandQueue()
+    w = WorkerLoop(svc, q)
+    tag = q.submit("CFG", "SET", "tx.period_ms", "250")
+    r = w.step(0.0)
+    assert [x.tag for x in r.results] == [tag]
+    assert r.results[0].ok is True
+
+
+def test_rejection_carries_the_board_reason():
+    """🔴 사용자는 왜 거부됐는지 알아야 한다."""
+    svc, q = FakeService(), CommandQueue()
+    svc.set_reply("ERR", "INTERLOCK")
+    w = WorkerLoop(svc, q)
+    q.submit("CFG", "SET", "pwr.5v", "false")
+    r = w.step(0.0)
+    assert r.results[0].ok is False
+    assert r.results[0].reason == "INTERLOCK"
+    assert r.results[0].error is None
+
+
+def test_transport_failure_is_reported_as_error_not_rejection():
+    """🔴 보드가 거부한 것과 보드에 못 닿은 것은 다른 사실이다."""
+    svc, q = FakeService(), CommandQueue()
+    svc.set_error(ProtocolError("응답 없음"))
+    w = WorkerLoop(svc, q)
+    q.submit("STAT")
+    r = w.step(0.0)
+    assert r.results[0].ok is False
+    assert r.results[0].reason is None
+    assert "응답 없음" in r.results[0].error
+
+
+def test_one_failing_command_does_not_stop_the_others():
+    """한 명령이 실패해도 나머지가 처리돼야 한다."""
+    svc, q = FakeService(), CommandQueue()
+    svc.set_error(ProtocolError("끊김"))
+    w = WorkerLoop(svc, q)
+    q.submit("STAT")
+    q.submit("ID")
+    r = w.step(0.0)
+    assert len(r.results) == 2
+    assert all(x.ok is False for x in r.results)
+
+
+def test_commands_per_step_are_capped():
+    """🔴 send() 는 최대 2초 기다린다.
+
+    20개가 쌓여 있으면 40초 동안 텔레메트리를 한 줄도 못 걷는다.
+    상한을 두어 수집이 굶지 않게 한다.
+    """
+    svc, q = FakeService(), CommandQueue()
+    w = WorkerLoop(svc, q, max_commands_per_step=3)
+    for i in range(10):
+        q.submit("STAT", tag=f"t{i}")
+    r = w.step(0.0)
+    assert len(svc.sent) == 3
+    assert len(r.results) == 3
+
+
+def test_remaining_commands_are_sent_on_later_steps():
+    """상한에 걸린 나머지가 사라지면 안 된다."""
+    svc, q = FakeService(), CommandQueue()
+    w = WorkerLoop(svc, q, max_commands_per_step=3)
+    for i in range(7):
+        q.submit("STAT", tag=f"t{i}")
+    total = 0
+    for t in range(5):
+        total += len(w.step(float(t)).results)
+    assert total == 7
+
+
+def test_telemetry_is_collected_and_handed_over_once():
+    svc, q = FakeService(), CommandQueue()
+    svc.records = [{"type": "ain", "seq": 1}, {"type": "ain", "seq": 2}]
+    w = WorkerLoop(svc, q)
+    r = w.step(0.0)
+    assert len(r.records) == 2
+    assert w.step(0.1).records == []        # 두 번 넘어오지 않는다
+
+
+def test_mode_is_carried_through():
+    svc, q = FakeService(), CommandQueue()
+    svc.mode = "CONFIG"
+    w = WorkerLoop(svc, q)
+    assert w.step(0.0).mode == "CONFIG"
+
+
+def test_unrecognized_ack_is_a_failure_not_a_success():
+    """🔴 성공을 적극 확인한다. 실패를 찾는 방식이면 모르는 형태가 새어든다.
+
+    펌웨어 버그로 제3의 상태 문자열이 오거나 약한 XOR 을 우연히 통과한
+    손상 프레임이 오면, 거부를 성공으로 보고하게 된다. 설정 쓰기의 조용한
+    거짓 성공은 이 시스템 최악의 실패 방식이다.
+    """
+    from host.core.framing import Command
+
+    svc, q = FakeService(), CommandQueue()
+
+    class Weird(FakeService):
+        def send(self, verb, *args):
+            return Command(verb="SACK", args=(verb, "MAYBE"))
+
+    w = WorkerLoop(Weird(), q)
+    q.submit("CFG", "SET", "tx.period_ms", "250")
+    r = w.step(0.0)
+    assert r.results[0].ok is False
+
+
+def test_empty_ack_args_is_a_failure():
+    from host.core.framing import Command
+
+    class Empty(FakeService):
+        def send(self, verb, *args):
+            return Command(verb="SACK", args=())
+
+    q = CommandQueue()
+    w = WorkerLoop(Empty(), q)
+    q.submit("STAT")
+    r = w.step(0.0)
+    assert r.results[0].ok is False
+    assert r.results[0].reason == "MALFORMED"
+
+
+def test_dispatch_stops_when_the_time_budget_runs_out():
+    """🔴 개수 상한만으로는 하트비트를 못 지킨다.
+
+    상한 4 에 타임아웃 2초면 한 스텝이 8초 걸릴 수 있는데 보드는 3초면
+    RUN 으로 떨어진다. 더 나쁜 것은 이게 링크가 나쁠 때 터진다는 점이다 —
+    하트비트가 가장 필요한 순간이 곧 그 순간이다.
+    """
+    clock = [0.0]
+
+    class Slow(FakeService):
+        def send(self, verb, *args):
+            clock[0] += 0.4              # 한 번에 0.4초씩 먹는다
+            return super().send(verb, *args)
+
+    svc, q = Slow(), CommandQueue()
+    w = WorkerLoop(svc, q, hb_interval_s=1.0, max_commands_per_step=10,
+                   monotonic=lambda: clock[0])
+    for i in range(10):
+        q.submit("STAT", tag=f"t{i}")
+
+    w.step(0.0)
+    # 예산 0.5초 → 0.4초짜리 두 번이면 0.8초로 초과. 두 개만 나간다.
+    assert len(svc.sent) == 2
+    assert len(q.pending_tags) == 8      # 나머지는 큐에 남는다
+
+
+def test_heartbeat_and_pump_failures_are_reported_separately():
+    """🔴 하나로 합치면 계속 실패하는 하트비트가 펌프 실패를 영원히 가린다."""
+
+    class BothFail(FakeService):
+        def heartbeat(self):
+            raise RuntimeError("hb 끊김")
+
+        def pump(self):
+            raise RuntimeError("pump 끊김")
+
+    w = WorkerLoop(BothFail(), CommandQueue())
+    r = w.step(0.0)
+    assert r.heartbeat_error == "hb 끊김"
+    assert r.pump_error == "pump 끊김"
+
+
+def test_take_records_is_preferred_when_the_service_offers_it():
+    """🔴 길이 커서는 append 전용 리스트에서만 맞다.
+
+    records 가 deque(maxlen=N) 으로 바뀌면 — 예정된 변경이다 — 가득 찬 뒤
+    len() 이 멈춰 슬라이스가 영원히 빈 목록을 낸다. 텔레메트리가 예외도
+    오류 표시도 없이 조용히 끊긴다.
+    """
+
+    class Draining(FakeService):
+        def __init__(self):
+            super().__init__()
+            self._buf = [{"type": "ain", "seq": 1}]
+
+        def take_records(self):
+            out, self._buf = self._buf, []
+            return out
+
+    w = WorkerLoop(Draining(), CommandQueue())
+    assert len(w.step(0.0).records) == 1
+    assert w.step(0.1).records == []
+
+
+def test_replaced_records_container_is_reported_as_discontinuity():
+    """객체가 통째로 바뀌면 커서가 의미를 잃는다. 조용히 넘어가지 않는다."""
+    svc, q = FakeService(), CommandQueue()
+    svc.records = [{"type": "ain", "seq": 1}, {"type": "ain", "seq": 2}]
+    w = WorkerLoop(svc, q)
+    w.step(0.0)
+    svc.records = [{"type": "ain", "seq": 9}]      # 교체
+    r = w.step(0.1)
+    assert r.records_discontinuity is True
+    assert len(r.records) == 1
+
+
+# ------------------------------------------------------------- 원문 줄 (스트림)
+
+def test_raw_lines_are_collected_when_the_service_offers_them():
+    """🔴 stream 화면은 원문 줄이 있어야 "정말 오고 있나" 를 보여줄 수 있다.
+
+    `take_records()` 와 같은 어법이다 — 서비스가 제공하면 우선 쓴다.
+    """
+
+    class WithRaw(FakeService):
+        def __init__(self):
+            super().__init__()
+            self._raw_buf = ['{"type":"ain"}', '{"type":"i2c"}']
+
+        def take_raw_lines(self):
+            out, self._raw_buf = self._raw_buf, []
+            return out
+
+    w = WorkerLoop(WithRaw(), CommandQueue())
+    r = w.step(0.0)
+    assert r.raw_lines == ['{"type":"ain"}', '{"type":"i2c"}']
+    assert w.step(0.1).raw_lines == []              # 두 번 넘어오지 않는다
+
+
+def test_raw_lines_default_to_empty_when_the_service_lacks_them():
+    """구형 서비스 스텁(FakeService)에는 `take_raw_lines` 가 없다 — 없으면
+    조용히 빈 목록이다. 예외로 워커 전체가 죽으면 안 된다."""
+    w = WorkerLoop(FakeService(), CommandQueue())
+    assert w.step(0.0).raw_lines == []
+
+
+# ------------------------------------------------------------- $STAT 주기 조회
+
+class WithStat(FakeService):
+    """`fetch_stat()` 을 가진 서비스. 몇 번 불렸는지 센다."""
+
+    def __init__(self):
+        super().__init__()
+        self.stat_calls = 0
+        self.stat_raises = None
+
+    def fetch_stat(self):
+        self.stat_calls += 1
+        if self.stat_raises is not None:
+            raise self.stat_raises
+        return {"type": "stat", "mode": "CONFIG"}
+
+
+def test_stat_is_fetched_on_the_first_step():
+    """🔴 연결 직후 화면이 비어 있으면 안 된다 — 첫 바퀴에 한 번 묻는다."""
+    svc = WithStat()
+    r = WorkerLoop(svc, CommandQueue()).step(0.0)
+    assert svc.stat_calls == 1
+    assert r.stat == {"type": "stat", "mode": "CONFIG"}
+
+
+def test_stat_is_not_refetched_before_the_interval():
+    """🔴 `$STAT` 은 명령·응답 왕복이라 자주 부르면 링크를 먹는다.
+
+    워커는 100 ms 마다 도는데 매 바퀴 묻는다면 초당 열 번이다. 사람이 보는
+    화면에 그만한 신선도는 필요 없고, 그 대역은 텔레메트리가 써야 한다.
+    """
+    svc = WithStat()
+    w = WorkerLoop(svc, CommandQueue(), stat_interval_s=1.5)
+    w.step(0.0)
+    for t in (0.1, 0.5, 1.0, 1.4):
+        assert w.step(t).stat is None
+    assert svc.stat_calls == 1
+
+
+def test_stat_is_refetched_after_the_interval():
+    svc = WithStat()
+    w = WorkerLoop(svc, CommandQueue(), stat_interval_s=1.5)
+    w.step(0.0)
+    assert w.step(1.5).stat is not None
+    assert svc.stat_calls == 2
+
+
+def test_a_failed_stat_is_reported_and_backs_off():
+    """🔴 링크가 죽으면 `send()` 는 타임아웃까지 기다린다. 실패한 채로 계속
+    같은 주기로 다시 물으면 워커가 그 대기에 붙들려 하트비트가 늦고, 보드는
+    3초 뒤 RUN 으로 떨어진다 — 진단을 보려다 링크를 더 망친다.
+    """
+    svc = WithStat()
+    svc.stat_raises = ProtocolError("응답 없음: STAT")
+    w = WorkerLoop(svc, CommandQueue(), stat_interval_s=1.5,
+                   stat_retry_s=5.0)
+    r = w.step(0.0)
+    assert r.stat is None
+    assert "응답 없음" in r.stat_error
+
+    assert w.step(2.0).stat_error is None       # 아직 재시도할 때가 아니다
+    assert svc.stat_calls == 1
+    w.step(5.0)
+    assert svc.stat_calls == 2
+
+
+def test_a_service_without_fetch_stat_does_not_break_the_loop():
+    """구형 스텁·다른 트랜스포트에도 워커는 계속 돌아야 한다."""
+    r = WorkerLoop(FakeService(), CommandQueue()).step(0.0)
+    assert r.stat is None
+    assert r.stat_error is None
+
+
+# ---- 링크 속도 변경 (규격 §4.2) ---------------------------------------------
+#
+# 🔴 이것만 `send()` 를 타지 않는다. 명령 하나가 아니라 **절차**이고(설정 →
+#    포트 재개방 → 확인 → 실패 시 복귀), 십수 초가 걸릴 수 있다.
+
+
+class FakeBaudService(FakeService):
+    def __init__(self, result):
+        super().__init__()
+        self.result = result
+        self.changes = []
+
+    def change_baud(self, baud):
+        self.changes.append(baud)
+        return self.result
+
+
+class FakeBaudResult:
+    def __init__(self, ok, baud, stage, reason="", error="", recovered=False):
+        self.ok, self.baud, self.stage = ok, baud, stage
+        self.reason, self.error, self.recovered = reason, error, recovered
+
+
+def test_baud_change_goes_to_the_service_not_to_send():
+    svc = FakeBaudService(FakeBaudResult(True, 1500000, "confirmed",
+                                         recovered=True))
+    q = CommandQueue()
+    loop = WorkerLoop(svc, q)
+    q.submit("BAUD", "CHANGE", "1500000", tag="link:baud")
+
+    out = loop.step(0.0)
+
+    assert svc.changes == [1500000]
+    assert svc.sent == [], "$BAUD,CHANGE 라는 명령을 전선에 내보내면 안 된다"
+    assert len(out.results) == 1
+    assert out.results[0].ok
+
+
+def test_the_result_carries_enough_to_explain_a_failure():
+    """🔴 `ok`/`reason` 만 넘기면 화면이 "어디까지 갔나" 와 "돌아왔나" 를
+    말할 수 없다. 실패했을 때 사람이 알아야 하는 것이 바로 그 둘이다 —
+    기다리면 되는지, 전원을 손봐야 하는지가 거기서 갈린다."""
+    svc = FakeBaudService(FakeBaudResult(
+        False, 921600, "confirm", error="응답 없음", recovered=True))
+    q = CommandQueue()
+    loop = WorkerLoop(svc, q)
+    q.submit("BAUD", "CHANGE", "2000000", tag="link:baud")
+
+    res = loop.step(0.0).results[0]
+
+    assert not res.ok
+    assert res.payload["stage"] == "confirm"
+    assert res.payload["baud"] == 921600
+    assert res.payload["recovered"] is True
+
+
+def test_the_heartbeat_is_restarted_right_after_the_procedure():
+    """🔴 절차가 도는 동안 보드는 RUN 으로 떨어졌을 수 있다(규격 §6.2).
+
+    그 상태에서는 설정 변경이 전부 ERR,MODE 다 — 사용자가 다음에 무엇을
+    눌러도 거부된다. 다음 스텝에서 곧바로 하트비트를 보내 되찾는다.
+    """
+    svc = FakeBaudService(FakeBaudResult(True, 1500000, "confirmed",
+                                         recovered=True))
+    q = CommandQueue()
+    loop = WorkerLoop(svc, q)
+
+    loop.step(0.0)                       # 하트비트 한 번
+    assert svc.heartbeats == 1
+    q.submit("BAUD", "CHANGE", "1500000", tag="link:baud")
+    loop.step(0.1)                       # 주기가 안 됐으니 평소라면 안 보낸다
+    hb_after_change = svc.heartbeats
+
+    loop.step(0.2)
+    assert svc.heartbeats == hb_after_change + 1, (
+        "절차 직후에는 주기를 기다리지 않고 하트비트를 다시 세운다")
+
+
+def test_a_service_that_cannot_change_baud_says_so():
+    """🔴 조용히 실패하지 않는다 — 무응답은 죽은 링크와 구분되지 않는다."""
+    q = CommandQueue()
+    loop = WorkerLoop(FakeService(), q)
+    q.submit("BAUD", "CHANGE", "1500000", tag="link:baud")
+
+    res = loop.step(0.0).results[0]
+    assert not res.ok and "바꿀 수 없다" in res.error

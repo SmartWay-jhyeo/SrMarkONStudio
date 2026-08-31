@@ -1,0 +1,436 @@
+#include "mk_cfgwire.h"
+
+#include "mk_json.h"
+
+#include <string.h>
+
+/* 규격 §7.3 의 vtype 문자열. */
+static const char *vtype_name(MkVType t)
+{
+    switch (t) {
+    case MK_VT_BOOL: return "bool";
+    case MK_VT_U8:   return "u8";
+    case MK_VT_U16:  return "u16";
+    case MK_VT_U32:  return "u32";
+    case MK_VT_F32:  return "f32";
+    case MK_VT_STR:  return "str";
+    case MK_VT_ENUM: return "enum";
+    default:         return "str";
+    }
+}
+
+/* 값 하나를 vtype 에 맞는 JSON 타입으로 담는다.
+ *
+ * 🔴 `cur` 의 JSON 타입은 항목의 vtype 을 따른다(규격 §5.2). bool 을
+ *    1/0 으로 내면 호스트가 정수로 읽어 체크박스가 아니라 숫자 입력이
+ *    된다 — 카탈로그만으로 화면을 만들기 때문에 타입이 곧 위젯이다. */
+static void put_value(MkJson *j, const char *key, const MkCfgItem *item,
+                      const MkValue *v)
+{
+    switch (item->vtype) {
+    case MK_VT_BOOL:
+        mk_json_bool(j, key, (int)v->u);
+        break;
+    case MK_VT_STR:
+        mk_json_str(j, key, v->s);
+        break;
+    case MK_VT_F32:
+        /* 🔴 소수 4자리로 고정한다. mk_cfg_format 과 같은 규칙이어야
+         *    호스트가 되읽어 쓸 때 값이 흘러가지 않는다. */
+        mk_json_f32(j, key, v->f, 4);
+        break;
+    default:
+        mk_json_u32(j, key, v->u);
+        break;
+    }
+}
+
+static void common(MkJson *j, int64_t now_ms, const char *type)
+{
+    mk_json_u32(j, "schema_ver", 3u);
+    /* 🔴 명령 응답의 seq 는 항상 0 이다(규격 §5.2). 텔레메트리 seq 와 같은
+     *    계열이 아니므로 유실 검출에 쓰면 안 된다. */
+    mk_json_u32(j, "seq", 0u);
+    mk_json_i64(j, "t", now_ms);
+    mk_json_str(j, "type", type);
+}
+
+size_t mk_cfgwire_list_count(const MkConfig *cfg, size_t n_fields)
+{
+    /* +1 은 `cfg_end` 다. 그것도 한 줄이고, 이어서 내보내는 쪽에서는
+     * 다른 줄과 똑같이 자리를 기다려야 한다. */
+    return cfg->count + n_fields + 1u;
+}
+
+int mk_cfgwire_list_line(const MkConfig *cfg,
+                         const MkFieldBit *fields, size_t n_fields,
+                         size_t index, int64_t now_ms,
+                         char *out, size_t cap)
+{
+    MkJson j;
+
+    if (index >= mk_cfgwire_list_count(cfg, n_fields)) {
+        return -1;                      /* 카탈로그가 끝났다 */
+    }
+
+    if (index < cfg->count) {
+        const MkCfgItem *it = &cfg->items[index];
+
+        mk_json_begin(&j, out, cap);
+        common(&j, now_ms, "cfg_item");
+        mk_json_str(&j, "key", it->key);
+        mk_json_str(&j, "grp", it->group);
+        mk_json_str(&j, "vtype", vtype_name(it->vtype));
+        put_value(&j, "default", it, &it->def);
+        put_value(&j, "cur", it, &it->cur);
+        /* 🔴 `ro` 는 인터록도 포함한다. 사용자가 못 바꾸는 것은 마찬가지고,
+         *    왜 못 바꾸는지는 `note` 가 말한다. 화면은 ro 로 비활성만
+         *    정하고 사유는 note 를 띄운다. */
+        mk_json_bool(&j, "ro", it->readonly || it->interlocked);
+        if (it->label) {
+            mk_json_str(&j, "label", it->label);
+        }
+        /* 🔴 출력 항목만 표시한다 (규격 §7.3). 대부분에 붙지 않는 필드를
+         *    전부에 실으면 카탈로그가 그만큼 길어지는데, 115200 에서
+         *    카탈로그 한 번이 이미 몇 초다. */
+        if (it->out) {
+            mk_json_bool(&j, "out", 1);
+        }
+        /* 🔴 없는 것을 0 으로 실어 보내지 않는다. 화면이 "최소 0" 이라고
+         *    잘못 말한다. 순서는 시뮬레이터와 같게 둔다 — 두 카탈로그를
+         *    나란히 놓고 볼 일이 많다. */
+        if (it->has_min) {
+            mk_json_f32(&j, "min", it->min, 0);
+        }
+        if (it->has_max) {
+            mk_json_f32(&j, "max", it->max, 0);
+        }
+        if (it->unit) {
+            mk_json_str(&j, "unit", it->unit);
+        }
+        if (it->note) {
+            mk_json_str(&j, "note", it->note);
+        }
+        /* 🔴 enum 은 허용값 목록이 함께 와야 한다(규격 §7.3). 없으면
+         *    호스트가 콤보를 만들 수 없다 — 항목을 하드코딩하지 않으므로
+         *    허용값도 보드가 알려 줘야 한다. */
+        if (it->n_choices > 0 && it->choices != NULL) {
+            mk_json_u32_array(&j, "choices", it->choices, it->n_choices);
+            /* 🔴 숫자에 뜻이 없는 열거만 이름표를 단다. 길이는 `choices` 와
+             *    같아야 하고, 호스트는 다르면 통째로 버린다(규격 §7.3) —
+             *    짝이 어긋난 이름표는 사용자가 엉뚱한 것을 고르게 만드는데
+             *    화면에는 아무 이상이 없어 보인다. */
+            if (it->choice_labels != NULL) {
+                mk_json_str_array(&j, "choice_labels",
+                                  it->choice_labels, it->n_choices);
+            }
+        }
+        return mk_json_end(&j);
+    }
+
+    if (index < cfg->count + n_fields) {
+        size_t i = index - cfg->count;
+
+        mk_json_begin(&j, out, cap);
+        common(&j, now_ms, "cfg_field");
+        mk_json_u32(&j, "bit", fields[i].bit);
+        mk_json_str(&j, "name", fields[i].name);
+        mk_json_bool(&j, "default", (int)fields[i].def);
+        if (fields[i].label) {
+            mk_json_str(&j, "label", fields[i].label);
+        }
+        /* 🔴 이 비트가 어느 레코드의 마스크에 속하는가(규격 §7.2 개정,
+         *    2026-08-19). 호스트가 이것으로 마스크 카드를 ain·i2c·din
+         *    셋으로 나눠 그린다 — 없으면 어느 카드에도 못 그린다. */
+        {
+            const char *names[5];
+            size_t n_names = 0;
+            if (fields[i].kinds & MK_FIELD_AIN) { names[n_names++] = "ain"; }
+            if (fields[i].kinds & MK_FIELD_I2C) { names[n_names++] = "i2c"; }
+            if (fields[i].kinds & MK_FIELD_DIN) { names[n_names++] = "din"; }
+            if (fields[i].kinds & MK_FIELD_GNSS) { names[n_names++] = "gnss"; }
+            if (fields[i].kinds & MK_FIELD_IMU) { names[n_names++] = "imu"; }
+            mk_json_str_array(&j, "records", names, n_names);
+        }
+        return mk_json_end(&j);
+    }
+
+    /* 🔴 count 는 cfg_item + cfg_field 합계다(규격 §7.3). 수신측이 이것을
+     *    대조해 전송이 중간에 잘렸는지 판정한다 — 링크가 나쁠 때 절반만
+     *    온 카탈로그로 화면을 그리면 안 된다. */
+    mk_json_begin(&j, out, cap);
+    common(&j, now_ms, "cfg_end");
+    mk_json_u32(&j, "count", (uint32_t)(cfg->count + n_fields));
+    return mk_json_end(&j);
+}
+
+void mk_cfgwire_list(const MkConfig *cfg,
+                     const MkFieldBit *fields, size_t n_fields,
+                     int64_t now_ms, MkCfgEmit emit, void *ctx)
+{
+    /* 상한의 근거는 헤더의 MK_CFGWIRE_LIST_LINE_MAX 주석에 있다. */
+    char buf[MK_CFGWIRE_LIST_LINE_MAX];
+
+    /* 🔴 [2026-08-20] 줄 만들기를 `mk_cfgwire_list_line` 으로 떼어냈다.
+     *
+     *    이 함수는 103줄을 한 호출에 전부 쏟는다. 그것이 되는 곳(시뮬레이터·
+     *    호스트 시험)에서는 그대로 두고, 실물 보드는 이어서 내보내는 쪽
+     *    (mk_hostlink 의 카탈로그 펌프)을 쓴다 — 링이 4,096 B 라 한 번에
+     *    못 담고, 못 담은 줄을 버리면 카탈로그 전체가 못 쓰게 된다. */
+    for (size_t i = 0; ; i++) {
+        int n = mk_cfgwire_list_line(cfg, fields, n_fields, i, now_ms,
+                                     buf, sizeof buf);
+        if (n < 0) {
+            break;                       /* 카탈로그가 끝났다 */
+        }
+        if (n > 0 && emit) {
+            emit(ctx, buf, (size_t)n);
+        }
+    }
+}
+
+int mk_cfgwire_stat(int64_t now_ms,
+                    const char *mode, const char *ctl_mode,
+                    const char *fw, const char *board_rev,
+                    uint32_t uptime_ms,
+                    const char *clock_src, uint32_t clock_sysclk_hz,
+                    const char *time_source, uint32_t time_quality,
+                    int64_t gnss_pps_age_ms,
+                    int64_t gnss_pps_raw_age_ms, uint32_t gnss_pps_raw_count,
+                    const char *gnss_pps_unpaired_reason,
+                    int32_t gnss_sats,
+                    int gnss_init_sent, int gnss_init_exhausted,
+                    int gnss_sentence_seen,
+                    int64_t gnss_rtcm_age_ms, uint32_t gnss_rtcm_bytes,
+                    uint32_t gnss_rtcm_bad, uint32_t gnss_rtcm_drop,
+                    uint32_t gnss_rtcm_overrun,
+                    const MkRailState *rails,
+                    const MkDinState *din, size_t n_din,
+                    const MkQueueStat *queues, size_t n_queues,
+                    const MkLinkStat *link,
+                    const MkTxStat *tx,
+                    const MkLcdStat *lcd,
+                    char *out, size_t cap)
+{
+    MkJson j;
+    mk_json_begin(&j, out, cap);
+    common(&j, now_ms, "stat");
+    mk_json_str(&j, "mode", mode);
+    /* 🔴 두 축이며 서로 독립이다 (규격 §6.4). 호스트가 둘 다 감시한다. */
+    mk_json_str(&j, "ctl_mode", ctl_mode);
+    mk_json_str(&j, "fw", fw);
+    mk_json_str(&j, "board_rev", board_rev);
+    mk_json_str(&j, "time_source", time_source);
+    mk_json_u32(&j, "time_quality", time_quality);
+    mk_json_u32(&j, "uptime_ms", uptime_ms);
+
+    /* 🔴 클럭 출처 — `time_source` 와 **다른 축**이다(규격 §7.4).
+     *
+     *    저쪽은 "`t` 의 절대 기준이 무엇인가"이고 이것은 "그 기준들
+     *    사이를 무엇으로 보간하는가"다. `time_source` 가 gnss_pps 라도
+     *    내부 RC 로 돌면 초 경계만 정확하고 그 안쪽은 ±1 % 흔들린다.
+     *
+     *    🔴 그렇다고 `time_quality` 를 낮추지 않는다. 낮추면 호스트가
+     *       "PPS 를 못 쓴다"로 읽어 멀쩡한 절대 시각까지 버린다 — 두
+     *       사실을 한 숫자로 합치면 어느 쪽이 나빠졌는지 되물을 방법이
+     *       없어진다. 그래서 필드를 따로 둔다.
+     *
+     *    바로 위(time_source·time_quality) 뒤에 붙인다. 셋이 함께 읽혀야
+     *    뜻이 서는 값들이다. */
+    mk_json_object_begin(&j, "clock");
+    if (clock_src != NULL) {
+        mk_json_str(&j, "src", clock_src);
+        mk_json_u32(&j, "sysclk_hz", clock_sysclk_hz);
+    } else {
+        /* 답할 수 없는 장치(시뮬레이터). 0 을 지어내면 "클럭이 0 Hz" 라는
+         * 말이 되고, "hsi" 를 지어내면 없는 폴백을 보고하는 것이 된다. */
+        mk_json_null(&j, "src");
+        mk_json_null(&j, "sysclk_hz");
+    }
+    mk_json_object_end(&j);
+
+    /* 🔴 시간축 진단(Phase 3). `time_source`/`time_quality` 가 "지금 등급"
+     *    이면 이 둘은 "그 등급이 얼마나 오래됐나"다 — 헤더 주석 참고.
+     *    -1 은 "아직 모른다"이고 null 로 나간다(0 을 지어내지 않는다). */
+    mk_json_object_begin(&j, "gnss");
+    if (gnss_pps_age_ms >= 0) {
+        mk_json_i64(&j, "pps_age_ms", gnss_pps_age_ms);
+    } else {
+        mk_json_null(&j, "pps_age_ms");
+    }
+    /* 🔴 원시 캡처 나이·횟수·짝짓기 실패 이유 — pps_age_ms 와 다른 것을
+     *    잰다(헤더 주석·규격 §7.4). "펄스가 오는가"(원시)와 "그 펄스를
+     *    시간축이 받아들였는가"(위 pps_age_ms)를 가르는 것이 이 필드들의
+     *    전부다. */
+    if (gnss_pps_raw_age_ms >= 0) {
+        mk_json_i64(&j, "pps_raw_age_ms", gnss_pps_raw_age_ms);
+    } else {
+        mk_json_null(&j, "pps_raw_age_ms");
+    }
+    /* 카운터라 0 이 곧 "본 적 없음" — null 이 필요 없다(gnss_sats 와 다른 결,
+     * 아래 참고). */
+    mk_json_u32(&j, "pps_raw_count", gnss_pps_raw_count);
+    if (gnss_pps_unpaired_reason != NULL) {
+        mk_json_str(&j, "pps_unpaired_reason", gnss_pps_unpaired_reason);
+    } else {
+        mk_json_null(&j, "pps_unpaired_reason");
+    }
+    if (gnss_sats >= 0) {
+        mk_json_i32(&j, "sats", gnss_sats);
+    } else {
+        mk_json_null(&j, "sats");
+    }
+    /* 🔴 초기화 시퀀스 진단(규격 §4.1.1). 셋 다 "모른다" 가 없는
+     *    불리언이다 — gnssctl 이 안 붙어 있으면 호출 쪽이 전부 거짓을
+     *    넘긴다(mk_hostlink.c on_stat), null 을 쓰지 않는다. */
+    mk_json_bool(&j, "init_sent", gnss_init_sent);
+    mk_json_bool(&j, "init_exhausted", gnss_init_exhausted);
+    mk_json_bool(&j, "sentence_seen", gnss_sentence_seen);
+    /* 🔴 RTCM 하행 관측(2026-08-28, 규격 §7.4·헤더 주석). 나이만 null 이
+     *    될 수 있고(받은 적 없음 ≠ 0ms 전) 나머지는 카운터다 —
+     *    pps_age_ms/pps_raw_count 와 정확히 같은 결. */
+    if (gnss_rtcm_age_ms >= 0) {
+        mk_json_i64(&j, "rtcm_age_ms", gnss_rtcm_age_ms);
+    } else {
+        mk_json_null(&j, "rtcm_age_ms");
+    }
+    mk_json_u32(&j, "rtcm_bytes", gnss_rtcm_bytes);
+    mk_json_u32(&j, "rtcm_bad", gnss_rtcm_bad);
+    mk_json_u32(&j, "rtcm_drop", gnss_rtcm_drop);
+    mk_json_u32(&j, "rtcm_overrun", gnss_rtcm_overrun);
+    mk_json_object_end(&j);
+
+    /* 🔴 **실제로 핀에 낸 것**을 싣는다. 설정표를 읽으면 안 된다.
+     *
+     *    설정표는 "사용자가 원하는 것" 이고, 그것이 핀에 나가기까지는
+     *    순차 기동 간격이 있다. 설정을 그대로 보고하면 아직 안 올린 레일을
+     *    켜졌다고 말하게 된다 — 실제로 그 상태였다. 부팅 직후 pwr.5v 의
+     *    기본값이 true 라 $STAT 이 5V ON 이라고 했는데 PD10 은 0 이었다
+     *    (실기기 확인 2026-08-14).
+     *
+     *    그래도 이것은 **명령 상태**이지 실측이 아니다. 피드백 회로가
+     *    없으므로 호스트는 `정상 ON` 이 아니라 `ON 명령됨` 으로 표시한다
+     *    (설계 원칙 4). */
+    mk_json_object_begin(&j, "rails");
+    mk_json_bool(&j, "v24", rails != NULL ? rails->v24 : 0);
+    mk_json_bool(&j, "v14v9", rails != NULL ? rails->v14v9 : 0);
+    mk_json_bool(&j, "v5", rails != NULL ? rails->v5 : 0);
+    mk_json_object_end(&j);
+
+    /* 🔴 `din` 은 rails 와 달리 실측이다(규격 §7.4·§7.6) — 보드가 EXTI 로
+     *    핀을 직접 읽는다. 없으면(NULL) 빈 배열이다. */
+    mk_json_array_begin(&j, "din");
+    for (size_t i = 0; i < n_din; i++) {
+        mk_json_array_object_begin(&j);
+        mk_json_u32(&j, "connector_id", din[i].connector_id);
+        mk_json_u32(&j, "state", din[i].state);
+        mk_json_array_object_end(&j);
+    }
+    mk_json_array_end(&j);
+
+    mk_json_array_begin(&j, "queues");
+    for (size_t i = 0; i < n_queues; i++) {
+        mk_json_array_object_begin(&j);
+        mk_json_u32(&j, "ch", queues[i].ch);
+        mk_json_u32(&j, "depth", queues[i].depth);
+        mk_json_u32(&j, "peak", queues[i].peak);
+        mk_json_u32(&j, "drops", queues[i].drops);
+        mk_json_array_object_end(&j);
+    }
+    mk_json_array_end(&j);
+
+    /* 🔴 호스트 링크 속도 (규격 §4.2·§7.4).
+     *
+     *    `baud` 와 `confirmed` 가 다르면 **아직 확인되지 않은 상태**이고,
+     *    그때 `$CFG,SAVE` 는 ERR,BUSY 다. 호스트는 이 두 값이 같은지로
+     *    "지금 저장해도 되는가" 를 판단한다 — 그것을 알 다른 통로가 없다.
+     *
+     *    `reverted` 는 "그 속도로는 이 링크가 안 된다" 는 유일한 누적
+     *    실측이다. 선행 프로젝트에서 미해결로 남은 대역폭 문제(CLAUDE.md
+     *    §1.2)가 이 보드에서 어떻게 나타나는지 알려 주는 값이므로,
+     *    `lcd.reinit`·`pps_raw_count` 와 같은 이유로 싣는다.
+     *
+     *    링크 속도를 안 붙인 빌드(호스트 시험·시뮬레이터)에서는 속도를
+     *    **지어내지 않는다** — clock 과 같은 결로 null 이다. */
+    mk_json_object_begin(&j, "link");
+    if (link != NULL) {
+        mk_json_u32(&j, "baud", link->baud);
+        mk_json_u32(&j, "confirmed", link->confirmed);
+    } else {
+        mk_json_null(&j, "baud");
+        mk_json_null(&j, "confirmed");
+    }
+    if (link != NULL && link->pending != 0u) {
+        mk_json_u32(&j, "pending", link->pending);
+    } else {
+        mk_json_null(&j, "pending");
+    }
+    if (link != NULL && link->remaining_ms >= 0) {
+        mk_json_i64(&j, "remaining_ms", link->remaining_ms);
+    } else {
+        mk_json_null(&j, "remaining_ms");
+    }
+    mk_json_u32(&j, "applied",         link != NULL ? link->applied : 0u);
+    mk_json_u32(&j, "confirmed_count", link != NULL ? link->confirmed_count : 0u);
+    mk_json_u32(&j, "reverted",        link != NULL ? link->reverted : 0u);
+    mk_json_object_end(&j);
+
+    /* 🔴 송신 링 (규격 §7.4, 신설 2026-08-20).
+     *
+     *    `link` 가 "선이 몇 bps 인가" 라면 이것은 "그 선에 대기줄이 얼마나
+     *    밀려 있나" 다. 카탈로그가 잘려 GUI 가 통째로 못 쓰게 된 결함을
+     *    GDB 로 `s_tx` 를 들여다보고서야 알았기 때문에 싣는다 — 헤더의
+     *    MkTxStat 주석에 근거가 있다.
+     *
+     *    링이 없는 장치(시뮬레이터)는 **지어내지 않는다.** `clock` 과 같은
+     *    결로 통째로 null 이다 — 0 을 채우면 "링이 있는데 한 번도 안 찼다"
+     *    로 읽혀, 진단이 거짓말을 하게 된다. */
+    if (tx != NULL) {
+        mk_json_object_begin(&j, "tx");
+        mk_json_u32(&j, "cap",               tx->cap);
+        mk_json_u32(&j, "peak",              tx->peak);
+        mk_json_u32(&j, "drops",             tx->drops);
+        mk_json_u32(&j, "dropped_bytes",     tx->dropped_bytes);
+        mk_json_u32(&j, "ctl_drops",         tx->ctl_drops);
+        mk_json_u32(&j, "ctl_dropped_bytes", tx->ctl_dropped_bytes);
+        mk_json_object_end(&j);
+    } else {
+        mk_json_null(&j, "tx");
+    }
+
+    /* 🔴 화면 회복 계수기 (규격 §7.4). "몇 번 깨졌고 몇 번 되살렸나" 를
+     *    모르면 이 문제가 해결됐는지 덮였는지 알 수 없다 — PPS 의
+     *    `pps_raw_count` 와 같은 이유로 싣는다.
+     *
+     *    `readback` 만 null 이 될 수 있다. 나머지는 카운터라 0 이 곧
+     *    "아직 없다" 다. */
+    mk_json_object_begin(&j, "lcd");
+    mk_json_u32(&j, "epoch",       lcd != NULL ? lcd->epoch : 0u);
+    mk_json_u32(&j, "reinit",      lcd != NULL ? lcd->reinit : 0u);
+    mk_json_u32(&j, "redraw",      lcd != NULL ? lcd->redraw : 0u);
+    mk_json_u32(&j, "verify_ok",   lcd != NULL ? lcd->verify_ok : 0u);
+    mk_json_u32(&j, "verify_fail", lcd != NULL ? lcd->verify_fail : 0u);
+    mk_json_u32(&j, "rejected",    lcd != NULL ? lcd->rejected : 0u);
+    if (lcd != NULL && lcd->readback >= 0) {
+        mk_json_bool(&j, "readback", lcd->readback != 0);
+    } else {
+        /* 아직 안 물어봤다. "못 믿는다"(false)와 섞으면 안 된다 — 화면이
+         * "되읽기 안 됨" 이라고 말하는데 실은 아직 한 번도 안 물어본
+         * 상태일 수 있다. */
+        mk_json_null(&j, "readback");
+    }
+    mk_json_object_end(&j);
+
+    return mk_json_end(&j);
+}
+
+int mk_cfgwire_value(const MkCfgItem *item, int64_t now_ms,
+                     char *out, size_t cap)
+{
+    MkJson j;
+    mk_json_begin(&j, out, cap);
+    common(&j, now_ms, "cfg_value");
+    mk_json_str(&j, "key", item->key);
+    put_value(&j, "cur", item, &item->cur);
+    return mk_json_end(&j);
+}
