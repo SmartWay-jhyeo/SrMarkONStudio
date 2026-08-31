@@ -75,19 +75,21 @@ def test_schema_ver_matches():
     🔴 [정정, 2026-08-20] 예전에는 시뮬레이터의 상수를 봤다. 시뮬레이터가
        사라졌고, 애초에 규격의 짝은 **호스트가 실제로 파싱에 쓰는 값**이다.
 
-    🔴 [전환기, 2026-08-31 — HANDOFF_0831 결정 2] 규격 §7.1 이 Cloud 계약
-       형식(설정 `tx.schema_ver`, 기본 1)으로 개정됐다. 호스트 파서
-       (`host/core/records.SCHEMA_VER` = 3)는 아직 굽힌 보드의 v3 를 읽는
-       중이고 계획 2(records 재작성)에서 계약을 따라간다 — 그때 이 시험에
-       호스트 상수와의 대조를 복원할 것.
+    🔴 [재결합, 2026-08-31 — 계획 2 Task 10] 규격 §7.1(Cloud 계약, 기본 1)
+       과 호스트 파서의 계약 상수(`records.CONTRACT_SCHEMA_VER`)를 대조한다.
+       `records.SCHEMA_VER`(3)는 제어 줄·전환기 v3 텔레메트리의 것으로
+       남아 있다 — 두 상수는 다른 물건이다.
     """
+    from host.core.records import CONTRACT_SCHEMA_VER
+
     text = _spec_text()
     m = re.search(
         r"\|\s*`schema_ver`\s*\|\s*int\s*\|\s*계약의 버전.*기본\s*\*\*(\d+)\*\*",
         text)
     assert m, "§7.1 에서 schema_ver 를 못 찾았다"
-    assert int(m.group(1)) == 1, (
-        f"규격의 schema_ver 기본은 계약대로 1 이어야 하는데 {m.group(1)} 다"
+    assert int(m.group(1)) == CONTRACT_SCHEMA_VER, (
+        f"규격은 기본 {m.group(1)} 인데 호스트 계약 상수는 "
+        f"{CONTRACT_SCHEMA_VER} 다"
     )
 
 
