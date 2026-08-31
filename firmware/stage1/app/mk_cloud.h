@@ -63,10 +63,10 @@ typedef struct MkCloud {
      * 결정 1)의 기준점. 슬롯이 아니라 포트 단위다: 온도·습도는 같은 수집에서
      * 나오므로 함께 반복된다. */
     int64_t  i2c_tx_last_ms[MK_I2C_COUNT];
-    /* 마지막으로 발행한 밸브 상태 — 확정 상태의 **변화**에만 valve
-     * 레코드를 낸다(설계 §4.5). */
-    uint8_t  valve_sent_state;
-    uint8_t  valve_primed;
+    /* 마지막으로 발행한 din 확정 상태 — 채널별 **변화**에만 레코드를 낸다
+     * (dinN.cloud 사용자 문자열이 type, HANDOFF_0831 검토 5). */
+    uint8_t  din_sent_state[MK_SOL_COUNT];
+    uint8_t  din_primed[MK_SOL_COUNT];
     uint32_t gnss_sent_count;         /* 마지막으로 발행한 fix_count */
     uint32_t imu_sent_seq;            /* 마지막으로 발행한 imu 표본 seq */
     /* device_capability — 부팅 후 1회 + 관련 설정이 바뀐 tick 에 재발행

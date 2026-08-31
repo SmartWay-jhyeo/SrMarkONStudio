@@ -71,7 +71,7 @@ static const char *const I2C_KIND_LABELS[] = {
 
 /* dev 1 + tx 9(마스크 5 + 주기 + 자릿수 + 스키마 버전 + 순번 seq)
  * + pwr 4 + adc 2 + ain 5×7
- * + sol 1(디바운스) + led 3 + i2c 5×7(송신 주기 포함)
+ * + sol 1(디바운스) + din 3×2(이름·타입) + led 3 + i2c 5×7(송신 주기 포함)
  * + gnss 3(사용·통신속도·원시 문장 에코)
  * + link 1(호스트 링크 속도)
  * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기)
@@ -81,14 +81,14 @@ static const char *const I2C_KIND_LABELS[] = {
  *  정하는 항목이 남아 있으면 상태 색과 싸운다.) */
 #define ITEM_COUNT   (1 + 9 + 4 + 2 + MK_AIN_COUNT * 7 \
                       + 1 \
-                      + 3 \
+                      + 6 \
                       + MK_I2C_COUNT * 7 \
                       + 4 + 3 \
                       + 1 \
                       + 5)
 
 /* 이름을 만들어 써야 하는 항목 수 (ain·i2c). sol 은 고정 문자열이다. */
-#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_I2C_COUNT * 7 + 3)
+#define GEN_COUNT    (MK_AIN_COUNT * 7 + MK_I2C_COUNT * 7 + 6)
 
 static MkCfgItem s_items[ITEM_COUNT];
 
@@ -583,6 +583,20 @@ static size_t add_sol(size_t i)
             .key = s_keys[k], .group = "sol", .vtype = MK_VT_STR,
             .max = 23, .has_max = 1, .label = s_labels[k],
             .note = "비우면 커넥터 번호로 보인다" };
+        i++;
+
+        /* 🔴 타입 — ain 의 .cloud 와 같은 원칙 (사용자 확정 2026-08-31,
+         *    HANDOFF_0831 검토 5). 사용자가 친 문자열이 그대로 상태 변화
+         *    레코드의 type 이 된다(J20 에 "valve" 면 기존 젯슨 수신분과
+         *    동일). 빈 값 = 미발행. gnss 태깅용 밸브 상태(입력들의 OR)는
+         *    이것과 무관하게 그대로다(mk_cloud.c cloud_valve_state). */
+        k = gen("din", jack, ".cloud", jack, "타입");
+        s_items[i] = (MkCfgItem){ .key = s_keys[k], .group = "sol",
+                                  .vtype = MK_VT_STR, .max = 15, .has_max = 1,
+                                  .ascii_ident = 1,
+                                  .label = s_labels[k],
+                                  .note = "젯슨 레코드의 type — 비우면 안"
+                                          " 내보낸다. 밸브면 valve" };
         i++;
     }
     return i;

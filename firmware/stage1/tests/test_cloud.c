@@ -420,31 +420,53 @@ static void setup_with_sol(void)
     drain_capability();
 }
 
-static void test_valve_is_the_or_of_inputs(void)
+static void test_din_cloud_string_emits_state_record(void)
 {
-    /* 🔴 좌·우 밸브가 어느 입력에서 올지 모른다(사용자 확정 2026-08-22) —
-     *    지정 대신 OR. 어느 쪽이든 열리면 1. */
+    /* 🔴 [개정 2026-08-31, HANDOFF_0831 검토 5] din 도 ain 처럼 사용자
+     *    문자열이 record type 이다. "OR 합성 valve 레코드" 는 폐기 —
+     *    J20 에 "valve" 를 치면 기존 젯슨 수신분과 동일한 레코드가 나온다.
+     *    (OR 은 gnss 등 태깅 소스로만 남는다 — 아래 태깅 시험.) */
     setup_with_sol();
-    sol_set_confirmed(0, 0);              /* 좌 닫힘 */
-    sol_set_confirmed(1, 1);              /* 우 열림 */
+    set_str("din20.cloud", "valve");
+    sol_set_confirmed(2, 1);               /* ch2 = J20 확정 ON */
+    N = 0;
     mk_cloud_tick(&C, 100, sink, NULL);
-    CHECK_HAS(find_line("valve"), "\"state\":1", "한쪽만 열려도 1");
-
-    sol_set_confirmed(1, 0);              /* 둘 다 닫힘 */
+    const char *ln = find_line("valve");
+    CHECK(ln != NULL, "din20.cloud 문자열이 type 이 된다");
+    CHECK_HAS(ln, "\"state\":1", "state=1");
     N = 0;
-    mk_cloud_tick(&C, 200, sink, NULL);
-    CHECK_HAS(find_line("valve"), "\"state\":0", "둘 다 닫혀야 0");
-
-    N = 0;
-    CHECK(mk_cloud_tick(&C, 300, sink, NULL) == 0,
+    CHECK(mk_cloud_tick(&C, 200, sink, NULL) == 0,
           "상태가 안 바뀌면 다시 안 낸다");
+    sol_set_confirmed(2, 0);
+    N = 0;
+    mk_cloud_tick(&C, 300, sink, NULL);
+    CHECK_HAS(find_line("valve"), "\"state\":0", "확정 변화마다 한 줄");
+}
+
+static void test_din_channels_are_independent(void)
+{
+    setup_with_sol();
+    set_str("din18.cloud", "valve_left");
+    set_str("din20.cloud", "valve_right");
+    sol_set_confirmed(0, 1);               /* J18 */
+    sol_set_confirmed(2, 0);               /* J20 */
+    N = 0;
+    mk_cloud_tick(&C, 100, sink, NULL);
+    CHECK_HAS(find_line("valve_left"), "\"state\":1", "J18 은 제 이름으로 1");
+    CHECK_HAS(find_line("valve_right"), "\"state\":0", "J20 은 제 이름으로 0");
 }
 
 static void test_no_confirmed_inputs_stay_silent(void)
 {
-    setup_with_sol();                      /* 아무 입력도 확정 안 됨 */
+    setup_with_sol();
+    set_str("din20.cloud", "valve");       /* 타입은 있지만 확정이 없다 */
     CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0,
           "모르는 상태를 0 이라 말하지 않는다");
+    /* 빈 타입(기본)은 확정돼도 미발행 — ain 의 "없음 = 미발행" 과 같은 규칙 */
+    setup_with_sol();
+    sol_set_confirmed(2, 1);
+    N = 0;
+    CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0, "빈 타입 = 미발행");
 }
 
 static void test_valve_mask_bit_tags_records(void)
@@ -712,7 +734,8 @@ int main(void)
     test_dewpoint_is_computed_when_the_bit_is_on();
     test_ambient_rides_on_temp_road();
     test_ambient_off_means_no_field();
-    test_valve_is_the_or_of_inputs();
+    test_din_cloud_string_emits_state_record();
+    test_din_channels_are_independent();
     test_no_confirmed_inputs_stay_silent();
     test_valve_mask_bit_tags_records();
     test_capability_is_first_and_reflects_config();

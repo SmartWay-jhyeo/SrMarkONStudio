@@ -580,38 +580,62 @@ static int tick_imu(MkCloud *c, MkCloudEmit emit, void *ctx)
     return 0;
 }
 
-/* ── valve 레코드 (계약 §5) ─────────────────────────────────────────────── */
+/* ── din 상태 레코드 (계약 §5 의 일반화) ─────────────────────────────────
+ *
+ * 🔴 [개정 2026-08-31, HANDOFF_0831 검토 5] "입력들의 OR 를 valve 하나로"
+ *    를 폐기하고 ain 과 같은 원칙으로 일반화했다: `dinN.cloud` 사용자
+ *    문자열이 그대로 record type 이 되고, 채널의 **확정 상태 변화**마다
+ *    한 줄 나간다. J20 에 "valve" 를 치면 기존 수신분과 동일하다. 빈 값 =
+ *    미발행. OR 는 gnss 등 태깅 소스(cloud_valve_state)로만 남는다. */
 
-static int tick_valve(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
+static const char *din_cloud_str(MkConfig *cfg, unsigned jack)
+{
+    char key[MK_CFG_KEY_MAX + 1];
+    size_t n = 0;
+    const char *p;
+    for (p = "din"; *p != '\0' && n + 1u < sizeof key; p++) { key[n++] = *p; }
+    if (n + 2u < sizeof key) {
+        key[n++] = (char)('0' + (jack / 10u) % 10u);
+        key[n++] = (char)('0' + jack % 10u);
+    }
+    for (p = ".cloud"; *p != '\0' && n + 1u < sizeof key; p++) { key[n++] = *p; }
+    key[n] = '\0';
+    MkCfgItem *it = mk_cfg_find(cfg, key);
+    return it != NULL ? it->cur.s : "";
+}
+
+static int tick_din(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
 {
     if (c->sol == NULL) { return 0; }
-    /* 확정된 입력이 하나도 없으면(부팅 직후·sol 미구성) 아직 말하지
-     * 않는다 — 모르는 상태를 0 이라 단정해 내보내지 않는다. */
-    int any_valid = 0;
+    int sent = 0;
     for (unsigned ch = 0; ch < MK_SOL_COUNT; ch++) {
-        if (c->sol->confirmed_valid[ch]) { any_valid = 1; break; }
+        /* 확정 전(부팅 직후·미구성)에는 말하지 않는다 — 모르는 상태를
+         * 0 이라 단정해 내보내지 않는다(설계 원칙 4). */
+        if (!c->sol->confirmed_valid[ch]) { continue; }
+        const char *type = din_cloud_str(c->cfg, 18u + ch);
+        if (type[0] == '\0') { continue; }
+        int state = c->sol->confirmed_state[ch] ? 1 : 0;
+        if (c->din_primed[ch] && (int)c->din_sent_state[ch] == state) {
+            continue;
+        }
+
+        /* 🔴 t 는 "지금"이다 — din 엣지의 정밀 획득 시각은 solctl 큐의
+         *    몫이고, 이 레코드는 상태 통지라 tick 시각이면 충분하다
+         *    (예전 valve 틱과 같은 판단 — 엣지 시각까지 실으려면 큐를
+         *    두 소비자가 나눠 먹는 설계가 필요해진다). */
+        char body[MK_CLOUD_LINE_MAX];
+        MkJson j;
+        begin_record(c, &j, body, sizeof body, type, now_ms);
+        mk_json_u32(&j, "state", (uint32_t)state);
+        int len = mk_json_end(&j);
+
+        if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
+            sent++;
+            c->din_primed[ch] = 1u;
+            c->din_sent_state[ch] = (uint8_t)state;
+        }
     }
-    if (!any_valid) { return 0; }
-
-    int state = cloud_valve_state(c);
-    if (c->valve_primed && (int)c->valve_sent_state == state) { return 0; }
-
-    /* 🔴 t 는 "지금"이다 — din 엣지의 정밀 획득 시각은 본선(규격 §7.6)이
-     *    싣는다. 계약 §5 의 valve 는 상태 통지라 tick 시각이면 충분하고,
-     *    엣지 시각을 여기서도 실으려면 solctl 의 큐를 두 소비자가 나눠
-     *    먹는 설계가 필요해진다 — A단계 범위 밖. */
-    char body[MK_CLOUD_LINE_MAX];
-    MkJson j;
-    begin_record(c, &j, body, sizeof body, "valve", now_ms);
-    mk_json_u32(&j, "state", (uint32_t)state);
-    int len = mk_json_end(&j);
-
-    if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
-        c->valve_primed = 1u;
-        c->valve_sent_state = (uint8_t)state;
-        return 1;
-    }
-    return 0;
+    return sent;
 }
 
 /* ── device_capability (계약 §16, 설계 §4.6) ─────────────────────────────
@@ -752,7 +776,7 @@ int mk_cloud_tick(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
      *    알아야 뒤따르는 레코드를 해석한다 (계약 §16.1). valve 는 센서
      *    레코드보다 앞 — 같은 tick 의 태깅과 어긋나지 않게. */
     return tick_capability(c, now_ms, emit, ctx)
-         + tick_valve(c, now_ms, emit, ctx)
+         + tick_din(c, now_ms, emit, ctx)
          + tick_ain(c, now_ms, emit, ctx) + tick_i2c(c, now_ms, emit, ctx)
          + tick_gnss(c, emit, ctx) + tick_imu(c, emit, ctx);
 }
