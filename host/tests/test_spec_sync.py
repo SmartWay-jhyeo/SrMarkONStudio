@@ -70,20 +70,24 @@ def test_reason_constants_equal_their_names():
 
 
 def test_schema_ver_matches():
-    """규격의 `schema_ver` 와 호스트가 쓰는 값이 같아야 한다.
+    """규격의 `schema_ver` 기본값이 계약(Cloud v1.7)의 1 이어야 한다.
 
     🔴 [정정, 2026-08-20] 예전에는 시뮬레이터의 상수를 봤다. 시뮬레이터가
-       사라졌고, 애초에 규격의 짝은 **호스트가 실제로 파싱에 쓰는 값**이다
-       (`host/core/records.SCHEMA_VER`). C 쪽은
-       `firmware/stage1/tests/crosscheck_json.py` 가 같은 값으로 맞춘다.
-    """
-    from host.core.records import SCHEMA_VER
+       사라졌고, 애초에 규격의 짝은 **호스트가 실제로 파싱에 쓰는 값**이다.
 
+    🔴 [전환기, 2026-08-31 — HANDOFF_0831 결정 2] 규격 §7.1 이 Cloud 계약
+       형식(설정 `tx.schema_ver`, 기본 1)으로 개정됐다. 호스트 파서
+       (`host/core/records.SCHEMA_VER` = 3)는 아직 굽힌 보드의 v3 를 읽는
+       중이고 계획 2(records 재작성)에서 계약을 따라간다 — 그때 이 시험에
+       호스트 상수와의 대조를 복원할 것.
+    """
     text = _spec_text()
-    m = re.search(r"\|\s*`schema_ver`\s*\|\s*int\s*\|\s*항상\s*(\d+)\s*\|", text)
+    m = re.search(
+        r"\|\s*`schema_ver`\s*\|\s*int\s*\|\s*계약의 버전.*기본\s*\*\*(\d+)\*\*",
+        text)
     assert m, "§7.1 에서 schema_ver 를 못 찾았다"
-    assert int(m.group(1)) == SCHEMA_VER, (
-        f"규격은 schema_ver {m.group(1)} 인데 호스트는 {SCHEMA_VER} 다"
+    assert int(m.group(1)) == 1, (
+        f"규격의 schema_ver 기본은 계약대로 1 이어야 하는데 {m.group(1)} 다"
     )
 
 
