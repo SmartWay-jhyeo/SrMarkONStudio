@@ -43,6 +43,32 @@ def window(app):
 
 # ------------------------------------------------------------------ 창
 
+def test_catalog_load_survives_one_flaky_fetch(app, monkeypatch):
+    """🔴 회귀 방지(2026-08-31 실사고) — 부팅 직후 연결하면 첫 $CFG,LIST 가
+    실패할 수 있다. 이 요청은 접속에 한 번뿐이었어서, 그 한 번의 불운으로
+    스트림은 흐르는데 설정 화면만 통째로 빈 채 남았다. 재시도가 살린다."""
+    from host.tests.fake_board import fake_service
+
+    service = fake_service(clock=lambda: 0)
+    real_fetch = service.fetch_schema
+    calls = {"n": 0}
+
+    def flaky_fetch():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("부팅 직후 — 첫 요청 유실")
+        return real_fetch()
+
+    monkeypatch.setattr(service, "fetch_schema", flaky_fetch)
+    monkeypatch.setattr("host.gui.app.time.sleep", lambda _s: None)
+    w = MainWindow(service, "스텁")
+    try:
+        assert calls["n"] >= 2, "재시도가 없다"
+        assert w._settings.form is not None, "설정 화면이 비어 있다"
+    finally:
+        w._worker.stop()
+
+
 def test_window_opens_without_a_board(window):
     assert window.windowTitle().startswith("MarkON Studio")
     # 🔴 탭 이름표와 실제 페이지 수가 어긋나면 상단에서 고른 탭이 엉뚱한

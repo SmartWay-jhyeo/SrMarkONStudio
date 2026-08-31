@@ -358,13 +358,27 @@ class MainWindow(QMainWindow):
 
         🔴 항목을 하드코딩하지 않는다. 펌웨어 단계마다 항목이 늘기 때문이다.
         """
-        try:
-            schema = self._service.fetch_schema()
-        except Exception as exc:            # noqa: BLE001
-            self._top.set_link(f"설정을 불러오지 못했다: {exc}", bad=True)
-            return
-        if not schema.items:
-            self._top.set_link("보드가 설정 카탈로그를 주지 않았다", bad=True)
+        # 🔴 [2026-08-31] 재시도 3회 — 부팅 직후·USB 재열거 직후에 연결하면
+        #    첫 $CFG,LIST 가 한 번 실패할 수 있는데, 이 요청은 접속에 한 번
+        #    뿐이라 그 한 번의 불운으로 설정 화면을 통째로 잃었다(실사고:
+        #    새 보드 첫 연결에서 스트림은 흐르는데 설정만 빈 화면).
+        schema = None
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                schema = self._service.fetch_schema()
+                if schema.items:
+                    break
+            except Exception as exc:        # noqa: BLE001
+                last_exc = exc
+            time.sleep(0.5)
+        if schema is None or not schema.items:
+            if last_exc is not None:
+                self._top.set_link(f"설정을 불러오지 못했다: {last_exc}",
+                                   bad=True)
+            else:
+                self._top.set_link("보드가 설정 카탈로그를 주지 않았다",
+                                   bad=True)
             return
         self._settings.set_form(SettingsForm(schema))
         self._apply_connector_names(schema)
