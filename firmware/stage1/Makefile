@@ -54,6 +54,7 @@ C_SRC = \
   app/mk_i2c_mlx90614.c \
   app/mk_gnss.c \
   app/mk_gnssctl.c \
+  app/mk_rtcm.c \
   app/mk_timeax.c \
   app/mk_lcd.c \
   app/mk_linkbaud.c \
