@@ -21,6 +21,15 @@
 다루는 것은 설정·제어 채널(USART3) 하나다** — 아래 §7 텔레메트리도 그
 채널의 이야기다.
 
+🔴 **[2026-08-28] 데이터 채널의 상행(젯슨→보드, J29 핀3 → PA3)은 원시
+RTCM3 통과 전용이다.** 젯슨의 NTRIP 포워더가 내려보낸 보정 바이트를
+보드가 프레임 경계·CRC-24Q 만 확인해 GNSS 모듈(USART6)로 그대로 중계한다
+(`firmware/stage1/app/mk_rtcm.c`). 이 방향은 **어떤 명령도 해석하지
+않는다** — 이 링크에는 인증도 줄 프레이밍도 없으므로 명령을 실으면 안
+된다(좁은 보안 경계, 사용자 결정. `host/tests/test_firmware_safety.py` 가
+상시 강제). 관측은 §7.4 `gnss.rtcm_*` 로 한다. 젯슨발 명령(시각 요청 등)은
+여전히 미설계다 — 하려면 프레이밍·인증 설계가 먼저다.
+
 설정·제어 채널의 **속도는 고정이 아니다.** 기본값은 921600이고 설정
 항목 `link.baud`로 바꾼다 — 다만 이 항목 하나만 다른 설정과 다른 절차를
 탄다(§4.2).
@@ -822,7 +831,9 @@ zero  = 4 - v4 / scale          (scale ≠ 0)
  "clock":{"src":"hse_pll","sysclk_hz":64000000},
  "gnss":{"pps_age_ms":842,"pps_raw_age_ms":842,"pps_raw_count":118,
          "pps_unpaired_reason":null,"sats":11,
-         "init_sent":true,"init_exhausted":false,"sentence_seen":true},
+         "init_sent":true,"init_exhausted":false,"sentence_seen":true,
+         "rtcm_age_ms":1200,"rtcm_bytes":345678,
+         "rtcm_bad":0,"rtcm_drop":0,"rtcm_overrun":0},
  "rails":{"v24":false,"v14v9":false,"v5":true},
  "din":[{"connector_id":18,"state":0},{"connector_id":19,"state":0},
         {"connector_id":20,"state":1}],
@@ -1039,6 +1050,25 @@ fix가 안 잡혀 RMC 문장이 계속 `V`로 왔다. 그런데 PPS는 정확히
 `true`면 최소한 한 번은 모듈이 응답한 것이므로, 그 뒤 등급이
 `device_clock`으로 내려간 것은 초기화 문제가 아니라 신호가 끊긴
 것이다(§7.1.2).
+
+🔴 **`rtcm_*` 다섯은 RTK 보정 하행 경로를 진단한다** (신규, 2026-08-28,
+§1의 상행 통과 항목). 젯슨 → J29 핀3(PA3) → 보드 라우터
+(`app/mk_rtcm.c`) → GNSS 모듈(USART6) 경로에서, 보드가 **직접 관측한**
+수만 싣는다.
+
+| 필드 | 형 | 뜻 |
+|---|---|---|
+| `rtcm_age_ms` | i64 \| null | 마지막 **온전한**(CRC-24Q 통과) 프레임 이후 경과. `null` = 받은 적 없음 — 0을 지어내지 않는다(`pps_age_ms`와 같은 규칙) |
+| `rtcm_bytes` | u32 | 젯슨에서 온 수신 바이트 누적(잡음 포함) — "링크가 사는가" |
+| `rtcm_bad` | u32 | CRC 불일치로 버린 프레임 수 — 전선 오염의 가시화 |
+| `rtcm_drop` | u32 | 검증됐으나 모듈 송신 링이 거절해 통째로 버린 프레임 수 |
+| `rtcm_overrun` | u32 | 수신 링이 넘쳐 버린 바이트 수 |
+
+보정이 안 오는 것은 **정상 상태다**(포워더를 안 켠 벤치 — 단독 측위는
+보정 없이 된다). 경고 대상은 `rtcm_bad`/`rtcm_drop`/`rtcm_overrun`이
+0이 아닌 경우뿐이다. 보정이 실제로 모듈까지 갔는지는 이 필드가 아니라
+**측위 품질**(§7.8의 `fix` 1→4/5)과 `diff_age`(§7.2 비트 17)가 말한다 —
+여기는 "보드까지 왔는가"다.
 
 `queues[].ch`는 **채널 번호**이지 배열 첨자가 아니다. 꺼진 채널은 목록에서
 빠지므로 둘은 일치하지 않는다.
