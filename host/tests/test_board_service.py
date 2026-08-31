@@ -197,10 +197,15 @@ def test_heartbeat_puts_board_in_config_mode(rig):
 
 
 def test_pump_collects_telemetry_records(rig):
+    """[개정 2026-08-31] 스텁은 계약 레코드(type=flow)를 낸다 — 카탈로그를
+    읽어 역매핑이 서면 내부형(ain)으로 정규화돼 쌓인다(실제 GUI 흐름)."""
     svc, _sim, clock = rig
+    svc.heartbeat()
+    svc.fetch_schema()
     clock.advance(100)
     svc.pump()
     assert any(r["type"] == "ain" for r in svc.records)
+    assert any(r.get("cloud_type") == "flow" for r in svc.records)
 
 
 def test_pump_tracks_seq_gaps(rig):
@@ -303,7 +308,8 @@ def test_line_stats_count_lines_bytes_types_and_last_seen(rig):
     svc.pump()
     assert svc.line_total > 0
     assert svc.byte_total > 0
-    assert svc.type_counts.get("ain", 0) > 0
+    # 원문 통계는 전선의 타입 그대로 센다 — 스텁의 계약 타입은 "flow".
+    assert svc.type_counts.get("flow", 0) > 0
     assert svc.last_line_at == clock.now_ms
 
 

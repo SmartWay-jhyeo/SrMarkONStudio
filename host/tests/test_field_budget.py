@@ -317,22 +317,28 @@ def test_all_fields_on_is_measurable():
 
 # ------------------------------------------------------- 한 줄 상한 (보드가 버림)
 
-def test_all_ain_fields_overflow_the_record_limit_and_the_message_says_dropped():
-    """전부 켜면 한 줄이 보드 상한을 넘고, 화면이 "통째로 버려진다"고
-    말해야 한다.
-
-    🔴 실기기에서 겪었다 (2026-08-21). ain 필드를 전부 켜자 ain 레코드가
-       **조용히 전부 사라졌다** — 펌웨어의 모든 송신부(mk_telem.c)가 상한을
-       넘는 줄을 반쪽 JSON 방지를 위해 통째로 버리는데, 화면은 대역폭만
-       경고하고 줄 상한은 말하지 않았다. 젯슨과 GUI 양쪽에서 아날로그가
-       멈춘 것으로 나타났고 원인을 GDB 로 링을 덤프해서야 찾았다.
-    """
+def test_all_ain_fields_no_longer_overflow_the_record_limit():
+    """🔴 [개정 2026-08-31] 마스크 전부 켜기로는 이제 상한을 못 넘는다 —
+    계약 전선에서 죽은 필드(unit·status·capture_counter·time_quality)가
+    빠지면서 최대 ain 줄이 상한 안으로 들어왔다. 2026-08-21 의 "전부 켜자
+    아날로그가 조용히 사라졌다" 사고 조건 자체가 없어진 것이다."""
     from host.tests.fake_board import build_ain_record, fake_store
 
     store = fake_store()
+    store.set("ain0.cloud", "pressure_paintx")   # 사용자 문자열 상한(15)
     store.set("tx.fields_ain", str(int(store.items["tx.fields_ain"].maximum)))
-    rec = build_ain_record(store, channel=0, seq=1, t_ms=1772200855875,
-                           raw=8388608, capture_counter=123456789)
+    rec = build_ain_record(store, channel=0, seq=4294967295,
+                           t_ms=1772200855875, raw=8388608,
+                           capture_counter=123456789)
+    b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=921600)
+    assert not b.record_dropped
+
+
+def test_an_oversized_record_is_reported_dropped():
+    """버림 감지 장치 자체는 남는다 — 보드가 필드를 늘려(모르는 이름)
+    상한을 넘기면 화면이 "통째로 버려진다"고 말해야 한다. 실기기에서
+    겪은 실패 방식이다(2026-08-21 — 원인을 GDB 로 링을 덤프해서야 찾았다)."""
+    rec = sample_record([f"frobnicate_{i}" for i in range(20)])
     b = compute_budget(rec, channels_enabled=7, period_ms=100, baud=921600)
     assert b.record_dropped
     level, msg = budget_message(b)
