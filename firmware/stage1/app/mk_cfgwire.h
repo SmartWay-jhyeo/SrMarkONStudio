@@ -259,6 +259,19 @@ typedef struct {
  *    `clock_src` 가 NULL 이면 `{"src":null,"sysclk_hz":null}` 로 나간다 —
  *    "이 장치는 답할 수 없다"이고, 시뮬레이터가 그 자리다. 값을 지어내지
  *    않는다(lcd 를 NULL 로 넘길 때와 같은 결). */
+/* 🔴 [신규, 2026-08-28] `rtcm_*` 다섯 — RTK 보정 하행 경로의 관측
+ *    (규격 §7.4, app/mk_rtcm.h).
+ *
+ *      rtcm_age_ms   마지막 **온전한**(CRC 통과) 프레임 이후 경과.
+ *                    -1 → null — 받은 적 없음(pps_age_ms 와 같은 결).
+ *      rtcm_bytes    젯슨에서 온 수신 바이트 누적(잡음 포함) — "링크가
+ *                    사는가". 카운터라 null 없음(pps_raw_count 의 결).
+ *      rtcm_bad      CRC 불일치 프레임 수 — 전선 오염의 가시화.
+ *      rtcm_drop     검증됐으나 모듈 송신 링이 거절한 프레임 수.
+ *      rtcm_overrun  수신 링이 넘쳐 버린 바이트 수.
+ *
+ *    라우터가 안 붙은 호출 쪽은 age -1 · 나머지 0 을 넘긴다(gnssctl 의
+ *    불리언들과 같은 규칙). */
 int mk_cfgwire_stat(int64_t now_ms,
                     const char *mode, const char *ctl_mode, const char *fw, const char *board_rev,
                     uint32_t uptime_ms,
@@ -270,6 +283,9 @@ int mk_cfgwire_stat(int64_t now_ms,
                     int32_t gnss_sats,
                     int gnss_init_sent, int gnss_init_exhausted,
                     int gnss_sentence_seen,
+                    int64_t gnss_rtcm_age_ms, uint32_t gnss_rtcm_bytes,
+                    uint32_t gnss_rtcm_bad, uint32_t gnss_rtcm_drop,
+                    uint32_t gnss_rtcm_overrun,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,

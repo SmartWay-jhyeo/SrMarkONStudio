@@ -201,6 +201,9 @@ int mk_cfgwire_stat(int64_t now_ms,
                     int32_t gnss_sats,
                     int gnss_init_sent, int gnss_init_exhausted,
                     int gnss_sentence_seen,
+                    int64_t gnss_rtcm_age_ms, uint32_t gnss_rtcm_bytes,
+                    uint32_t gnss_rtcm_bad, uint32_t gnss_rtcm_drop,
+                    uint32_t gnss_rtcm_overrun,
                     const MkRailState *rails,
                     const MkDinState *din, size_t n_din,
                     const MkQueueStat *queues, size_t n_queues,
@@ -283,6 +286,18 @@ int mk_cfgwire_stat(int64_t now_ms,
     mk_json_bool(&j, "init_sent", gnss_init_sent);
     mk_json_bool(&j, "init_exhausted", gnss_init_exhausted);
     mk_json_bool(&j, "sentence_seen", gnss_sentence_seen);
+    /* 🔴 RTCM 하행 관측(2026-08-28, 규격 §7.4·헤더 주석). 나이만 null 이
+     *    될 수 있고(받은 적 없음 ≠ 0ms 전) 나머지는 카운터다 —
+     *    pps_age_ms/pps_raw_count 와 정확히 같은 결. */
+    if (gnss_rtcm_age_ms >= 0) {
+        mk_json_i64(&j, "rtcm_age_ms", gnss_rtcm_age_ms);
+    } else {
+        mk_json_null(&j, "rtcm_age_ms");
+    }
+    mk_json_u32(&j, "rtcm_bytes", gnss_rtcm_bytes);
+    mk_json_u32(&j, "rtcm_bad", gnss_rtcm_bad);
+    mk_json_u32(&j, "rtcm_drop", gnss_rtcm_drop);
+    mk_json_u32(&j, "rtcm_overrun", gnss_rtcm_overrun);
     mk_json_object_end(&j);
 
     /* 🔴 **실제로 핀에 낸 것**을 싣는다. 설정표를 읽으면 안 된다.

@@ -279,8 +279,9 @@ static void test_stat_shape(void)
      *    mk_json 이 ok=0 으로 떨어져 이 시험이 아니라 다른 이유로 실패한
      *    것처럼 보인다. gnss.init_* 세 필드가 늘면서 512 도 모자라졌다
      *    (515자). pps_raw_* 세 필드가 늘며 600 도 모자라졌다 — 700 으로
-     *    둔다. */
-    char buf[960];
+     *    뒀었다. rtcm_* 다섯 필드(최악 ~131자)가 늘며 이 파일의 stat
+     *    버퍼를 일괄 +128 했다(2026-08-28). */
+    char buf[1088];
     setup();
     ITEMS[5].cur.u = 1;                     /* pwr.24v 를 켠 것으로 */
 
@@ -291,6 +292,7 @@ static void test_stat_shape(void)
                             "device_clock", 0u,
                             842, 842, 118u, NULL, 11,
                             1, 0, 1,
+                            1200, 345678u, 1u, 2u, 3u,
                             &RS, d, 3, q, 2, NULL, NULL, NULL,
                             buf, sizeof buf);
     CHECK(n > 0, "stat 을 만든다");
@@ -304,9 +306,11 @@ static void test_stat_shape(void)
               "\"pps_raw_count\":118,\"pps_unpaired_reason\":null,"
               "\"sats\":11,"
               "\"init_sent\":true,\"init_exhausted\":false,"
-              "\"sentence_seen\":true}",
-              "gnss 진단은 중첩 객체 — 짝지어진 나이 바로 옆에 원시 나이가 나란히 있다"
-              "(규격 §7.4·§4.1.1)");
+              "\"sentence_seen\":true,"
+              "\"rtcm_age_ms\":1200,\"rtcm_bytes\":345678,"
+              "\"rtcm_bad\":1,\"rtcm_drop\":2,\"rtcm_overrun\":3}",
+              "gnss 진단은 중첩 객체 — 짝지어진 나이 바로 옆에 원시 나이가 나란히 있고, "
+              "RTCM 하행 계수가 그 뒤에 붙는다(규격 §7.4·§4.1.1)");
     CHECK_HAS(buf, "\"rails\":{\"v24\":true,\"v14v9\":false,\"v5\":true}",
               "rails 는 중첩 객체");
     CHECK_HAS(buf,
@@ -324,12 +328,13 @@ static void test_stat_with_no_queues(void)
 {
     /* 🔴 3단계 전에는 큐가 없다. 없는 것을 있는 척하지 않는다 —
      *    빈 배열이라야 호스트가 "채널이 없다" 를 정확히 읽는다. */
-    char buf[760];
+    char buf[888];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                             "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
+                            -1, 0u, 0u, 0u, 0u,
                             &RS, NULL, 0, NULL, 0, NULL, NULL, NULL,
                             buf, sizeof buf);
     CHECK(n > 0, "큐가 없어도 만든다");
@@ -339,9 +344,12 @@ static void test_stat_with_no_queues(void)
               "\"pps_raw_count\":0,\"pps_unpaired_reason\":null,"
               "\"sats\":null,"
               "\"init_sent\":false,\"init_exhausted\":false,"
-              "\"sentence_seen\":false}",
+              "\"sentence_seen\":false,"
+              "\"rtcm_age_ms\":null,\"rtcm_bytes\":0,"
+              "\"rtcm_bad\":0,\"rtcm_drop\":0,\"rtcm_overrun\":0}",
               "GNSS 를 아예 안 붙였으면 -1 이 null 로 나간다 — 0 을 지어내지 않는다. "
-              "pps_raw_count 는 카운터라 0 이 곧 '본 적 없음'이라 null 이 필요 없다");
+              "pps_raw_count 는 카운터라 0 이 곧 '본 적 없음'이라 null 이 필요 없다. "
+              "rtcm 도 같은 규칙 — 나이만 null 이 되고 계수는 0 이다");
 }
 
 /* 🔴 되돌림 검사 — 이 시험이 이번 작업의 핵심이다(작업 지시 원문). 실기기가
@@ -351,12 +359,13 @@ static void test_stat_with_no_queues(void)
  *    이 CHECK 가 바로 깨진다. */
 static void test_stat_pps_raw_present_while_paired_age_is_null(void)
 {
-    char buf[860];
+    char buf[988];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                             "hse_pll", 64000000u, "device_clock", 0u,
                             -1, 300, 7u, "no_valid_nmea", 3,
                             0, 0, 1,
+                            -1, 0u, 0u, 0u, 0u,
                             &RS, NULL, 0, NULL, 0, NULL, NULL, NULL,
                             buf, sizeof buf);
     CHECK(n > 0, "원시만 있어도 만든다");
@@ -372,12 +381,13 @@ static void test_stat_with_no_din(void)
 {
     /* 🔴 sol 이 안 붙어 있는 경우와 같은 규칙 — queues 와 마찬가지로
      *    0 을 채워 보내지 않고 빈 배열이다. */
-    char buf[760];
+    char buf[888];
     setup();
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                             "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
+                            -1, 0u, 0u, 0u, 0u,
                             &RS, NULL, 0, NULL, 0, NULL, NULL, NULL,
                             buf, sizeof buf);
     CHECK(n > 0, "din 이 없어도 만든다");
@@ -392,13 +402,14 @@ static void test_queue_channel_comes_from_the_struct(void)
      *
      *    gnss.init_* 세 필드가 늘면서 400 이 빠듯해졌다. pps_raw_* 세
      *    필드가 늘며 512 도 빠듯해졌다 — 600 으로 둔다. */
-    char buf[860];
+    char buf[988];
     setup();
     MkQueueStat q[2] = { {2, 0, 0, 0}, {6, 0, 0, 41} };
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                     "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
+                    -1, 0u, 0u, 0u, 0u,
                     &RS, NULL, 0, q, 2, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf,
               "\"queues\":[{\"ch\":2,\"depth\":0,\"peak\":0,\"drops\":0},"
@@ -415,11 +426,12 @@ static void test_missing_rail_reads_as_off(void)
      *    pwr.5v 의 기본값(true)이 그대로 나가, 핀은 0 인데 $STAT 이
      *    "5V ON" 이라고 말했다 — 실기기에서 확인했다(2026-08-14).
      *    설정은 "원하는 것", rails 는 "낸 것" 이다. */
-    char buf[760];
+    char buf[888];
     setup();
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
-                    0, 0, 0, NULL, NULL, 0, NULL, 0, NULL, NULL, NULL,
+                    0, 0, 0, -1, 0u, 0u, 0u, 0u,
+                    NULL, NULL, 0, NULL, 0, NULL, NULL, NULL,
                     buf, sizeof buf);
     CHECK_HAS(buf, "\"rails\":{\"v24\":false,\"v14v9\":false,\"v5\":false}",
               "제어기가 없으면 전부 꺼진 것으로");
@@ -429,7 +441,8 @@ static void test_missing_rail_reads_as_off(void)
     if (v5 != NULL) { v5->cur.u = 1; }
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
-                    0, 0, 0, NULL, NULL, 0, NULL, 0, NULL, NULL, NULL,
+                    0, 0, 0, -1, 0u, 0u, 0u, 0u,
+                    NULL, NULL, 0, NULL, 0, NULL, NULL, NULL,
                     buf, sizeof buf);
     CHECK_HAS(buf, "\"v5\":false",
               "설정이 ON 이어도 아직 안 냈으면 false — 설정표를 안 읽는다");
@@ -443,13 +456,14 @@ static void test_missing_rail_reads_as_off(void)
  *    PPS 의 `pps_raw_count` 와 같은 이유다. */
 static void test_stat_carries_the_lcd_recovery_counters(void)
 {
-    char buf[960];
+    char buf[1088];
     setup();
     MkLcdStat ls = { 3u, 2u, 41u, 128u, 2u, 0u, 1 };
     int n = mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                             "hse_pll", 64000000u, "device_clock", 0u,
                             -1, -1, 0u, NULL, -1,
                             0, 0, 0,
+                            -1, 0u, 0u, 0u, 0u,
                             &RS, NULL, 0, NULL, 0, NULL, NULL, &ls,
                             buf, sizeof buf);
     CHECK(n > 0, "계수기를 실어도 만든다");
@@ -467,13 +481,14 @@ static void test_stat_carries_the_lcd_recovery_counters(void)
  *    사용자는 멀쩡한 배선을 뜯어 본다 (pps_age_ms 의 null 과 같은 결). */
 static void test_unknown_readback_goes_out_as_null(void)
 {
-    char buf[960];
+    char buf[1088];
     setup();
     MkLcdStat ls = { 1u, 0u, 0u, 0u, 0u, 0u, -1 };
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                     "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
+                    -1, 0u, 0u, 0u, 0u,
                     &RS, NULL, 0, NULL, 0, NULL, NULL, &ls, buf, sizeof buf);
     CHECK_HAS(buf, "\"readback\":null",
               "안 물어봤으면 null 이다 — false 를 지어내지 않는다");
@@ -483,6 +498,7 @@ static void test_unknown_readback_goes_out_as_null(void)
                     "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
+                    -1, 0u, 0u, 0u, 0u,
                     &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf,
               "\"lcd\":{\"epoch\":0,\"reinit\":0,\"redraw\":0,"
@@ -502,13 +518,14 @@ static void test_unknown_readback_goes_out_as_null(void)
  *    묻혀 드문 쪽이 안 보인다. */
 static void test_stat_carries_the_tx_ring(void)
 {
-    char buf[960];
+    char buf[1088];
     setup();
     MkTxStat tx = { 8192u, 6100u, 12u, 1620u, 1u, 193u };
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                     "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
+                    -1, 0u, 0u, 0u, 0u,
                     &RS, NULL, 0, NULL, 0, NULL, &tx, NULL, buf, sizeof buf);
     CHECK_HAS(buf,
               "\"tx\":{\"cap\":8192,\"peak\":6100,\"drops\":12,"
@@ -524,12 +541,13 @@ static void test_stat_carries_the_tx_ring(void)
  *    (clock 의 null 과 같은 결). */
 static void test_stat_without_a_tx_ring_is_null(void)
 {
-    char buf[960];
+    char buf[1088];
     setup();
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                     "hse_pll", 64000000u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
+                    -1, 0u, 0u, 0u, 0u,
                     &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"tx\":null",
               "링이 없으면 통째로 null — 0 을 지어내지 않는다");
@@ -545,12 +563,13 @@ static void test_stat_without_a_tx_ring_is_null(void)
  *    지킨다 — 누가 `clock` 을 빼거나 "hse_pll" 로 못박으면 여기서 깨진다. */
 static void test_stat_carries_the_clock_source(void)
 {
-    char buf[960];
+    char buf[1088];
     setup();
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                     "hse_pll", 64000000u, "gnss_pps", 2u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
+                    -1, 0u, 0u, 0u, 0u,
                     &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"clock\":{\"src\":\"hse_pll\",\"sysclk_hz\":64000000}",
               "크리스털로 돌면 그렇게 말한다");
@@ -563,6 +582,7 @@ static void test_stat_carries_the_clock_source(void)
                     "hsi", 64000000u, "gnss_pps", 2u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
+                    -1, 0u, 0u, 0u, 0u,
                     &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"clock\":{\"src\":\"hsi\",\"sysclk_hz\":64000000}",
               "폴백했으면 그것도 그대로 말한다");
@@ -576,12 +596,13 @@ static void test_stat_carries_the_clock_source(void)
  *    않은 폴백을 보고하는 것이 된다. lcd 의 readback=null 과 같은 결이다. */
 static void test_missing_clock_goes_out_as_null(void)
 {
-    char buf[960];
+    char buf[1088];
     setup();
     mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0,
                     NULL, 0u, "device_clock", 0u,
                     -1, -1, 0u, NULL, -1,
                     0, 0, 0,
+                    -1, 0u, 0u, 0u, 0u,
                     &RS, NULL, 0, NULL, 0, NULL, NULL, NULL, buf, sizeof buf);
     CHECK_HAS(buf, "\"clock\":{\"src\":null,\"sysclk_hz\":null}",
               "답할 수 없으면 null — 값을 지어내지 않는다");
@@ -593,7 +614,8 @@ static void test_stat_rejects_small_buffer(void)
     setup();
     CHECK(mk_cfgwire_stat(0, "RUN", "ACTIVE", "0.1.0", "2.0", 0, "hse_pll", 64000000u,
                           "device_clock",
-                          0u, -1, -1, 0u, NULL, -1, 0, 0, 0, &RS, NULL, 0, NULL, 0,
+                          0u, -1, -1, 0u, NULL, -1, 0, 0, 0,
+                          -1, 0u, 0u, 0u, 0u, &RS, NULL, 0, NULL, 0,
                           NULL, NULL, NULL, tiny, sizeof tiny) < 0,
           "버퍼가 작으면 실패하고 잘린 줄을 내지 않는다");
 }

@@ -9,6 +9,7 @@
 #include "../app/mk_ads1256.h"
 #include "../app/mk_solctl.h"
 #include "../app/mk_gnssctl.h"
+#include "../app/mk_rtcm.h"
 #include "../app/mk_timeax.h"
 #include "../app/mk_linkbaud.h"
 
@@ -32,9 +33,11 @@ static int failures = 0;
 /* 🔴 줄 하나가 256 자를 넘을 수 있다. 7채널을 다 켠 $STAT 이 약 450 자다.
  *    처음에 256 으로 두었더니 뒷부분이 잘려 "마지막 채널이 안 실린다" 로
  *    보였다 — 펌웨어는 멀쩡했고 시험의 통이 작았던 것이다. 통을 레코드보다
- *    넉넉히 잡아, 잘림이 결함으로 오인되지 않게 한다. */
+ *    넉넉히 잡아, 잘림이 결함으로 오인되지 않게 한다.
+ *    [2026-08-28] 최악 $STAT 이 1,920 까지 커져(rtcm_* 필드, mk_hostlink.c
+ *    의 body 원장) 1024 → 2048 로 키웠다 — 같은 오인을 막는다. */
 #define CAP_LINES 16
-#define CAP_LINE_LEN 1024
+#define CAP_LINE_LEN 2048
 typedef struct {
     char lines[CAP_LINES][CAP_LINE_LEN];
     int  n;
@@ -1099,6 +1102,61 @@ static void test_stat_gnss_init_fields_reflect_gnssctl(void)
     }
 }
 
+/* ---- $STAT 의 rtcm_* (규격 §7.4, 2026-08-28) ---------------------------- */
+
+static void test_stat_rtcm_fields_default_to_null_without_router(void)
+{
+    /* 라우터가 안 붙은 빌드 — 나이만 null(받은 적 없음 ≠ 0ms 전)이고
+     * 계수는 0 이다. pps_age_ms/pps_raw_count 와 같은 규칙. */
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"rtcm_age_ms\":null,\"rtcm_bytes\":0,"
+                     "\"rtcm_bad\":0,\"rtcm_drop\":0,\"rtcm_overrun\":0")
+              != NULL,
+              "라우터가 안 붙어 있으면 나이는 null · 계수는 0");
+    }
+}
+
+static int rtcm_sink_ok(void *ctx, const char *data, size_t len)
+{
+    (void)ctx; (void)data; (void)len;
+    return 1;
+}
+
+static void test_stat_rtcm_fields_reflect_the_router(void)
+{
+    /* 온전한 프레임 하나를 먹인 라우터를 붙이면 $STAT 이 그 계수를 그대로
+     * 싣는다. 프레임 벡터의 출처는 tests/test_rtcm.c 머리말(파이썬 계산). */
+    static const uint8_t frame[10] =
+        { 0xd3, 0x00, 0x04, 0x3e, 0xd0, 0xaa, 0x55, 0x58, 0x2c, 0x06 };
+
+    MkRtcm r;
+    MkHostlink h; Sink s;
+    setup_cfg(&h, &s);
+    mk_rtcm_init(&r, rtcm_sink_ok, NULL);
+    for (size_t i = 0; i < sizeof frame; i++) {
+        mk_rtcm_feed(&r, frame[i], 700);
+    }
+    mk_rtcm_set_link_overruns(&r, 5u);
+    mk_hostlink_attach_rtcm(&h, &r);
+
+    sink_reset(&s);
+    feed(&h, "STAT", 1000);
+    CHECK(s.n == 2, "본문 1 + SACK 1");
+    if (s.n == 2) {
+        CHECK(strstr(s.lines[0],
+                     "\"rtcm_age_ms\":300,\"rtcm_bytes\":10,"
+                     "\"rtcm_bad\":0,\"rtcm_drop\":0,\"rtcm_overrun\":5")
+              != NULL,
+              "라우터의 지금 계수를 그대로 싣는다 — 나이는 now - 마지막 온전 프레임");
+    }
+}
+
 /* ---- $STAT 의 pps_raw_* vs pps_age_ms (규격 §7.4, 2026-08-19) ----------
  *
  * 🔴 실기기 관측(UM981, 실내·fix 없음)을 그대로 재현한다: PPS 는 TIM8
@@ -1708,6 +1766,8 @@ int main(int argc, char **argv)
     test_stat_reports_the_clock_source();
     test_stat_gnss_init_fields_default_to_false_without_gnssctl();
     test_stat_gnss_init_fields_reflect_gnssctl();
+    test_stat_rtcm_fields_default_to_null_without_router();
+    test_stat_rtcm_fields_reflect_the_router();
     test_stat_pps_raw_visible_even_when_nmea_never_pairs();
     test_stat_pps_both_missing_when_pps_never_arrives();
     test_stat_pps_both_present_when_locked();

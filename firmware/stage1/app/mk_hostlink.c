@@ -8,6 +8,7 @@
 #include "mk_lcd.h"
 #include "mk_linkbaud.h"
 #include "mk_json.h"
+#include "mk_rtcm.h"
 
 #include <string.h>
 
@@ -493,6 +494,11 @@ void mk_hostlink_attach_gnssctl(MkHostlink *h, struct MkGnssCtl *gnssctl)
     h->gnssctl = gnssctl;
 }
 
+void mk_hostlink_attach_rtcm(MkHostlink *h, const struct MkRtcm *rtcm)
+{
+    h->rtcm = rtcm;
+}
+
 void mk_hostlink_attach_lcd(MkHostlink *h, struct MkLcd *lcd)
 {
     h->lcd = lcd;
@@ -717,6 +723,21 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         lks.reverted        = h->linkbaud->reverted;
     }
 
+    /* 🔴 RTCM 하행 관측(규격 §7.4, 2026-08-28). 라우터가 안 붙어 있으면
+     *    age -1(→null) · 계수 0 — timeax·gnssctl 이 안 붙었을 때와 같은 결. */
+    int64_t  gnss_rtcm_age_ms = -1;
+    uint32_t gnss_rtcm_bytes = 0u;
+    uint32_t gnss_rtcm_bad = 0u;
+    uint32_t gnss_rtcm_drop = 0u;
+    uint32_t gnss_rtcm_overrun = 0u;
+    if (h->rtcm != NULL) {
+        gnss_rtcm_age_ms   = mk_rtcm_age_ms(h->rtcm, now_ms);
+        gnss_rtcm_bytes    = mk_rtcm_bytes(h->rtcm);
+        gnss_rtcm_bad      = mk_rtcm_bad(h->rtcm);
+        gnss_rtcm_drop     = mk_rtcm_drops(h->rtcm);
+        gnss_rtcm_overrun  = mk_rtcm_link_overruns(h->rtcm);
+    }
+
     /* 🔴 896 이던 것을 1024 로, 그 뒤 gnss.init_* 세 필드로 더 올렸다.
      *    [신규, 2026-08-19] "pps_raw_age_ms":<i64>,"pps_raw_count":<u32>,
      *    "pps_unpaired_reason":"no_valid_nmea" 가 최악 ~95바이트를 더
@@ -735,8 +756,13 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
      *    (u32 넷이 각각 10자리 + remaining_ms 가 i64). 1664 로 올린다.
      *
      *    [신규, 2026-08-20] `tx` 객체가 최악 ~110바이트를 더 먹는다
-     *    (u32 여섯이 각각 10자리 + 이름표). 1792 로 올린다. */
-    char body[1792];
+     *    (u32 여섯이 각각 10자리 + 이름표). 1792 로 올린다.
+     *
+     *    [신규, 2026-08-28] `gnss.rtcm_*` 다섯 필드가 최악 ~131바이트를 더
+     *    먹는다("rtcm_age_ms" 는 i64 19자리, u32 넷이 각각 10자리 + 이름표).
+     *    1920 으로 올린다 — bsp/mk_uart.c 의 MK_TX_RESERVE(예약 몫) 산식이
+     *    이 크기를 참조하므로 **거기도 함께** 올렸다(1920+193 < 2304). */
+    char body[1920];
     int n = mk_cfgwire_stat(
         axis_ms(h, now_ms),
         mk_hostlink_mode(h, now_ms) == MK_MODE_CONFIG ? "CONFIG" : "RUN",
@@ -748,6 +774,8 @@ static void on_stat(MkHostlink *h, int64_t now_ms)
         gnss_pps_raw_age_ms, gnss_pps_raw_count, gnss_pps_unpaired_reason,
         gnss_sats,
         gnss_init_sent, gnss_init_exhausted, gnss_sentence_seen,
+        gnss_rtcm_age_ms, gnss_rtcm_bytes,
+        gnss_rtcm_bad, gnss_rtcm_drop, gnss_rtcm_overrun,
         &rs,
         n_din > 0 ? ds : NULL, n_din,
         n_q > 0 ? qs : NULL, n_q,

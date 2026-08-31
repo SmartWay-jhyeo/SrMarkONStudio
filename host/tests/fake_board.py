@@ -438,7 +438,11 @@ class FakeBoard:
                 gnss={"pps_age_ms": None, "pps_raw_age_ms": None,
                       "pps_raw_count": 0, "pps_unpaired_reason": None,
                       "sats": None, "init_sent": False,
-                      "init_exhausted": False, "sentence_seen": False},
+                      "init_exhausted": False, "sentence_seen": False,
+                      # 스텁에는 젯슨 링크가 없다 — 받은 적 없음이 정직한 값
+                      # (나이만 null, 계수는 0 — 규격 §7.4 의 rtcm_* 규칙).
+                      "rtcm_age_ms": None, "rtcm_bytes": 0,
+                      "rtcm_bad": 0, "rtcm_drop": 0, "rtcm_overrun": 0},
                 uptime_ms=self._now_ms,
                 clock={"src": None, "sysclk_hz": None},
                 rails={"v24": self.store.get("pwr.24v"),

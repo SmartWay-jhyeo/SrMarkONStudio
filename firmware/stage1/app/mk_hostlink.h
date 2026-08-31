@@ -123,6 +123,11 @@ typedef struct {
      * 없으면 전부 거짓이다. */
     struct MkGnssCtl *gnssctl;
 
+    /* RTCM 하행 라우터(규격 §7.4, app/mk_rtcm.h). 붙어 있으면 $STAT 의
+     * gnss.rtcm_* 다섯이 실제 계수를 싣는다. 없으면 age 는 null(받은 적
+     * 없음)·카운터는 0 이다. 읽기만 한다 — timeax 와 같은 결. */
+    const struct MkRtcm *rtcm;
+
     /* 화면 회복 계수기(규격 §7.4). 붙어 있으면 $STAT 의 `lcd` 가 실제
      * 값을 싣는다. 없으면 전부 0 이고 readback 은 null 이다. */
     struct MkLcd *lcd;
@@ -217,6 +222,11 @@ void mk_hostlink_attach_timeax(MkHostlink *h, struct MkTimeAx *timeax);
 /* GNSS 명령 전달 콜백을 붙인다(규격 §4.1). 부르지 않으면 $GNSS 는
  * UNSUPPORTED 다. */
 void mk_hostlink_attach_gnss(MkHostlink *h, MkGnssSend send, void *ctx);
+
+/* RTCM 하행 라우터를 붙인다(규격 §7.4). 부르지 않으면 gnss.rtcm_age_ms 는
+ * null, 계수기는 0 이다 — 보정 경로가 없는 빌드(호스트 시험)가 그 자리다. */
+struct MkRtcm;
+void mk_hostlink_attach_rtcm(MkHostlink *h, const struct MkRtcm *rtcm);
 
 /* GNSS 초기화 재시도 상태를 붙인다(규격 §4.1.1·§7.4). 부르지 않으면
  * $STAT 의 gnss.init_sent·init_exhausted·sentence_seen 이 전부 거짓이다. */
