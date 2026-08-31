@@ -724,7 +724,11 @@ class StreamState:
                     window = _ChannelWindow(INTERVAL_SAMPLES)
                     self._channels[key] = window
                 window.observe(now_s, row.t)
-            if row.seq is not None and is_telemetry({"type": row.type}):
+            # 🔴 [개정 2026-08-31] is_telemetry 가 seq 존재까지 본다 —
+            #    row.seq 를 함께 실어야 판정이 성립한다(tx.seq 꺼진 보드는
+            #    유실 집계 불참, HANDOFF_0831 결정 2).
+            if row.seq is not None and is_telemetry(
+                    {"type": row.type, "seq": row.seq}):
                 missing = self._seq_tracker.observe(row.seq)
                 if missing > 0:
                     # observe() 가 돌려주는 missing 은 (이전 seq, 이번 seq)

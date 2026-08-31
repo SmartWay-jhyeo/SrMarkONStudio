@@ -18,15 +18,45 @@ def test_parse_record_returns_dict():
     assert rec["raw"] == 8388608
 
 
-def test_parse_record_rejects_wrong_schema_ver():
-    with pytest.raises(ProtocolError):
-        parse_record('{"schema_ver":2,"seq":1,"t":0,"type":"ain"}')
+def test_parse_record_accepts_cloud_vectors():
+    """🔴 [개정 2026-08-31, HANDOFF_0831 결정 2] 실장비 캡쳐 8종이 전부
+    통과해야 한다 — 본선이 Cloud 계약을 말한다."""
+    from host.tests.cloud_vectors import ALL, WITH_SEQ
+
+    for line in ALL + WITH_SEQ:
+        rec = parse_record(line)
+        assert isinstance(rec, dict), line
+
+
+def test_parse_record_accepts_any_positive_schema_ver():
+    """제어 줄은 3, 계약 기본 1, 사용자 설정 1~9 — 정책은 '양의 정수 수용'."""
+    for ver in (1, 2, 3, 9):
+        rec = parse_record(f'{{"schema_ver":{ver},"t":0,"type":"x"}}')
+        assert rec["schema_ver"] == ver
+    for bad in ('"3"', "true", "0", "-1"):
+        with pytest.raises(ProtocolError):
+            parse_record(f'{{"schema_ver":{bad},"t":0,"type":"x"}}')
+
+
+def test_parse_record_accepts_missing_seq():
+    """seq 는 선택이 됐다(tx.seq 체크박스) — 없으면 유실 집계에만 불참."""
+    from host.core.records import is_telemetry
+
+    rec = parse_record('{"schema_ver":1,"t":0,"type":"flow1"}')
+    assert "seq" not in rec
+    assert not is_telemetry(rec), "seq 없는 레코드는 seq 시퀀스에 불참"
+    rec2 = parse_record('{"schema_ver":1,"seq":5,"t":0,"type":"flow1"}')
+    assert is_telemetry(rec2)
 
 
 def test_parse_record_rejects_missing_mandatory_field():
-    """seq/t/type 는 마스크로 끌 수 없는 필수 필드다."""
+    """t/type/schema_ver 는 필수다 (seq 는 2026-08-31 부터 선택)."""
     with pytest.raises(ProtocolError):
-        parse_record('{"schema_ver":3,"t":0,"type":"ain"}')
+        parse_record('{"schema_ver":3,"type":"ain"}')          # t 없음
+    with pytest.raises(ProtocolError):
+        parse_record('{"schema_ver":3,"t":0}')                 # type 없음
+    with pytest.raises(ProtocolError):
+        parse_record('{"t":0,"type":"ain"}')                   # schema_ver 없음
 
 
 def test_parse_record_rejects_broken_json():
@@ -210,11 +240,14 @@ def test_is_telemetry_distinguishes_command_responses():
     """
     from host.core.records import is_telemetry
 
-    assert is_telemetry({"type": "ain"}) is True
-    assert is_telemetry({"type": "i2c"}) is True
-    assert is_telemetry({"type": "din"}) is True   # 규격 §7.6 — 엣지도 seq 를 탄다
+    # 🔴 [개정 2026-08-31] seq 존재도 조건이다 — tx.seq 꺼진 보드의
+    #    레코드는 시퀀스가 없으니 불참한다(HANDOFF_0831 결정 2).
+    assert is_telemetry({"type": "ain", "seq": 1}) is True
+    assert is_telemetry({"type": "flow1", "seq": 1}) is True   # 사용자 문자열
+    assert is_telemetry({"type": "din", "seq": 1}) is True
+    assert is_telemetry({"type": "flow1"}) is False            # seq 없음
     for t in ("id", "stat", "cfg_value", "cfg_item", "cfg_field", "cfg_end"):
-        assert is_telemetry({"type": t}) is False, t
+        assert is_telemetry({"type": t, "seq": 0}) is False, t
 
 
 def test_din_record_parses_like_any_other_telemetry():
@@ -228,11 +261,15 @@ def test_din_record_parses_like_any_other_telemetry():
     assert rec["state"] == 1
 
 
-def test_time_sources_are_the_three_reachable_grades():
-    """규격 §7.1.2 — 지어내지 않는다. 실제로 도달 가능한 셋뿐이다."""
+def test_time_sources_cover_contract_and_transition():
+    """[개정 2026-08-31] 계약 §1(gnss/gnss_nmea/device_clock/host_clock/
+    unknown) + 전환기 v3 보드의 gnss_pps — 지어낸 값은 여전히 없다."""
     from host.core.records import TIME_SOURCES
 
-    assert TIME_SOURCES == {"gnss_pps", "gnss_nmea", "device_clock"}
+    assert TIME_SOURCES == {
+        "gnss", "gnss_pps", "gnss_nmea",
+        "device_clock", "host_clock", "unknown",
+    }
 
 
 def test_is_utc_time_true_only_when_gnss_locked():
