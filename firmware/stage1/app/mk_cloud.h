@@ -46,6 +46,11 @@ typedef struct MkCloud {
     MkTimeAx *timeax;                 /* NULL 이면 device_clock 고정 */
     const char *device_id;
     const char *fw_version;
+    /* 줄 순번 — 유실 검출의 근거 (HANDOFF_0831 결정 2). 발행에 성공한
+     * 줄마다 1 오른다. tx.seq(체크박스, 기본 켜짐)를 꺼도 계속 올라,
+     * 다시 켰을 때 번호가 이어진다 — 끔 구간이 유실로 보이지 않게 하는
+     * 것이 아니라, 켬 구간끼리의 연속성을 지키는 것이 목적이다. */
+    uint32_t seq;
     /* 마지막으로 발행한 표본의 획득 시각 — 같은 표본을 두 번 내보내지
      * 않기 위한 기억이다(설계 §4.7). */
     int64_t  ain_sent_t[MK_ADS_CHANNELS];

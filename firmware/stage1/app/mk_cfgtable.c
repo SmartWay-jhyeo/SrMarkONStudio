@@ -68,7 +68,8 @@ static const char *const I2C_KIND_LABELS[] = {
  * 올지 모르는 현장 구성이라, 밸브 상태는 **디지털 입력들의 OR** 로
  * 합성한다(사용자 확정). mk_cloud.c 의 cloud_valve_state 참고.) */
 
-/* dev 1 + tx 6(마스크 4 + 주기 + 자릿수) + pwr 4 + adc 2 + ain 5×7
+/* dev 1 + tx 9(마스크 5 + 주기 + 자릿수 + 스키마 버전 + 순번 seq)
+ * + pwr 4 + adc 2 + ain 5×7
  * + sol 1(디바운스) + led 3 + i2c 5×6 + gnss 3(사용·통신속도·원시 문장 에코)
  * + link 1(호스트 링크 속도)
  * + lcd 5(사용·갱신 주기·SPI 클럭·되읽기 대조 주기·전면 갱신 주기)
@@ -76,7 +77,7 @@ static const char *const I2C_KIND_LABELS[] = {
  * (led{21..24}.r/g/b 수동 색 12개는 2026-08-22 에 걷어냈다 — LED 가
  *  상태 표시 전용이 됐다(app/mk_statled.h, 사용자 설계). 색을 사용자가
  *  정하는 항목이 남아 있으면 상태 색과 싸운다.) */
-#define ITEM_COUNT   (1 + 8 + 4 + 2 + MK_AIN_COUNT * 7 \
+#define ITEM_COUNT   (1 + 9 + 4 + 2 + MK_AIN_COUNT * 7 \
                       + 1 \
                       + 3 \
                       + MK_I2C_COUNT * 6 \
@@ -362,6 +363,16 @@ static size_t add_tx(size_t i)
                               .has_min = 1, .has_max = 1,
                               .unit = "ms", .label = "전송 주기" };
     s_items[i].def.u = 100;
+    i++;
+
+    /* 🔴 seq — 줄 순번(유실 검출 근거, HANDOFF_0831 결정 2). 기본 켜짐.
+     *    체크박스로 뺀 것은 사용자 결정(2026-08-31)이고, 끄면 어느 쪽
+     *    수신자도 링크 유실을 셀 수 없다는 것을 note 가 말한다. */
+    s_items[i] = (MkCfgItem){ .key = "tx.seq", .group = "tx",
+                              .vtype = MK_VT_BOOL,
+                              .label = "순번(seq)",
+                              .note = "끄면 GUI 도 젯슨도 링크 유실을 세지 못한다" };
+    s_items[i].def.u = 1;
     i++;
 
     /* 🔴 최소가 2 다. 0 을 허용하면 4~20 mA 값이 정수로 잘려 분해능이

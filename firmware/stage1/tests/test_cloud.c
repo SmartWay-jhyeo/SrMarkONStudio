@@ -137,7 +137,9 @@ static void test_ain_pressure_paint_record(void)
     CHECK_HAS(ln, "\"bar\":150.0", "(ma-zero)*scale, 소수 1자리");
     CHECK_HAS(ln, "\"time_source\":\"device_clock\"", "timeax 없으면 device_clock");
     CHECK(strstr(ln, "\"valve\":") == NULL, "밸브 비트 꺼짐 = 태깅 없음");
-    CHECK(strstr(ln, "\"seq\":") == NULL, "계약에 seq 는 없다 — v3 방언 섞임 금지");
+    /* 🔴 [개정 2026-08-31] seq 는 v1.7 개정으로 계약의 선택 필드가 됐다
+     *    (HANDOFF_0831 결정 2 — 유실 검출을 두 링크 공통으로). 기본 켜짐. */
+    CHECK_HAS(ln, "\"seq\":", "seq 가 기본으로 실린다 (tx.seq 기본 켜짐)");
 }
 
 static void test_common_field_values_are_config(void)
@@ -570,6 +572,45 @@ static void test_imu_off_is_silent(void)
     CHECK(mk_cloud_tick(&C, 100, sink, NULL) == 0, "꺼져 있으면 미발행");
 }
 
+/* ---- seq (HANDOFF_0831 결정 2 — 유실 검출을 두 링크 공통으로) ------------ */
+
+static void test_seq_increments_per_line(void)
+{
+    setup();
+    /* 🔴 cloud 설정을 capability 비우기 **전에** 한다 — 뒤에 바꾸면 지문이
+     *    달라져 capability 가 재발행되며 번호를 하나 더 소비한다. */
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    drain_capability();                 /* capability 가 seq=0 을 쓴다 */
+    set_last(0, 1000, 4026531);
+    mk_cloud_tick(&C, 100, sink, NULL);
+    set_last(0, 1010, 4026600);
+    mk_cloud_tick(&C, 110, sink, NULL);
+    CHECK(N >= 2, "두 줄이 나왔다");
+    CHECK_HAS(LINES[0], "\"seq\":1", "capability 다음이라 첫 ain 줄은 seq=1");
+    CHECK_HAS(LINES[1], "\"seq\":2", "둘째 줄은 seq=2 — 줄마다 1 증가");
+}
+
+static void test_seq_checkbox_off_omits_field(void)
+{
+    /* 🔴 사용자 결정 2026-08-31 — seq 는 체크박스(tx.seq, 기본 켜짐).
+     *    끄면 필드가 빠지고, 카운터는 계속 올라 다시 켤 때 번호가 이어진다. */
+    setup();
+    set_str("ain0.cloud", "flow");
+    set_str("ain0.unit", "lpm");
+    drain_capability();                 /* seq=0 소비 — 지문은 이후 불변 */
+    set_u32("tx.seq", 0u);
+    set_last(0, 1000, 4026531);
+    mk_cloud_tick(&C, 100, sink, NULL);
+    CHECK(N >= 1 && strstr(LINES[0], "\"seq\"") == NULL,
+          "tx.seq 를 끄면 seq 필드가 빠진다");
+    set_u32("tx.seq", 1u);
+    set_last(0, 1010, 4026600);
+    mk_cloud_tick(&C, 110, sink, NULL);
+    CHECK_HAS(LINES[N - 1], "\"seq\":2",
+              "끔 동안에도 카운터는 올라 번호가 이어진다");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);   /* 크래시 지점을 놓치지 않게 */
@@ -596,6 +637,8 @@ int main(void)
     test_imu_record_from_um981();
     test_imu_temp_when_enabled();
     test_imu_off_is_silent();
+    test_seq_increments_per_line();
+    test_seq_checkbox_off_omits_field();
 
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("all ok\n");

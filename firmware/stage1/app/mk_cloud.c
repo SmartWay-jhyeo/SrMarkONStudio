@@ -177,6 +177,11 @@ static void begin_record(const MkCloud *c, MkJson *j, char *out, size_t cap,
 
     mk_json_begin(j, out, cap);
     mk_json_u32(j, "schema_ver", ver ? ver->cur.u : 1u);
+    /* 🔴 seq — 계약의 선택 필드(v1.7 개정, HANDOFF_0831 결정 2). 젯슨은
+     *    모르는 필드를 무시하고, 호스트는 이것으로 링크 유실을 센다.
+     *    tx.seq(기본 켜짐)를 끄면 빠진다 — 사용자 결정 2026-08-31. */
+    MkCfgItem *sq = mk_cfg_find(c->cfg, "tx.seq");
+    if (sq == NULL || sq->cur.u) { mk_json_u32(j, "seq", c->seq); }
     mk_json_str(j, "device_id",
                 (dev && dev->cur.s[0] != '\0') ? dev->cur.s
                 : (c->device_id ? c->device_id : ""));
@@ -187,13 +192,17 @@ static void begin_record(const MkCloud *c, MkJson *j, char *out, size_t cap,
 
 /* 조립이 끝난 줄을 내보낸다. 상한을 넘으면 통째로 버린다 — 반쪽 JSON 을
  * 내보내지 않는 본선(emit_ain_sample)과 같은 계약. 성공 1, 버림 0. */
-static int finish_and_emit(char *body, size_t cap, int len,
+static int finish_and_emit(MkCloud *c, char *body, size_t cap, int len,
                            MkCloudEmit emit, void *ctx)
 {
     if (len <= 0 || (size_t)len + 2u > cap) { return 0; }
     body[len] = '\n';
     body[len + 1] = '\0';
     emit(ctx, body, (size_t)len + 1u);
+    /* 🔴 emit 에 실제로 넘긴 줄만 번호를 소비한다. 조립 실패(위의 0 반환)는
+     *    줄이 없던 일이라 번호가 이어져야 한다. tx.seq 끔 상태에서도 올린다
+     *    — mk_cloud.h 의 seq 주석 참고. */
+    c->seq++;
     return 1;
 }
 
@@ -250,7 +259,7 @@ static int tick_ain(MkCloud *c, MkCloudEmit emit, void *ctx)
             c->ain_sent_t[ch] = s.t_ms;
             continue;
         }
-        if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+        if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
             sent++;
             c->ain_primed[ch] = 1u;
             c->ain_sent_t[ch] = s.t_ms;
@@ -362,7 +371,7 @@ static int tick_i2c(MkCloud *c, MkCloudEmit emit, void *ctx)
                 c->i2c_sent_t[p][k] = o.t_ms;
                 continue;
             }
-            if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+            if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
                 sent++;
                 c->i2c_primed[p][k] = 1u;
                 c->i2c_sent_t[p][k] = o.t_ms;
@@ -390,6 +399,10 @@ static int build_gnss(MkCloud *c, const MkGnssFix *f, char *out, size_t cap)
     MkCfgItem *dev = mk_cfg_find(c->cfg, "dev.id");
     mk_json_begin(&j, out, cap);
     mk_json_u32(&j, "schema_ver", ver ? ver->cur.u : 1u);
+    /* seq — begin_record 를 안 타는 유일한 조립이라 여기 따로 싣는다.
+     * 규칙은 begin_record 와 같다(tx.seq 기본 켜짐). */
+    MkCfgItem *sq = mk_cfg_find(c->cfg, "tx.seq");
+    if (sq == NULL || sq->cur.u) { mk_json_u32(&j, "seq", c->seq); }
     mk_json_str(&j, "device_id",
                 (dev && dev->cur.s[0] != '\0') ? dev->cur.s
                 : (c->device_id ? c->device_id : ""));
@@ -453,7 +466,7 @@ static int tick_gnss(MkCloud *c, MkCloudEmit emit, void *ctx)
         c->gnss_sent_count = count;
         return 0;
     }
-    if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+    if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
         c->gnss_sent_count = count;
         return 1;
     }
@@ -491,7 +504,7 @@ static int tick_imu(MkCloud *c, MkCloudEmit emit, void *ctx)
     }
     int len = mk_json_end(&j);
 
-    if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+    if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
         c->imu_sent_seq = s.seq;
         return 1;
     }
@@ -524,7 +537,7 @@ static int tick_valve(MkCloud *c, int64_t now_ms, MkCloudEmit emit, void *ctx)
     mk_json_u32(&j, "state", (uint32_t)state);
     int len = mk_json_end(&j);
 
-    if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+    if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
         c->valve_primed = 1u;
         c->valve_sent_state = (uint8_t)state;
         return 1;
@@ -618,7 +631,7 @@ static int tick_capability(MkCloud *c, int64_t now_ms,
     mk_json_str(&j, "fw_version", c->fw_version ? c->fw_version : "");
     int len = mk_json_end(&j);
 
-    if (finish_and_emit(body, sizeof body, len, emit, ctx)) {
+    if (finish_and_emit(c, body, sizeof body, len, emit, ctx)) {
         c->cap_primed = 1u;
         c->cap_sent_fp = fp;
         return 1;
