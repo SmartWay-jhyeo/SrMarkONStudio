@@ -89,6 +89,24 @@ static void test_valid_rmc_is_parsed(void)
     CHECK(mk_gnss_take_rmc(&g, &rmc) == 0, "한 번 꺼내면 비었다");
 }
 
+static void test_rmc_status_d_is_valid(void)
+{
+    /* 🔴 [실증 2026-09-01] UM981 은 RTK 보정이 붙으면 상태를 A→D 로 바꾼다.
+     *    'A' 만 유효로 치면 RTK FIXED 문장을 통째로 버린다 — 실기기에서
+     *    GGA q=4·위성 24 를 받고도 sats 0·레코드 0 이었다. */
+    MkGnss g;
+    mk_gnss_init(&g);
+    feed_str(&g, "$GNRMC,235959.999,D,4807.038,N,01131.000,E,022.4,084.4,180826,,,A*76\r\n");
+
+    MkGnssRmc rmc;
+    CHECK(mk_gnss_take_rmc(&g, &rmc) == 1, "상태 D 인 RMC 도 꺼낼 수 있다");
+    CHECK(rmc.valid == 1, "상태 필드 D(보정 유효) = 유효");
+
+    MkGnssFix fix;
+    CHECK(mk_gnss_take_fix(&g, &fix) == 1, "측위 레코드도 나온다");
+    CHECK(fix.have_pos == 1, "상태 D 에서 좌표가 실린다");
+}
+
 static void test_valid_gga_is_parsed(void)
 {
     MkGnss g;
@@ -503,6 +521,7 @@ int main(void)
     test_epoch_known_values();
     printf("-- 정상 RMC/GGA --\n");
     test_valid_rmc_is_parsed();
+    test_rmc_status_d_is_valid();
     test_valid_gga_is_parsed();
     test_gga_no_fix();
     printf("-- 되돌림: 체크섬 --\n");

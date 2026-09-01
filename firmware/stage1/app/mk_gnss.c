@@ -363,7 +363,12 @@ static void parse_rmc(MkGnss *g, const char *body, size_t body_len)
 
     int have_time = parse_time_field(f_time, &h, &mi, &s, &ms);
     int have_date = parse_date_field(f_date, &year, &month, &day);
-    int valid = (f_status.len >= 1 && f_status.p[0] == 'A') ? 1 : 0;
+    /* 🔴 'A'(단독 유효)만이 아니라 'D'(보정 유효)도 유효다 [실증 2026-09-01].
+     *    UM981 은 RTK 보정이 붙는 순간 상태를 A→D 로 바꾼다. 'A' 만 받으면
+     *    보정이 잘 될수록 문장을 버리는 역설이 된다 — 실제로 RTK FIXED
+     *    (GGA q=4, 위성 24)를 통째로 버리고 있었다. 무효는 'V' 하나다. */
+    int valid = (f_status.len >= 1 &&
+                 (f_status.p[0] == 'A' || f_status.p[0] == 'D')) ? 1 : 0;
 
     /* ---- 시간축 경로 (예전 그대로) ------------------------------------
      * 🔴 시각·날짜가 **둘 다** 있어야 RMC 를 내보낸다. epoch 을 만들 수
@@ -398,7 +403,7 @@ static void parse_rmc(MkGnss *g, const char *body, size_t body_len)
         fix.have_epoch = 1;
     }
 
-    /* 🔴 위·경도는 상태가 'A' 일 때만 싣는다. 'V' 인데 좌표 필드에 옛 값이
+    /* 🔴 위·경도는 상태가 유효('A'/'D')일 때만 싣는다. 'V' 인데 좌표 필드에 옛 값이
      *    남아 오는 수신기가 있고, 그것을 그대로 내보내면 화면에서 차량이
      *    마지막으로 하늘을 본 자리에 서 있게 된다(규격 §7.8.4). */
     if (valid) {
