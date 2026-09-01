@@ -489,6 +489,13 @@ def test_jet_rx_feeds_only_the_rtcm_router():
         "젯슨 수신 바이트가 mk_hostlink_feed 로 들어간다 — 이 링크에 명령을 "
         "실으면 안 된다(인증·프레이밍 없음)"
     )
+    # 🔴 [실증 2026-09-01] 이 attach 가 빠진 채 이틀을 보냈다 — 수신은 되는데
+    #    $STAT 의 rtcm_* 만 0 이라, 두 보드에서 "하행 배선 사망" 오진을 낳았다
+    #    (내부 카운터는 7.1MB 를 세고 있었다). 라우터를 만들면 통계도 붙인다.
+    assert re.search(r"mk_hostlink_attach_rtcm\s*\(", main_code), (
+        "main.c 가 mk_hostlink_attach_rtcm 을 부르지 않는다 — 수신은 되는데 "
+        "$STAT 의 rtcm_* 가 영원히 0 이 되어 하행 진단이 전부 오진이 된다"
+    )
 
 
 #: 🔴 [검토 지적 I6] 역방향 검사. 위 test_i2c_owner_does_not_touch_the_sol_

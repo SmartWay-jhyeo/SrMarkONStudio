@@ -643,6 +643,10 @@ int main(void)
      *    명령이 한 줄로 서고, push 가 전부-아니면-거절이라 서로 섞이지
      *    않는다. */
     mk_rtcm_init(&s_rtcm, mk_gnss_io_write, NULL);
+    /* 🔴 이 attach 가 빠지면 수신은 되는데 $STAT 의 rtcm_* 만 영원히 0 이다.
+     *    실제로 그랬다 [실증 2026-09-01] — 두 보드에서 "하행 사망" 오진을
+     *    낳았다(내부 카운터는 7.1MB 를 세고 있었다). */
+    mk_hostlink_attach_rtcm(&link, &s_rtcm);
 
     /* 🔴 화면 내용. **모든 출처가 선 뒤에** 붙인다 — mk_screen 은 포인터만
      *    들고 매 갱신 주기에 그때의 값을 읽으므로, 아직 초기화 안 된
