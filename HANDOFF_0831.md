@@ -5,6 +5,12 @@
 > `docs/superpowers/plans/2026-08-31-usb-cloud-unification-fw.md` / `-host.md`.
 > **남은 것은 굽기뿐** — 사용자 통지 후 진행(HANDOFF.md 의 절차).
 > 아래는 결정 당시의 기록 그대로다.
+>
+> ✅ **[2026-08-31 밤] 굽기·실기기 수락 검증까지 완료** — 2호 보드
+> (COM63/COM64) 23항목 전부 실증. 마지막 2건: `$GNSSRAW` 에코(5초 203줄,
+> 실내 무fix 라 좌표 필드가 빈 RMC/GGA 원문 확인) · J20 din 엣지
+> (핀1↔핀2 점퍼 단락 → `{"type":"din","connector_id":20,"cloud_type":
+> "valve","state":1}` / 해제 → `state:0`, 엣지당 정확히 1레코드, seq 연속).
 
 ## 배경 — 현재 구조 (코드로 확인, 2026-08-30)
 
